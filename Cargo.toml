@@ -20,7 +20,7 @@ name = "tvm-rust"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/mlc-ai/tvm_rust_ext"
+repository = "https://github.com/mlc-ai/tvm-rust-ext"
 publish = false
 
 [lib]
