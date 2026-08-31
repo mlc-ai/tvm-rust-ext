@@ -137,9 +137,49 @@ layout attributes into generated Rust, enum metadata, and a maintained set of
 reviewed Rust semantic-constructor templates. Reusable `RValueRef<T>`
 support is already implemented and tested.
 
-Build TVM first, ensure `tvm-ffi-config` resolves that build, set
-`TVM_COMPILER_LIBRARY` to the resulting compiler library, and run:
+## Building and testing
+
+No TVM or tvm-ffi sources live in this repository.  Both projects are consumed
+as packages:
+
+- The `tvm-ffi` Rust crate is a git dependency pinned in `Cargo.toml`.  Its
+  build script links `libtvm_ffi` from `tvm-ffi-config --libdir`, i.e. from the
+  `apache-tvm-ffi` pip package installed in the active Python environment.
+- `libtvm_compiler` (and `libtvm_runtime`) come from the `apache-tvm` pip
+  package.  `build.rs` asks the active `python` where the `tvm` package is,
+  records the directory holding `libtvm_compiler.so`, and adds rpaths so test
+  executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
+  library at run time; the tests call `tvm::libinfo::load_compiler()`.
+
+Both pip packages must be built from the same tvm-ffi commit, at or after the
+`tvm-ffi` rev pinned in `Cargo.toml`, so that the Rust bindings, `libtvm_ffi`,
+and `libtvm_compiler` agree on the object ABI.  Any Python environment works
+(venv, uv, conda, system site-packages); the only requirements are that
+`tvm-ffi-config` and `python`/`python3` of that environment are on `PATH` (or
+`TVM_PYTHON` names the interpreter).  With such an environment active:
 
 ```bash
-TVM_COMPILER_LIBRARY=/path/to/libtvm_compiler.so cargo test
+cargo test
 ```
+
+`cargo build` also produces a shared library, `target/<profile>/libtvm.so`
+(`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:
+[`src/exports.rs`](src/exports.rs) exports the Rust passes as
+`__tvm_ffi_<name>` symbols, so any tvm-ffi host can load it.  From Python:
+
+```bash
+cargo build
+python python/demo.py
+```
+
+[`python/demo.py`](python/demo.py) opens the library with
+`tvm_ffi.load_module`, builds a `PrimFunc` with TVMScript, runs the exported
+passes on it, and composes an exported pass object with `tvm.transform`.
+
+Overrides: `TVM_LIBRARY_PATH` (directory holding the TVM libraries),
+`TVM_COMPILER_LIBRARY` (explicit compiler library path), `TVM_PYTHON`
+(interpreter used by `build.rs`), and `TVM_FFI_CONFIG` (path of
+`tvm-ffi-config`).  `build.rs` resolves executables like pyo3 does — override
+variable, then the active `VIRTUAL_ENV`/`CONDA_PREFIX`, then `PATH` — and
+re-runs when those variables change (`PATH` only if it was what resolved an
+executable), so switching environments rebuilds with the new paths.

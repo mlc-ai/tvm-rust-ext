@@ -1,0 +1,53 @@
+# Python requirements for developing tvm-rust-ext (pinned 2026-08-30 against
+# Python 3.12; any virtualenv/uv/conda environment works).
+#
+# This file covers the pip layer only. The C++ toolchain (a C++17 compiler,
+# cmake >= 3.26, ninja, optionally LLVM and CUDA) comes from the system or the
+# environment manager, and Apache TVM itself is built from source (see the
+# notes at the bottom and README.md).
+#
+#   pip install -r requirements.txt
+
+# --- tvm-ffi (apache/tvm-ffi main, pinned commit) --------------------------
+# Provides the `tvm_ffi` Python package, libtvm_ffi.so, and the `tvm-ffi-config`
+# CLI that tvm-ffi-sys/build.rs uses to locate the library.
+# Must be at or after the Rust crate rev pinned in Cargo.toml (3523725eb7b0…).
+apache-tvm-ffi @ git+https://github.com/apache/tvm-ffi.git@5c213498a72e003657a0522f29a538f9c5a5d346
+
+# --- build tooling (for building tvm-ffi / TVM with --no-build-isolation) ---
+scikit-build-core==1.0.3
+Cython==3.3.0
+setuptools-scm==10.2.1
+mlc-z3-static==4.16.0      # static Z3 consumed by TVM's USE_Z3=AUTO
+# cmake>=3.26 and ninja>=1.11 are also needed; take them from the system or
+# environment manager, or `pip install cmake ninja` in a plain virtualenv (not
+# listed here so they do not clobber conda-provided binaries).
+
+# --- runtime dependencies of apache-tvm (pyproject + extras in use) ---------
+numpy==2.5.2
+ml_dtypes==0.6.0
+typing_extensions==4.16.0
+psutil==7.2.2              # popen-pool / rpc extras
+cloudpickle==3.1.2         # popen-pool / rpc extras
+tornado==6.5.8             # rpc extra
+# Only for CUDA targets (TVM compiles CUDA kernels through NVRTC); not needed by
+# the Rust tests.
+cuda-bindings==13.3.1; platform_system == "Linux" or platform_system == "Windows"
+
+# --- tests -----------------------------------------------------------------
+pytest==9.1.1
+pytest-xdist==3.8.0
+
+# --- Apache TVM (not pip-resolvable at main; built from source) -------------
+# The reference environment uses apache/tvm main @ b16cdecbd84b8405d77069c50f0233e909eafc00
+# with 3rdparty/tvm-ffi checked out to the same tvm-ffi commit as above:
+#   git clone --recursive https://github.com/apache/tvm.git <tvm>
+#   git -C <tvm>/3rdparty/tvm-ffi checkout 5c213498a72e003657a0522f29a538f9c5a5d346
+#   git -C <tvm>/3rdparty/tvm-ffi submodule update --init --recursive
+#   cp <tvm>/cmake/config.cmake <tvm>/build/   # then edit USE_LLVM / USE_CUDA etc.
+#   cmake -G Ninja -S <tvm> -B <tvm>/build && cmake --build <tvm>/build
+#   pip install --no-build-isolation <tvm> \
+#     -Ccmake.define.TVM_PACKAGE_EXTRA_LIBS="<tvm>/build/lib/libtvm_runtime_cuda.so;<tvm>/build/lib/libtvm_runtime_extra.so"
+# (drop TVM_PACKAGE_EXTRA_LIBS for a CPU-only build).  Installing as a regular
+# wheel puts the shared libraries in site-packages/tvm/lib, where build.rs finds
+# them; an editable install (build/lib) is found too.
