@@ -103,10 +103,11 @@ For a directly constructible node, generate:
   their layout is part of the supported ABI;
 - exact-width scalar types (`int` is `i32`, not `i64`);
 - open integer newtypes for native enum fields, with named associated constants
-  and raw conversion; a Rust `enum` is unsound when a newer C++ library can
-  produce an enumerator unknown to the generated crate; conversions from a
-  wider integer check only that the value fits the native width and must not
-  reject an otherwise representable unknown enumerator;
+  that preserve the exact C++ enumerator spelling, plus raw conversion; a Rust
+  `enum` is unsound when a newer C++ library can produce an enumerator unknown
+  to the generated crate; conversions from a wider integer check only that the
+  value fits the native width and must not reject an otherwise representable
+  unknown enumerator;
 - the reference wrapper with `ObjectArc`, read-only `Deref`, casts, and
   upcasts;
 - public physical fields, so `node.a` borrows through `Deref` and
@@ -155,7 +156,7 @@ facts by guessing:
 | --- | --- | --- |
 | Runtime type | type key, parent chain, reflected field names/schemas/flags, structural attributes | TVM FFI registry |
 | Native layout | finality, total size/alignment, ordered physical fields, exact C++ widths/offsets, and explicit vptr/STL/unreflected blockers | C++ build-generated layout data |
-| Rust mapping | object/reference names, module path, exact Rust type for every physical field, nullable/container mapping, and upcasts | reviewed mapping rules |
+| Rust mapping | C++ reference-handle names without local aliases, `Obj` storage names, module path, exact Rust type for every physical field, nullable/container mapping, and upcasts | reviewed mapping rules |
 
 For each type the generator first joins these sections by type key, verifies
 that the parent layout and every reflected field agree, and chooses exactly one
@@ -329,9 +330,9 @@ The current experiment still needs explicit decisions for:
 - constructor parameter type schemas, nullability/defaults, and validation
   semantics that should eventually be generated rather than handwritten;
 - build-configuration values used by constructor defaults;
-- enum names and values, including their underlying C++ width; generated
-  bindings represent these as open integer newtypes rather than closed Rust
-  enums;
+- enum names and values, including their exact C++ spelling and underlying
+  width; generated bindings represent these as open integer newtypes rather
+  than closed Rust enums;
 - `RValueRef<T>` code generation (the reusable runtime holder already exists).
 
 These gaps require metadata, reviewed handwritten implementations, or an ABI

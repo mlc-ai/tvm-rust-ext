@@ -19,9 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tvm_ffi::{
-    structural_walk, Map, Result, String as FfiString, WalkOrder, WalkResult, VALUE_ERROR,
-};
+use tvm_ffi::{structural_walk, Map, Result, String, WalkOrder, WalkResult, VALUE_ERROR};
 
 use crate::ir::{BaseFunc, GlobalVar, GlobalVarObj, IRModule};
 
@@ -105,9 +103,9 @@ pub fn prune_unreachable_functions_from_main(module: IRModule) -> Result<IRModul
 }
 
 fn has_external_linkage(function: &BaseFunc) -> Result<bool> {
-    let Some(symbol) = function.attrs.dict.get(&FfiString::from("global_symbol"))? else {
+    let Some(symbol) = function.attrs.dict.get(&String::from("global_symbol"))? else {
         return Ok(false);
     };
-    FfiString::try_from(symbol)?;
+    String::try_from(symbol)?;
     Ok(true)
 }

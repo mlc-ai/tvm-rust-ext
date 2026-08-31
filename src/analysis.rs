@@ -96,21 +96,21 @@ pub struct CallEffectKind(i32);
 #[allow(non_upper_case_globals)]
 impl CallEffectKind {
     /// The call is an expression annotation that behaves like an identity.
-    pub const ExprAnnotation: Self = Self(0);
+    pub const kExprAnnotation: Self = Self(0);
     /// The expression does not interact with external state.
-    pub const Pure: Self = Self(1);
+    pub const kPure: Self = Self(1);
     /// The expression may read external state but does not update it.
-    pub const ReadState: Self = Self(2);
+    pub const kReadState: Self = Self(2);
     /// The expression may update state or has unknown behavior.
-    pub const UpdateState: Self = Self(3);
-    /// The call carries special argument information.
-    pub const SpecialCallArg: Self = Self(4);
-    /// The call embeds opaque information and cannot be generated as code.
-    pub const EmbedInfo: Self = Self(5);
-    /// The call changes control flow.
-    pub const ControlJump: Self = Self(6);
+    pub const kUpdateState: Self = Self(3);
     /// C++ `kOpaque` is an alias of `kUpdateState`.
-    pub const OPAQUE: Self = Self::UpdateState;
+    pub const kOpaque: Self = Self::kUpdateState;
+    /// The call carries special argument information.
+    pub const kSpecialCallArg: Self = Self(4);
+    /// The call embeds opaque information and cannot be generated as code.
+    pub const kEmbedInfo: Self = Self(5);
+    /// The call changes control flow.
+    pub const kControlJump: Self = Self(6);
 
     /// Preserve an enumerator not yet known by this Rust binding.
     pub const fn from_raw(value: i32) -> Self {
@@ -124,7 +124,7 @@ impl CallEffectKind {
 
     /// Return whether discarding evaluation could remove a state update.
     pub fn may_update_state(self) -> bool {
-        self.0 >= Self::UpdateState.0
+        self.0 >= Self::kUpdateState.0
     }
 }
 
@@ -165,8 +165,8 @@ struct SideEffectAnalyzer {
 
 impl SideEffectAnalyzer {
     fn update(&mut self, kind: CallEffectKind) -> WalkResult {
-        let kind = if kind > CallEffectKind::UpdateState {
-            CallEffectKind::UpdateState
+        let kind = if kind > CallEffectKind::kUpdateState {
+            CallEffectKind::kUpdateState
         } else {
             kind
         };
@@ -182,12 +182,12 @@ impl SideEffectAnalyzer {
 #[tvm_ffi::dispatch(walk)]
 impl SideEffectAnalyzer {
     fn walk_buffer_load(&mut self, _node: &BufferLoadObj) -> WalkResult {
-        self.update(CallEffectKind::ReadState)
+        self.update(CallEffectKind::kReadState)
     }
 
     fn walk_call(&mut self, node: &CallObj) -> Result<WalkResult> {
         let Ok(op) = node.op.clone().try_cast::<Op>() else {
-            return Ok(self.update(CallEffectKind::UpdateState));
+            return Ok(self.update(CallEffectKind::kUpdateState));
         };
         let raw: i64 = tvm_ffi::cached_global_func!("ir.OpGetAttr")
             .call_tuple((op, tvm_ffi::String::from("TCallEffectKind")))?
@@ -199,7 +199,7 @@ impl SideEffectAnalyzer {
 /// Classify whether evaluating a primitive expression reads or updates external state.
 pub fn side_effect(expression: &PrimExpr) -> Result<CallEffectKind> {
     let mut analyzer = SideEffectAnalyzer {
-        kind: CallEffectKind::Pure,
+        kind: CallEffectKind::kPure,
     };
     structural_walk(expression, &mut analyzer, WalkOrder::PreOrder)?;
     Ok(analyzer.kind)
