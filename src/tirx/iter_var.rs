@@ -36,15 +36,15 @@ pub struct IterVarType(i32);
 
 #[allow(non_upper_case_globals)]
 impl IterVarType {
-    pub const DataParallel: Self = Self(0);
-    pub const ThreadIndex: Self = Self(1);
-    pub const CommutativeReduction: Self = Self(2);
-    pub const Ordered: Self = Self(3);
-    pub const Opaque: Self = Self(4);
-    pub const Unrolled: Self = Self(5);
-    pub const Vectorized: Self = Self(6);
-    pub const Parallelized: Self = Self(7);
-    pub const Tensorized: Self = Self(8);
+    pub const kDataPar: Self = Self(0);
+    pub const kThreadIndex: Self = Self(1);
+    pub const kCommReduce: Self = Self(2);
+    pub const kOrdered: Self = Self(3);
+    pub const kOpaque: Self = Self(4);
+    pub const kUnrolled: Self = Self(5);
+    pub const kVectorized: Self = Self(6);
+    pub const kParallelized: Self = Self(7);
+    pub const kTensorized: Self = Self(8);
 
     /// Preserve an enumerator not yet known by this Rust binding.
     pub const fn from_raw(value: i32) -> Self {

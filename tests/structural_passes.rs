@@ -27,8 +27,8 @@ use tvm::ir::{
 };
 use tvm::tirx::{
     Add, AddObj, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferLoad, BufferRegion, BufferStore,
-    BufferType, Evaluate, EvaluateObj, For as TirFor, IfThenElse, Iter, IterVar, IterVarType,
-    Layout, MatchBufferRegion, Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
+    BufferType, Evaluate, EvaluateObj, For, IfThenElse, Iter, IterVar, IterVarType, Layout,
+    MatchBufferRegion, Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -422,7 +422,7 @@ fn full_direct_constructors_preserve_source_spans() {
     let iter_var = IterVar::with_metadata(
         Some(iter_domain),
         variable.clone(),
-        IterVarType::DataParallel,
+        IterVarType::kDataPar,
         "",
         Some(&span),
     )
@@ -1023,11 +1023,10 @@ fn nested_loop_statement() -> Stmt {
     let inner = Var::new("j", "int32").unwrap();
     let sum = Add::new(outer.clone(), inner.clone()).unwrap();
     let inner_body: Stmt = Evaluate::new(Expr::from(sum)).unwrap().into();
-    let inner_loop: Stmt =
-        TirFor::serial(&inner, int_expression(1), int_expression(3), &inner_body)
-            .unwrap()
-            .into();
-    TirFor::serial(&outer, int_expression(0), int_expression(4), &inner_loop)
+    let inner_loop: Stmt = For::serial(&inner, int_expression(1), int_expression(3), &inner_body)
+        .unwrap()
+        .into();
+    For::serial(&outer, int_expression(0), int_expression(4), &inner_loop)
         .unwrap()
         .into()
 }
@@ -1039,7 +1038,7 @@ fn walk_and_visit_handle_real_tir_loop_scopes() {
 
     assert!(statement
         .clone()
-        .try_cast::<TirFor>()
+        .try_cast::<For>()
         .unwrap()
         .thread_binding
         .is_none());
@@ -1086,7 +1085,7 @@ fn mutate_can_limit_a_rewrite_to_loop_bodies() {
         .into();
     let inner_value: Expr = Sub::new(&sum, int_expression(0)).unwrap().into();
     let inner_body: Stmt = Evaluate::new(&inner_value).unwrap().into();
-    let inner_loop: Stmt = TirFor::serial(
+    let inner_loop: Stmt = For::serial(
         &inner_var,
         Sub::new(int_expression(1), int_expression(0)).unwrap(),
         Mul::new(int_expression(3), int_expression(1)).unwrap(),
@@ -1094,7 +1093,7 @@ fn mutate_can_limit_a_rewrite_to_loop_bodies() {
     )
     .unwrap()
     .into();
-    let statement: Stmt = TirFor::serial(
+    let statement: Stmt = For::serial(
         &outer_var,
         Add::new(int_expression(0), int_expression(0)).unwrap(),
         Add::new(int_expression(4), int_expression(0)).unwrap(),
@@ -1105,12 +1104,12 @@ fn mutate_can_limit_a_rewrite_to_loop_bodies() {
     let original = statement.clone();
     let mapped = transform::examples::simplify_neutral_elements_in_loop_bodies(statement)
         .unwrap()
-        .try_cast::<TirFor>()
+        .try_cast::<For>()
         .unwrap();
 
     assert!(mapped.min.clone().try_cast::<Add>().is_ok());
     assert!(mapped.extent.clone().try_cast::<Add>().is_ok());
-    let inner = mapped.body.clone().try_cast::<TirFor>().unwrap();
+    let inner = mapped.body.clone().try_cast::<For>().unwrap();
     assert_eq!(inner.min.clone().try_cast::<IntImm>().unwrap().value, 1);
     assert_eq!(inner.extent.clone().try_cast::<IntImm>().unwrap().value, 3);
 
@@ -1134,10 +1133,10 @@ fn mutate_can_limit_a_rewrite_to_loop_bodies() {
         object_pointer(&mapped_inner_var)
     );
 
-    let original_outer = original.try_cast::<TirFor>().unwrap();
+    let original_outer = original.try_cast::<For>().unwrap();
     assert!(original_outer.min.clone().try_cast::<Add>().is_ok());
     let original_inner = original_outer.body.clone();
-    let original_inner = original_inner.try_cast::<TirFor>().unwrap();
+    let original_inner = original_inner.try_cast::<For>().unwrap();
     assert!(original_inner.min.clone().try_cast::<Sub>().is_ok());
 }
 
@@ -1228,7 +1227,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
         typed_int_expression("int64", 8),
     )
     .unwrap();
-    let iter_var = IterVar::new(&axis_domain, &axis, IterVarType::DataParallel).unwrap();
+    let iter_var = IterVar::new(&axis_domain, &axis, IterVarType::kDataPar).unwrap();
     let converted_axis = PrimExprConvertible::from(iter_var.clone())
         .to_prim_expr()
         .unwrap();
@@ -1247,7 +1246,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let domainless_iter = IterVar::with_metadata(
         None,
         axis.clone(),
-        IterVarType::ThreadIndex,
+        IterVarType::kThreadIndex,
         "threadIdx.x",
         None,
     )
@@ -1355,7 +1354,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
     assert!(load.predicate.is_some());
     assert_eq!(object_pointer(&store.buffer), object_pointer(&buffer));
     assert!(store.predicate.is_some());
-    assert_eq!(iter_var.iter_type().unwrap(), IterVarType::DataParallel);
+    assert_eq!(iter_var.iter_type().unwrap(), IterVarType::kDataPar);
     assert_eq!(
         object_pointer(&iter_var.var().unwrap()),
         object_pointer(&axis)
@@ -1407,7 +1406,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     let store: Stmt = BufferStore::new(&buffer, &load, vec![index], None)
         .unwrap()
         .into();
-    let unit_loop: Stmt = TirFor::serial(
+    let unit_loop: Stmt = For::serial(
         &unit_var,
         typed_int_expression("int64", 2),
         typed_int_expression("int64", 1),
@@ -1415,7 +1414,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     )
     .unwrap()
     .into();
-    let outer_loop = TirFor::serial(
+    let outer_loop = For::serial(
         &outer_var,
         typed_int_expression("int64", 0),
         typed_int_expression("int64", 4),
@@ -1443,7 +1442,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let mapped_outer = mapped_function.body.clone().try_cast::<TirFor>().unwrap();
+    let mapped_outer = mapped_function.body.clone().try_cast::<For>().unwrap();
     let mapped_store = mapped_outer.body.clone().try_cast::<BufferStore>().unwrap();
     let mapped_index = mapped_store
         .indices
@@ -1547,7 +1546,7 @@ fn known_control_flow_simplification_matches_cpp_on_analyzed_constants() {
     let zero_extent: Expr = Sub::new(int_expression(2), int_expression(2))
         .unwrap()
         .into();
-    let empty_loop: Stmt = TirFor::serial(
+    let empty_loop: Stmt = For::serial(
         &loop_var,
         int_expression(0),
         &zero_extent,
@@ -1573,7 +1572,7 @@ fn known_control_flow_simplification_matches_cpp_on_analyzed_constants() {
         .into();
     assert_eq!(
         side_effect(&PrimExpr::try_from(&pure_expression).unwrap()).unwrap(),
-        CallEffectKind::Pure
+        CallEffectKind::kPure
     );
     let read_buffer_type =
         BufferType::new("global", "int32", vec![typed_int_expression("int64", 1)]).unwrap();
@@ -1584,14 +1583,14 @@ fn known_control_flow_simplification_matches_cpp_on_analyzed_constants() {
             .into();
     assert_eq!(
         side_effect(&PrimExpr::try_from(&read_expression).unwrap()).unwrap(),
-        CallEffectKind::ReadState
+        CallEffectKind::kReadState
     );
     let opaque_operator: Expr = GlobalVar::new("opaque_function").into();
     let opaque_call: Expr =
         Call::new(PrimType::new("int32").unwrap(), opaque_operator, Vec::new()).into();
     assert_eq!(
         side_effect(&PrimExpr::try_from(&opaque_call).unwrap()).unwrap(),
-        CallEffectKind::UpdateState
+        CallEffectKind::kUpdateState
     );
     let evaluations = SeqStmt::new(vec![
         Evaluate::new(&pure_expression).unwrap().into(),
@@ -1821,11 +1820,11 @@ fn unit_loop_elimination_preserves_annotated_loops() {
     )]
     .into_iter()
     .collect();
-    let loop_statement = TirFor::with_metadata(
+    let loop_statement = For::with_metadata(
         loop_var,
         typed_int_expression("int64", 7),
         typed_int_expression("int64", 1),
-        tvm::tirx::ForKind::Serial,
+        tvm::tirx::ForKind::kSerial,
         body,
         None,
         annotations,

@@ -163,10 +163,11 @@ a separately reviewed C++ ABI migration removes that blocker.
   constructor must reject a missing required handle.
 - C++ `int` and `enum class ... : int` use an `i32` representation, not `i64`.
 - Native enum fields use a `#[repr(transparent)]` integer newtype with named
-  constants, not a closed Rust `enum`; this keeps unknown values from a newer
-  C++ library representable without undefined behavior. A conversion from
-  `i64` checks only native-width narrowing; it does not reject an unknown value
-  that fits the underlying integer.
+  constants that preserve the exact C++ enumerator spelling, not a closed Rust
+  `enum`; this keeps unknown values from a newer C++ library representable
+  without undefined behavior. A conversion from `i64` checks only native-width
+  narrowing; it does not reject an unknown value that fits the underlying
+  integer.
 - Field order includes inherited physical fields before derived fields.
 - Representing inheritance as a nested Rust base is valid only when every
   derived C++ field offset agrees with that `#[repr(C)]` composition. C++ is

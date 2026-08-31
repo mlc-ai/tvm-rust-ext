@@ -26,7 +26,7 @@ use tvm_ffi::{
 
 use super::utils::int_value;
 use crate::ir::{Expr, Var};
-use crate::tirx::{For as TirFor, PrimFunc, Stmt};
+use crate::tirx::{For, PrimFunc, Stmt};
 
 #[derive(Default)]
 struct UnitLoopEliminator {
@@ -45,12 +45,12 @@ pub fn eliminate_unit_loops_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 #[tvm_ffi::dispatch(mutate)]
 impl UnitLoopEliminator {
-    fn mutate_loop(&mut self, value: TirFor, region: DefRegionKind) -> Result<Any> {
+    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Any> {
         let minimum = Expr::try_from(self.mutate(&value.min, region)?)?;
         let extent = Expr::try_from(self.mutate(&value.extent, region)?)?;
         let annotations = value.annotations.clone();
         let kind = value.kind;
-        let should_eliminate = kind != crate::tirx::ForKind::ThreadBinding
+        let should_eliminate = kind != crate::tirx::ForKind::kThreadBinding
             && int_value(&extent) == Some(1)
             && annotations.is_empty();
 
@@ -80,7 +80,7 @@ impl UnitLoopEliminator {
             .map(|step| self.mutate(step, region).and_then(Expr::try_from))
             .transpose()?;
 
-        Ok(Any::from(TirFor::with_metadata(
+        Ok(Any::from(For::with_metadata(
             loop_var,
             minimum,
             extent,

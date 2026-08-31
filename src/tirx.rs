@@ -882,11 +882,11 @@ pub struct ForKind(i32);
 
 #[allow(non_upper_case_globals)]
 impl ForKind {
-    pub const Serial: Self = Self(0);
-    pub const Parallel: Self = Self(1);
-    pub const Vectorized: Self = Self(2);
-    pub const Unrolled: Self = Self(3);
-    pub const ThreadBinding: Self = Self(4);
+    pub const kSerial: Self = Self(0);
+    pub const kParallel: Self = Self(1);
+    pub const kVectorized: Self = Self(2);
+    pub const kUnrolled: Self = Self(3);
+    pub const kThreadBinding: Self = Self(4);
 
     /// Preserve an enumerator not yet known by this Rust binding.
     pub const fn from_raw(value: i32) -> Self {
@@ -965,7 +965,7 @@ impl For {
             loop_var.into(),
             minimum.into(),
             extent.into(),
-            ForKind::Serial,
+            ForKind::kSerial,
             body.into(),
             None,
             Map::new(),
