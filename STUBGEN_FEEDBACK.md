@@ -239,8 +239,8 @@ existing TVM operation:
 
 | Class | Examples | Generated behavior |
 | --- | --- | --- |
-| Plain data node | `Span`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate`, `SBlock` | complete layout and direct Rust allocation |
-| Plain node with local validation | integer literals, binary ops, `SeqStmt`, `SBlockRealize` | direct allocation plus equivalent Rust validation |
+| Plain data node | `Span`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate` | complete layout and direct Rust allocation |
+| Plain node with local validation | integer literals, binary ops, `SeqStmt` | direct allocation plus equivalent Rust validation |
 | Native registry identity | `Axis` | emit an opaque wrapper and call the existing `tirx.AxisGet` singleton lookup |
 | Native interned identity | `SourceName` | emit an opaque wrapper and call the existing `ir.SourceName` lookup |
 | C++ polymorphic hierarchy | `Layout`, `PrimExprConvertible`, `IterVar`, `BufferRegion` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |

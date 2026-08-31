@@ -28,17 +28,15 @@ use crate::ir::{
     TupleType, Type, TypedVar, Var,
 };
 
-mod block;
 mod buffer;
+mod iter_var;
 
-pub use block::{
-    IterVar, IterVarObj, IterVarType, SBlock, SBlockObj, SBlockRealize, SBlockRealizeObj,
-};
 pub use buffer::{
     Axis, AxisObj, BufferLoad, BufferLoadObj, BufferRegion, BufferRegionObj, BufferStore,
     BufferStoreObj, BufferType, BufferTypeObj, BufferVar, Iter, IterObj, Layout, LayoutObj,
     MatchBufferRegion, MatchBufferRegionObj, TileLayout, TileLayoutObj,
 };
+pub use iter_var::{IterVar, IterVarObj, IterVarType};
 
 /// Checked scalar view over a `Var` whose expression type is `PrimType`.
 pub type PrimVar = TypedVar<PrimType>;

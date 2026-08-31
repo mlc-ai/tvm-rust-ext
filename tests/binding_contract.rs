@@ -32,9 +32,8 @@ use tvm::tirx::{
     BufferLoadObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
     BufferTypeObj, BufferVar, EQObj, Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse,
     IfThenElseObj, Iter, IterObj, IterVar, IterVarObj, IterVarType, Layout, LayoutObj,
-    MatchBufferRegion, MatchBufferRegionObj, Mul, MulObj, PrimFunc, PrimFuncObj, PrimVar, SBlock,
-    SBlockObj, SBlockRealize, SBlockRealizeObj, SeqStmt, SeqStmtObj, Stmt, StmtObj, StringImm,
-    StringImmObj, Sub, SubObj, TileLayoutObj,
+    MatchBufferRegion, MatchBufferRegionObj, Mul, MulObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt,
+    SeqStmtObj, Stmt, StmtObj, StringImm, StringImmObj, Sub, SubObj, TileLayoutObj,
 };
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{Any, Array, DLDataType, Map, Object, ObjectCore, ObjectRefCore, String};
@@ -49,14 +48,9 @@ const DEF_RECURSIVE: i64 =
 
 const SCHEMA_ANY_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"Any"}]}"#;
 const SCHEMA_ANY: &str = r#"{"type":"Any"}"#;
-const SCHEMA_ARRAY_BUFFER_REGION: &str =
-    r#"{"type":"ffi.Array","args":[{"type":"tirx.BufferRegion"}]}"#;
 const SCHEMA_ARRAY_EXPR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Expr"}]}"#;
 const SCHEMA_ARRAY_GLOBAL_INFO_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"ir.GlobalInfo"}]}]}"#;
 const SCHEMA_ARRAY_ITER: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Iter"}]}"#;
-const SCHEMA_ARRAY_ITER_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.IterVar"}]}"#;
-const SCHEMA_ARRAY_MATCH_BUFFER: &str =
-    r#"{"type":"ffi.Array","args":[{"type":"tirx.MatchBufferRegion"}]}"#;
 const SCHEMA_ARRAY_RANGE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Range"}]}"#;
 const SCHEMA_ARRAY_STMT: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Stmt"}]}"#;
 const SCHEMA_ARRAY_STRING_IMM: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.StringImm"}]}"#;
@@ -83,7 +77,6 @@ const SCHEMA_OPTIONAL_ITER_VAR: &str = r#"{"type":"Optional","args":[{"type":"ti
 const SCHEMA_OPTIONAL_STMT: &str = r#"{"type":"Optional","args":[{"type":"tirx.Stmt"}]}"#;
 const SCHEMA_PRIM_TYPE: &str = r#"{"type":"ir.PrimType"}"#;
 const SCHEMA_RANGE: &str = r#"{"type":"ir.Range"}"#;
-const SCHEMA_SBLOCK: &str = r#"{"type":"tirx.SBlock"}"#;
 const SCHEMA_SOURCE_MAP: &str = r#"{"type":"ir.SourceMap"}"#;
 const SCHEMA_SOURCE_NAME: &str = r#"{"type":"ir.SourceName"}"#;
 const SCHEMA_SPAN: &str = r#"{"type":"ir.Span"}"#;
@@ -461,30 +454,6 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("span", DEFAULT | IGNORE, SCHEMA_SPAN),
         ],
     );
-    assert_contract::<SBlockObj, StmtObj>(
-        true,
-        Some(Tree),
-        &[
-            ("iter_vars", DEF_RECURSIVE, SCHEMA_ARRAY_ITER_VAR),
-            ("reads", 0, SCHEMA_ARRAY_BUFFER_REGION),
-            ("writes", 0, SCHEMA_ARRAY_BUFFER_REGION),
-            ("name_hint", IGNORE, SCHEMA_STRING),
-            ("alloc_buffers", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
-            ("match_buffers", 0, SCHEMA_ARRAY_MATCH_BUFFER),
-            ("annotations", 0, SCHEMA_ANY_MAP),
-            ("init", 0, SCHEMA_OPTIONAL_STMT),
-            ("body", 0, SCHEMA_STMT),
-        ],
-    );
-    assert_contract::<SBlockRealizeObj, StmtObj>(
-        true,
-        Some(Tree),
-        &[
-            ("iter_values", 0, SCHEMA_ARRAY_EXPR),
-            ("predicate", 0, SCHEMA_EXPR),
-            ("block", 0, SCHEMA_SBLOCK),
-        ],
-    );
 }
 
 macro_rules! assert_complete_allocator {
@@ -536,8 +505,6 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(BufferLoad::from_complete_fields: fn(Option<Span>, PrimType, BufferVar, Array<PrimExpr>, Option<PrimExpr>) -> BufferLoad);
     assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>, Option<PrimExpr>) -> BufferStore);
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
-    assert_complete_allocator!(SBlock::from_complete_fields: fn(Option<Span>, Array<IterVar>, Array<BufferRegion>, Array<BufferRegion>, String, Array<BufferVar>, Array<MatchBufferRegion>, Map<String, Any>, Option<Stmt>, Stmt) -> SBlock);
-    assert_complete_allocator!(SBlockRealize::from_complete_fields: fn(Option<Span>, Array<PrimExpr>, PrimExpr, SBlock) -> SBlockRealize);
 }
 
 #[test]
