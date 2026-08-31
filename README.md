@@ -162,6 +162,20 @@ and `libtvm_compiler` agree on the object ABI.  Any Python environment works
 cargo test
 ```
 
+`cargo build` also produces a shared library, `target/<profile>/libtvm.so`
+(`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:
+[`src/exports.rs`](src/exports.rs) exports the Rust passes as
+`__tvm_ffi_<name>` symbols, so any tvm-ffi host can load it.  From Python:
+
+```bash
+cargo build
+python python/demo.py
+```
+
+[`python/demo.py`](python/demo.py) opens the library with
+`tvm_ffi.load_module`, builds a `PrimFunc` with TVMScript, runs the exported
+passes on it, and composes an exported pass object with `tvm.transform`.
+
 Overrides: `TVM_LIBRARY_PATH` (directory holding the TVM libraries),
 `TVM_COMPILER_LIBRARY` (explicit compiler library path), `TVM_PYTHON`
 (interpreter used by `build.rs`), and `TVM_FFI_CONFIG` (path of

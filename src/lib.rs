@@ -33,6 +33,7 @@
 
 #[doc(hidden)]
 pub mod analysis;
+pub mod exports;
 pub mod ir;
 pub mod libinfo;
 pub mod tirx;
