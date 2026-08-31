@@ -26,10 +26,9 @@ use tvm::ir::{
     PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName, Span, Type, Var,
 };
 use tvm::tirx::{
-    Add, AddObj, And, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferLoad, BufferRegion,
-    BufferStore, BufferType, Evaluate, EvaluateObj, For as TirFor, IfThenElse, Iter, IterVar,
-    IterVarType, Layout, MatchBufferRegion, Mul, PrimFunc, SBlock, SBlockRealize, SeqStmt, Stmt,
-    Sub, TileLayout, EQ,
+    Add, AddObj, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferLoad, BufferRegion, BufferStore,
+    BufferType, Evaluate, EvaluateObj, For as TirFor, IfThenElse, Iter, IterVar, IterVarType,
+    Layout, MatchBufferRegion, Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -849,232 +848,6 @@ fn decorate_device_scope_matches_cpp() {
 }
 
 #[test]
-fn lower_init_block_matches_cpp() {
-    load_tvm_compiler();
-    let first_axis = Var::new("k", "int64").unwrap();
-    let first_domain = Range::from_min_extent(
-        typed_int_expression("int64", 0),
-        typed_int_expression("int64", 8),
-    )
-    .unwrap();
-    let second_axis = Var::new("l", "int64").unwrap();
-    let second_domain = Range::from_min_extent(
-        typed_int_expression("int64", 2),
-        typed_int_expression("int64", 4),
-    )
-    .unwrap();
-    let reduction_block = SBlock::with_metadata(
-        vec![
-            IterVar::new(
-                &first_domain,
-                &first_axis,
-                IterVarType::CommutativeReduction,
-            )
-            .unwrap(),
-            IterVar::new(
-                &second_domain,
-                &second_axis,
-                IterVarType::CommutativeReduction,
-            )
-            .unwrap(),
-        ],
-        Vec::new(),
-        Vec::new(),
-        "reduction",
-        Evaluate::from_i64(2).unwrap().into(),
-        Some(Evaluate::from_i64(1).unwrap().into()),
-        Vec::new(),
-        Vec::new(),
-        Map::new(),
-        None,
-    );
-    let reduction_realize = SBlockRealize::new(
-        vec![
-            typed_int_expression("int64", 3),
-            typed_int_expression("int64", 4),
-        ],
-        typed_int_expression("bool", 1),
-        reduction_block,
-    )
-    .unwrap();
-
-    let data_axis = Var::new("i", "int64").unwrap();
-    let data_domain = Range::from_min_extent(
-        typed_int_expression("int64", 0),
-        typed_int_expression("int64", 8),
-    )
-    .unwrap();
-    let data_block = SBlock::with_metadata(
-        vec![IterVar::new(&data_domain, &data_axis, IterVarType::DataParallel).unwrap()],
-        Vec::new(),
-        Vec::new(),
-        "data_parallel",
-        Evaluate::from_i64(4).unwrap().into(),
-        Some(Evaluate::from_i64(3).unwrap().into()),
-        Vec::new(),
-        Vec::new(),
-        Map::new(),
-        None,
-    );
-    let data_realize = SBlockRealize::new(
-        vec![typed_int_expression("int64", 5)],
-        typed_int_expression("bool", 1),
-        data_block,
-    )
-    .unwrap();
-    let no_init_realize = SBlockRealize::new(
-        Vec::new(),
-        typed_int_expression("bool", 1),
-        SBlock::new("no_init", Evaluate::from_i64(6).unwrap()),
-    )
-    .unwrap();
-    let module = module_from_named_prim_funcs(vec![
-        (
-            "reduction",
-            PrimFunc::from_body(&reduction_realize).unwrap(),
-        ),
-        ("data_parallel", PrimFunc::from_body(&data_realize).unwrap()),
-        ("no_init", PrimFunc::from_body(&no_init_realize).unwrap()),
-    ]);
-
-    let rust_result = transform::lower_init_block()
-        .unwrap()
-        .run(module.clone())
-        .unwrap();
-    let cpp_result = cpp_pass("s_tir.transform.LowerInitBlock")
-        .run(module)
-        .unwrap();
-    assert_structural_equal(&rust_result, &cpp_result);
-
-    let mapped_function = rust_result
-        .functions
-        .iter()
-        .find(|(global, _)| global.name_hint.as_str() == "reduction")
-        .unwrap()
-        .1
-        .try_cast::<PrimFunc>()
-        .unwrap();
-    let mapped_realize = mapped_function
-        .body
-        .clone()
-        .try_cast::<SBlockRealize>()
-        .unwrap();
-    assert!(mapped_realize.block.init.is_none());
-    let sequence = mapped_realize
-        .block
-        .body
-        .clone()
-        .try_cast::<SeqStmt>()
-        .unwrap();
-    let conditional = sequence
-        .seq
-        .get(0)
-        .unwrap()
-        .try_cast::<IfThenElse>()
-        .unwrap();
-    let condition = conditional.condition.clone().try_cast::<And>().unwrap();
-    assert!(condition.a.clone().try_cast::<EQ>().is_ok());
-    assert!(condition.b.clone().try_cast::<EQ>().is_ok());
-}
-
-#[test]
-fn convert_blocks_to_opaque_matches_cpp() {
-    load_tvm_compiler();
-    let buffer_type =
-        BufferType::new("global", "int32", vec![typed_int_expression("int64", 8)]).unwrap();
-    let buffer = buffer_type.new_var("A");
-    let axis = Var::new("vi", "int64").unwrap();
-    let domain = Range::from_min_extent(
-        typed_int_expression("int64", 0),
-        typed_int_expression("int64", 8),
-    )
-    .unwrap();
-    let iter_var = IterVar::new(&domain, &axis, IterVarType::DataParallel).unwrap();
-    let load = BufferLoad::new(&buffer, vec![axis.clone().into()], None).unwrap();
-    let store = BufferStore::new(&buffer, load, vec![axis.clone().into()], None).unwrap();
-    let region = BufferRegion::new(
-        &buffer,
-        vec![Range::from_min_extent(axis.clone(), typed_int_expression("int64", 1)).unwrap()],
-    )
-    .unwrap();
-    let block = SBlock::with_metadata(
-        vec![iter_var],
-        vec![region.clone()],
-        vec![region],
-        "elementwise",
-        store.into(),
-        None,
-        Vec::new(),
-        Vec::new(),
-        Map::new(),
-        None,
-    );
-    let realize = SBlockRealize::new(
-        vec![typed_int_expression("int64", 4)],
-        typed_int_expression("bool", 1),
-        block,
-    )
-    .unwrap();
-    let function = PrimFunc::new(vec![buffer.into()], &realize).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result = transform::convert_blocks_to_opaque()
-        .unwrap()
-        .run(module.clone())
-        .unwrap();
-    let cpp_result = cpp_pass("s_tir.transform.ConvertBlocksToOpaque")
-        .run(module)
-        .unwrap();
-    assert_structural_equal(&rust_result, &cpp_result);
-
-    let mapped_function = rust_result
-        .functions
-        .iter()
-        .next()
-        .unwrap()
-        .1
-        .try_cast::<PrimFunc>()
-        .unwrap();
-    let mapped_realize = mapped_function
-        .body
-        .clone()
-        .try_cast::<SBlockRealize>()
-        .unwrap();
-    assert!(mapped_realize.iter_values.is_empty());
-    assert!(mapped_realize.block.iter_vars.is_empty());
-    let store = mapped_realize
-        .block
-        .body
-        .clone()
-        .try_cast::<BufferStore>()
-        .unwrap();
-    assert_eq!(
-        store
-            .indices
-            .get(0)
-            .unwrap()
-            .try_cast::<IntImm>()
-            .unwrap()
-            .value,
-        4
-    );
-    let read_region = mapped_realize.block.reads.get(0).unwrap();
-    assert_eq!(
-        read_region
-            .region()
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .min
-            .clone()
-            .try_cast::<IntImm>()
-            .unwrap()
-            .value,
-        4
-    );
-}
-
-#[test]
 fn structural_map_preserves_map_keys_and_maps_only_values() {
     load_tvm_compiler();
     let key = GlobalVar::new("main");
@@ -1369,7 +1142,7 @@ fn mutate_can_limit_a_rewrite_to_loop_bodies() {
 }
 
 #[test]
-fn buffer_and_block_bindings_round_trip_cpp_objects() {
+fn buffer_bindings_round_trip_cpp_objects() {
     load_tvm_compiler();
 
     // A C++-created Tensor is consumed through its OpaqueExpr base, then used
@@ -1558,35 +1331,7 @@ fn buffer_and_block_bindings_round_trip_cpp_objects() {
         object_pointer(&match_buffer.source),
         object_pointer(&region)
     );
-    let annotations: Map<tvm::tvm_ffi::String, Any> = [
-        (tvm::tvm_ffi::String::from("pipeline"), Any::from(2i64)),
-        (
-            tvm::tvm_ffi::String::from("tag"),
-            Any::from(tvm::tvm_ffi::String::from("copy")),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let block = SBlock::with_metadata(
-        vec![iter_var],
-        vec![region.clone()],
-        vec![region],
-        "copy",
-        store.clone().into(),
-        None,
-        Vec::new(),
-        Vec::new(),
-        annotations,
-        None,
-    );
-    assert_eq!(block.annotations.len(), 2);
-    let realization = SBlockRealize::new(
-        vec![typed_int_expression("int64", 0)],
-        typed_int_expression("bool", 1),
-        &block,
-    )
-    .unwrap();
-    let function = PrimFunc::new(vec![buffer.clone().into()], &realization).unwrap();
+    let function = PrimFunc::new(vec![buffer.clone().into()], store.clone()).unwrap();
 
     assert_eq!(buffer_type.dtype.dtype.bits, 32);
     assert_eq!(buffer_type.storage_scope.as_str(), "global");
@@ -1610,19 +1355,13 @@ fn buffer_and_block_bindings_round_trip_cpp_objects() {
     assert!(load.predicate.is_some());
     assert_eq!(object_pointer(&store.buffer), object_pointer(&buffer));
     assert!(store.predicate.is_some());
-    assert_eq!(block.name_hint.as_str(), "copy");
-    assert_eq!(block.iter_vars.len(), 1);
-    let reflected_axis = block.iter_vars.get(0).unwrap();
+    assert_eq!(iter_var.iter_type().unwrap(), IterVarType::DataParallel);
     assert_eq!(
-        reflected_axis.iter_type().unwrap(),
-        IterVarType::DataParallel
-    );
-    assert_eq!(
-        object_pointer(&reflected_axis.var().unwrap()),
+        object_pointer(&iter_var.var().unwrap()),
         object_pointer(&axis)
     );
     assert_eq!(
-        reflected_axis
+        iter_var
             .dom()
             .unwrap()
             .as_ref()
@@ -1634,13 +1373,8 @@ fn buffer_and_block_bindings_round_trip_cpp_objects() {
             .value,
         8
     );
-    assert_eq!(block.reads.len(), 1);
-    assert_eq!(block.writes.len(), 1);
-    assert_eq!(realization.block.name_hint.as_str(), "copy");
 
     let statistics = node_statistics(&function).unwrap();
-    assert_eq!(statistics.blocks, 1);
-    assert_eq!(statistics.block_realizations, 1);
     assert_eq!(statistics.buffer_loads, 1);
     assert_eq!(statistics.buffer_stores, 1);
     assert_eq!(

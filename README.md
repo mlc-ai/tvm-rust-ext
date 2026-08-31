@@ -69,7 +69,7 @@ stubgen milestone so it can answer additional pass-authoring questions:
 - Common IR includes expressions, variables, calls, types, attributes, source
   spans, functions, and modules.
 - TIR includes arithmetic, statements, conditionals, loops, buffers,
-  load/store accesses, scheduling blocks, block realizations, and PrimFuncs.
+  load/store accesses, and PrimFuncs.
 
 The main stubgen acceptance path uses the two framework-controlled APIs:
 

@@ -134,9 +134,9 @@ Broader pass behavior is in
 | --- | --- | --- |
 | Complete ordinary data layout | `Expr`, `Var`, `IntImm`, `Add`, `Stmt`, `Evaluate`, `Span`, `Range` | **GENERATE / verified** |
 | Owning object reference and checked casts | all reference wrappers | **GENERATE / verified** |
-| Direct scalar/object/optional/array/map fields | `IntImm`, `Call`, `For`, `SBlock` | **GENERATE / verified** |
+| Direct scalar/object/optional/array/map fields | `IntImm`, `Call`, `For` | **GENERATE / verified** |
 | Heterogeneous `Array<Any>` / `Map<K, Any>` | schedule values, `DictAttrs`, annotations | **RUNTIME / verified via shared container-element support** |
-| Direct construction with validation | `IntImm`, binary arithmetic, `SeqStmt`, `SBlockRealize` | **GENERATE or reviewed template** |
+| Direct construction with validation | `IntImm`, binary arithmetic, `SeqStmt` | **GENERATE or reviewed template** |
 | Complete layout, build-dependent defaults | `BufferType` | **handwritten Rust semantics + Rust allocation / verified** |
 | Native registry identity | `Axis` | **opaque wrapper + existing `tirx.AxisGet` singleton lookup / verified** |
 | Native interned identity | `SourceName` | **opaque wrapper + existing `ir.SourceName` lookup / verified** |

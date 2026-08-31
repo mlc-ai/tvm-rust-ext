@@ -26,7 +26,7 @@ use tvm_ffi::{
 use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, VarObj};
 use crate::tirx::{
     AddObj, AssertStmtObj, BufferLoadObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj,
-    MulObj, SBlockObj, SBlockRealizeObj, SeqStmtObj, StmtObj, SubObj,
+    MulObj, SeqStmtObj, StmtObj, SubObj,
 };
 
 /// Opaque Rust view of TVM's stateful arithmetic analyzer.
@@ -242,8 +242,6 @@ pub struct NodeStatistics {
     pub loops: usize,
     pub buffer_loads: usize,
     pub buffer_stores: usize,
-    pub blocks: usize,
-    pub block_realizations: usize,
 }
 
 #[tvm_ffi::dispatch(walk)]
@@ -281,18 +279,6 @@ impl NodeStatistics {
     fn walk_buffer_store(&mut self, _node: &BufferStoreObj) -> WalkResult {
         self.statements += 1;
         self.buffer_stores += 1;
-        WalkResult::Advance
-    }
-
-    fn walk_block(&mut self, _node: &SBlockObj) -> WalkResult {
-        self.statements += 1;
-        self.blocks += 1;
-        WalkResult::Advance
-    }
-
-    fn walk_block_realization(&mut self, _node: &SBlockRealizeObj) -> WalkResult {
-        self.statements += 1;
-        self.block_realizations += 1;
         WalkResult::Advance
     }
 

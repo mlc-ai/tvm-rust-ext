@@ -62,6 +62,9 @@ fn missing_library_reports_searched_directories() {
     assert_eq!(error.file_name, "libtvm_does_not_exist.so");
     assert!(!error.searched.is_empty());
     let message = error.to_string();
-    assert!(message.contains("cannot find libtvm_does_not_exist.so"), "{message}");
+    assert!(
+        message.contains("cannot find libtvm_does_not_exist.so"),
+        "{message}"
+    );
     assert!(message.contains("searched:"), "{message}");
 }

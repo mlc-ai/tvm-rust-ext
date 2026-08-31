@@ -49,7 +49,10 @@ use crate::transform::{self, examples};
 
 // PrimFunc -> PrimFunc transformations.
 tvm_ffi_dll_export_typed_func!(simplify_add_zero, examples::simplify_add_zero_prim_func);
-tvm_ffi_dll_export_typed_func!(fold_integer_constants, examples::fold_integer_constants_prim_func);
+tvm_ffi_dll_export_typed_func!(
+    fold_integer_constants,
+    examples::fold_integer_constants_prim_func
+);
 tvm_ffi_dll_export_typed_func!(
     simplify_neutral_elements,
     examples::simplify_neutral_elements_prim_func
@@ -58,13 +61,11 @@ tvm_ffi_dll_export_typed_func!(
     simplify_known_control_flow,
     examples::simplify_known_control_flow_prim_func
 );
-tvm_ffi_dll_export_typed_func!(eliminate_unit_loops, examples::eliminate_unit_loops_prim_func);
-tvm_ffi_dll_export_typed_func!(skip_assert, transform::skip_assert_prim_func);
 tvm_ffi_dll_export_typed_func!(
-    convert_blocks_to_opaque,
-    transform::convert_blocks_to_opaque_prim_func
+    eliminate_unit_loops,
+    examples::eliminate_unit_loops_prim_func
 );
-tvm_ffi_dll_export_typed_func!(lower_init_block, transform::lower_init_block_prim_func);
+tvm_ffi_dll_export_typed_func!(skip_assert, transform::skip_assert_prim_func);
 tvm_ffi_dll_export_typed_func!(
     decorate_device_scope,
     transform::decorate_device_scope_prim_func
@@ -81,8 +82,6 @@ tvm_ffi_dll_export_typed_func!(
 // TVM's pass infrastructure (`tvm.transform.Sequential`, `PassContext`, ...).
 tvm_ffi_dll_export_typed_func!(skip_assert_pass, transform::skip_assert);
 tvm_ffi_dll_export_typed_func!(annotate_entry_func_pass, transform::annotate_entry_func);
-tvm_ffi_dll_export_typed_func!(convert_blocks_to_opaque_pass, transform::convert_blocks_to_opaque);
-tvm_ffi_dll_export_typed_func!(lower_init_block_pass, transform::lower_init_block);
 tvm_ffi_dll_export_typed_func!(decorate_device_scope_pass, transform::decorate_device_scope);
 
 // Analyses.
