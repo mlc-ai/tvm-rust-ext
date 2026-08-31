@@ -17,20 +17,13 @@
  * under the License.
  */
 
-use std::sync::OnceLock;
-
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldInfo, TVMFFIGetTypeInfo, TVMFFITypeInfo};
 use tvm::tvm_ffi::ObjectCore;
-use tvm::tvm_ffi::{AnyCompatible, AnyView, Function, Module, ObjectArc, ObjectRefCore, String};
+use tvm::tvm_ffi::{AnyCompatible, AnyView, Function, ObjectArc, ObjectRefCore, String};
 
-static TVM_COMPILER: OnceLock<Module> = OnceLock::new();
-
+/// Load `libtvm_compiler` from the `apache-tvm` pip package (see `tvm::libinfo`).
 pub fn load_tvm_compiler() {
-    TVM_COMPILER.get_or_init(|| {
-        let library = std::env::var_os("TVM_COMPILER_LIBRARY")
-            .expect("TVM_COMPILER_LIBRARY must point to the built TVM compiler shared library");
-        Module::load_from_file(library.to_string_lossy()).unwrap()
-    });
+    tvm::libinfo::load_compiler().expect("failed to load the TVM compiler library");
 }
 
 #[allow(dead_code)]

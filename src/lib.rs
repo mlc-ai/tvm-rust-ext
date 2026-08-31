@@ -26,10 +26,15 @@
 //! changing native identity, ownership, or virtual ABI. All objects
 //! share the FFI header and runtime type table for ownership, checked casts, and
 //! structural traversal.
+//!
+//! The native libraries come from the `apache-tvm-ffi` and `apache-tvm` pip
+//! packages installed in the active Python environment; see [`libinfo`] and
+//! `build.rs`.  No TVM or tvm-ffi sources are vendored.
 
 #[doc(hidden)]
 pub mod analysis;
 pub mod ir;
+pub mod libinfo;
 pub mod tirx;
 pub mod transform;
 
