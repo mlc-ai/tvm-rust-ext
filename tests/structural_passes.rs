@@ -855,7 +855,7 @@ fn structural_map_preserves_map_keys_and_maps_only_values() {
     let input = Map::from_iter([(key, int_expression(7))]);
     let mapped = structural_map(
         input,
-        |value: IntImm| -> Result<Any> { Ok(Any::from(IntImm::new("int32", value.value + 1)?)) },
+        |value: IntImm| -> Result<IntImm> { IntImm::new("int32", value.value + 1) },
         WalkOrder::PostOrder,
     )
     .and_then(Map::<GlobalVar, Expr>::try_from)
@@ -874,7 +874,7 @@ fn structural_map_reuses_a_uniquely_owned_array_container() {
     let input_pointer = object_pointer(&input);
     let mapped = structural_map(
         input,
-        |value: IntImm| -> Result<Any> { Ok(Any::from(IntImm::new("int32", value.value + 1)?)) },
+        |value: IntImm| -> Result<IntImm> { IntImm::new("int32", value.value + 1) },
         WalkOrder::PostOrder,
     )
     .and_then(tvm::tvm_ffi::Array::<Expr>::try_from)
@@ -951,11 +951,11 @@ struct RenameVariables {
 
 #[dispatch(map)]
 impl RenameVariables {
-    fn map_variable(&mut self, variable: Var, kind: DefRegionKind) -> Result<Any> {
+    fn map_variable(&mut self, variable: Var, kind: DefRegionKind) -> Result<Var> {
         self.callback_calls += 1;
         self.regions.push(kind);
         let name = format!("{}_mapped", variable.name.as_str());
-        Ok(Any::from(Var::with_type(&name, &variable.ty)))
+        Ok(Var::with_type(&name, &variable.ty))
     }
 }
 
@@ -987,14 +987,14 @@ struct ReplaceAddProbe {
 
 #[dispatch(map)]
 impl ReplaceAddProbe {
-    fn map_add(&mut self, _value: Add) -> Result<Any> {
+    fn map_add(&mut self, _value: Add) -> Result<IntImm> {
         self.additions += 1;
-        Ok(Any::from(IntImm::new("int32", 0)?))
+        IntImm::new("int32", 0)
     }
 
-    fn map_integer(&mut self, value: IntImm) -> Any {
+    fn map_integer(&mut self, value: IntImm) -> IntImm {
         self.integers += 1;
-        Any::from(value)
+        value
     }
 }
 

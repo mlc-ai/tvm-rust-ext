@@ -19,13 +19,11 @@
 
 use std::collections::HashMap;
 
-use tvm_ffi::{
-    structural_mutate, Any, AnyCompatible, DefRegionKind, ObjectIdentity, Result, StructuralMutator,
-};
+use tvm_ffi::{structural_mutate, DefRegionKind, ObjectIdentity, Result, StructuralMutator};
 
 use super::utils::int_value;
 use crate::ir::{Expr, Var};
-use crate::tirx::{For, PrimFunc};
+use crate::tirx::{For, PrimFunc, Stmt};
 
 #[derive(Default)]
 struct UnitLoopEliminator {
@@ -44,7 +42,7 @@ pub fn eliminate_unit_loops_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 #[tvm_ffi::dispatch(mutate)]
 impl UnitLoopEliminator {
-    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Any> {
+    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Stmt> {
         let minimum = Expr::try_from(self.mutate(&value.min, region)?)?;
         let extent = Expr::try_from(self.mutate(&value.extent, region)?)?;
         let should_eliminate = value.kind != crate::tirx::ForKind::kThreadBinding
@@ -63,16 +61,18 @@ impl UnitLoopEliminator {
                     self.replacements.remove(&key);
                 }
             }
-            return body_result;
+            return body_result.and_then(Stmt::try_from);
         }
 
         self.default_mutate_value(&value, region)
+            .and_then(Stmt::try_from)
     }
 
-    fn mutate_variable(&mut self, value: Var, region: DefRegionKind) -> Result<Any> {
+    fn mutate_variable(&mut self, value: Var, region: DefRegionKind) -> Result<Expr> {
         if let Some(replacement) = self.replacements.get(&ObjectIdentity::of(&value)) {
-            return Ok(replacement.to_any());
+            return Ok(replacement.clone());
         }
         self.default_mutate_value(&value, region)
+            .and_then(Expr::try_from)
     }
 }

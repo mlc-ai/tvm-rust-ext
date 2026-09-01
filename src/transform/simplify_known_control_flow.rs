@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_map, Any, ObjectRefCast, Result, WalkOrder};
+use tvm_ffi::{structural_map, ObjectRefCast, Result, WalkOrder};
 
 use super::utils::{int_value, LazyAnalyzer};
 use crate::analysis::side_effect;
@@ -55,14 +55,14 @@ impl KnownControlFlowSimplifier {
 
 #[tvm_ffi::dispatch(map)]
 impl KnownControlFlowSimplifier {
-    fn map_evaluation(&mut self, value: Evaluate) -> Result<Any> {
+    fn map_evaluation(&mut self, value: Evaluate) -> Result<Stmt> {
         if int_value(&value.value).is_some() || !expression_may_update_state(&value.value)? {
-            return Ok(Any::from(no_op()?));
+            return no_op();
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 
-    fn map_conditional(&mut self, value: IfThenElse) -> Result<Any> {
+    fn map_conditional(&mut self, value: IfThenElse) -> Result<Stmt> {
         if let Some(condition) = self.known_integer(&value.condition)? {
             let selected = if condition != 0 {
                 value.then_case.clone()
@@ -72,7 +72,7 @@ impl KnownControlFlowSimplifier {
                     None => no_op()?,
                 }
             };
-            return Ok(Any::from(canonical_no_op(selected)?));
+            return canonical_no_op(selected);
         }
 
         let no_op_then = is_no_op(&value.then_case);
@@ -81,34 +81,35 @@ impl KnownControlFlowSimplifier {
             None => true,
         };
         if no_op_then && no_op_else {
-            return Ok(Any::from(self.preserve_update_or_no_op(&value.condition)?));
+            return self.preserve_update_or_no_op(&value.condition);
         }
         if let Some(else_case) = &value.else_case {
             if is_no_op(else_case) {
-                return Ok(Any::from(Stmt::from(IfThenElse::with_span(
+                return Ok(IfThenElse::with_span(
                     &value.condition,
                     &value.then_case,
                     None,
                     value.span.as_ref(),
-                )?)));
+                )?
+                .into());
             }
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 
-    fn map_for(&mut self, value: For) -> Result<Any> {
+    fn map_for(&mut self, value: For) -> Result<Stmt> {
         let extent = self.known_integer(&value.extent)?;
         if extent == Some(0) {
-            return Ok(Any::from(no_op()?));
+            return no_op();
         }
         if is_no_op(&value.body) && self.known_integer(&value.min)?.is_some() && extent.is_some() {
-            return Ok(Any::from(no_op()?));
+            return no_op();
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 
-    fn map_sequence(&mut self, value: SeqStmt) -> Result<Any> {
-        value.flatten().map(Any::from)
+    fn map_sequence(&mut self, value: SeqStmt) -> Result<Stmt> {
+        value.flatten()
     }
 }
 

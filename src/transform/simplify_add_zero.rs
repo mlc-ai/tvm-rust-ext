@@ -17,10 +17,10 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_map, Any, AnyCompatible, Result, WalkOrder};
+use tvm_ffi::{structural_map, Result, WalkOrder};
 
 use super::utils::int_value;
-use crate::ir::{Expr, IRModule};
+use crate::ir::{Expr, IRModule, PrimExpr};
 use crate::tirx::{Add, PrimFunc};
 
 /// Remove additions whose left or right operand is integer zero.
@@ -52,13 +52,13 @@ struct AddZeroSimplifier;
 
 #[tvm_ffi::dispatch(map)]
 impl AddZeroSimplifier {
-    fn map_add(&mut self, value: Add) -> Any {
+    fn map_add(&mut self, value: Add) -> PrimExpr {
         if int_value(&value.a) == Some(0) {
-            return value.b.to_any();
+            return value.b.clone();
         }
         if int_value(&value.b) == Some(0) {
-            return value.a.to_any();
+            return value.a.clone();
         }
-        Any::from(value)
+        value.into()
     }
 }

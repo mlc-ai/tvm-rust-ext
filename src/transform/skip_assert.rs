@@ -17,10 +17,10 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_map, Any, Result, WalkOrder};
+use tvm_ffi::{structural_map, Result, WalkOrder};
 
 use super::{create_prim_func_pass, Pass};
-use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc, SeqStmt};
+use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc, SeqStmt, Stmt};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
@@ -32,12 +32,12 @@ struct AssertSkipper;
 
 #[tvm_ffi::dispatch(map)]
 impl AssertSkipper {
-    fn map_assert(&mut self, _value: &AssertStmtObj) -> Result<Any> {
-        Ok(Any::from(Evaluate::from_i64(0)?))
+    fn map_assert(&mut self, _value: &AssertStmtObj) -> Result<Stmt> {
+        Ok(Evaluate::from_i64(0)?.into())
     }
 
-    fn map_sequence(&mut self, value: SeqStmt) -> Result<Any> {
-        value.flatten().map(Any::from)
+    fn map_sequence(&mut self, value: SeqStmt) -> Result<Stmt> {
+        value.flatten()
     }
 }
 
