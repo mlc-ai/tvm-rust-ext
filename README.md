@@ -87,13 +87,18 @@ different recursion semantics matter:
   by manually controlling recursion through loop fields.
 
 The crate also adapts Rust closures into TVM PrimFunc and module passes.
-`SkipAssert`, arithmetic and analyzer-backed control-flow
-simplification, and buffer-index-aware unit-loop elimination are compared with
-the corresponding C++ passes using structural equality. Arithmetic passes
-reuse an opaque handle to TVM's existing `arith.Analyzer` instead of copying
-its compiler rules into Rust. Control-flow simplification classifies expression
-effects with `structural_walk` and reuses the existing `ir.OpGetAttr` registry
-lookup for each operator's `TCallEffectKind`. A two-phase module pass builds a
+Full Rust ports currently include `SkipAssert`, `LowerTIRxOpaque`,
+`RemapThreadAxis`, the internal `RemoveAssume` rewrite,
+`DecorateDeviceScope`, `AnnotateEntryFunc`, and `Filter`.  Differential tests
+compare their output with the corresponding C++ implementations using
+structural equality.  The broader set covers statement deletion, loop and
+pragma lowering, definition/use remapping, function-attribute updates, and
+module-level selection instead of only local arithmetic rewrites.  Arithmetic
+passes reuse an opaque handle to TVM's existing `arith.Analyzer` instead of
+copying its compiler rules into Rust. Control-flow simplification classifies
+expression effects with `structural_walk` and reuses the existing
+`ir.OpGetAttr` registry lookup for each operator's `TCallEffectKind`. A
+two-phase module pass builds a
 call graph with `structural_walk`,
 treats `global_symbol` functions as external roots, and then prunes unreachable
 functions. Additional tests check definition/use identity, ownership,

@@ -17,10 +17,11 @@
  * under the License.
  */
 
-use tvm_ffi::{Any, Map, ObjectRefCast, Result, String};
+use tvm_ffi::{ObjectRefCast, Result, String};
 
+use super::utils::with_prim_func_attr;
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, DictAttrs, IRModule};
+use crate::ir::{BaseFunc, IRModule};
 use crate::tirx::PrimFunc;
 
 const GLOBAL_SYMBOL: &str = "global_symbol";
@@ -39,7 +40,7 @@ fn annotate_entry_func_module(module: IRModule) -> Result<IRModule> {
             .expect("a one-function module has one entry");
         if !has_nonzero_attr(&function, IS_ENTRY_FUNC)? {
             if let Ok(prim_func) = function.try_cast::<PrimFunc>() {
-                let annotated = with_attr(prim_func, IS_ENTRY_FUNC, true);
+                let annotated = with_prim_func_attr(prim_func, IS_ENTRY_FUNC, true);
                 return module.with_updated_function(&global, &BaseFunc::from(annotated));
             }
         }
@@ -64,7 +65,7 @@ fn annotate_entry_func_module(module: IRModule) -> Result<IRModule> {
 
     if external_prim_func_count == 1 && !has_external_non_prim_func {
         let (global, function) = external_prim_func.expect("one external PrimFunc was counted");
-        let annotated = with_attr(function, IS_ENTRY_FUNC, true);
+        let annotated = with_prim_func_attr(function, IS_ENTRY_FUNC, true);
         module.with_updated_function(&global, &BaseFunc::from(annotated))
     } else {
         Ok(module)
@@ -95,25 +96,4 @@ fn has_string_attr(function: &BaseFunc, key: &str) -> Result<bool> {
     };
     String::try_from(value)?;
     Ok(true)
-}
-
-fn with_attr(function: PrimFunc, key: &str, value: impl Into<Any>) -> PrimFunc {
-    let key = String::from(key);
-    let mut attributes = function
-        .attrs
-        .dict
-        .iter()
-        .filter(|(existing, _)| existing.as_str() != key.as_str())
-        .collect::<Vec<_>>();
-    attributes.push((key, value.into()));
-    let attrs = DictAttrs::from_dictionary(Map::from_iter(attributes));
-
-    PrimFunc::from_complete_fields(
-        function.span.clone(),
-        function.ty.clone(),
-        attrs,
-        function.params.clone(),
-        function.ret_type.clone(),
-        function.body.clone(),
-    )
 }

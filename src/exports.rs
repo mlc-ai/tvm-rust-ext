@@ -66,6 +66,8 @@ tvm_ffi_dll_export_typed_func!(
     examples::eliminate_unit_loops_prim_func
 );
 tvm_ffi_dll_export_typed_func!(skip_assert, transform::skip_assert_prim_func);
+tvm_ffi_dll_export_typed_func!(lower_tirx_opaque, transform::lower_tirx_opaque_prim_func);
+tvm_ffi_dll_export_typed_func!(remove_assume_internal, transform::remove_assume_prim_func);
 tvm_ffi_dll_export_typed_func!(
     decorate_device_scope,
     transform::decorate_device_scope_prim_func
@@ -83,6 +85,12 @@ tvm_ffi_dll_export_typed_func!(
 tvm_ffi_dll_export_typed_func!(skip_assert_pass, transform::skip_assert);
 tvm_ffi_dll_export_typed_func!(annotate_entry_func_pass, transform::annotate_entry_func);
 tvm_ffi_dll_export_typed_func!(decorate_device_scope_pass, transform::decorate_device_scope);
+tvm_ffi_dll_export_typed_func!(lower_tirx_opaque_pass, transform::lower_tirx_opaque);
+tvm_ffi_dll_export_typed_func!(remap_thread_axis_pass, transform::remap_thread_axis);
+tvm_ffi_dll_export_typed_func!(
+    remove_assume_internal_pass,
+    transform::remove_assume_internal
+);
 
 // Analyses.
 tvm_ffi_dll_export_typed_func!(expr_complexity, |func: PrimFunc| {

@@ -33,7 +33,7 @@ use tvm::tirx::{
 use tvm::transform;
 use tvm::tvm_ffi::{
     dispatch, structural_map, structural_walk, Any, AnyView, Array, DefRegionKind, Function, Map,
-    ObjectRefCast, Result, WalkOrder, WalkResult,
+    ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
 };
 
 mod common;
@@ -1424,7 +1424,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     let function = PrimFunc::new(vec![buffer.into()], &outer_loop).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
 
-    let rust_function = transform::examples::eliminate_unit_loops_prim_func(function).unwrap();
+    let rust_function = transform::lower_tirx_opaque_prim_func(function).unwrap();
     let rust_result = IRModule::from_expr(&rust_function).unwrap();
     let cpp_result = cpp_pass("tirx.transform.LowerTIRxOpaque")
         .run(module.clone())
@@ -1835,7 +1835,7 @@ fn unit_loop_elimination_preserves_annotated_loops() {
     let function = PrimFunc::from_body(&loop_statement).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
 
-    let rust_function = transform::examples::eliminate_unit_loops_prim_func(function).unwrap();
+    let rust_function = transform::lower_tirx_opaque_prim_func(function).unwrap();
     let rust_result = IRModule::from_expr(&rust_function).unwrap();
     let cpp_result = cpp_pass("tirx.transform.LowerTIRxOpaque")
         .run(module)
@@ -1843,4 +1843,184 @@ fn unit_loop_elimination_preserves_annotated_loops() {
 
     assert_eq!(node_statistics(&rust_result).unwrap().loops, 1);
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tirx_opaque_matches_cpp_for_a_unit_loop() {
+    load_tvm_compiler();
+    let loop_var = Var::new("i", "int64").unwrap();
+    let value = Add::new(loop_var.clone(), typed_int_expression("int64", 1)).unwrap();
+    let body = Evaluate::new(value).unwrap();
+    let loop_statement = For::serial(
+        loop_var,
+        typed_int_expression("int64", 2),
+        typed_int_expression("int64", 1),
+        body,
+    )
+    .unwrap();
+    let function = PrimFunc::from_body(loop_statement).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::lower_tirx_opaque_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTIRxOpaque")
+        .run(module)
+        .unwrap();
+
+    assert!(rust_function.body.clone().try_cast::<For>().is_err());
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tirx_opaque_matches_cpp_for_thread_binding_and_pragmas() {
+    load_tvm_compiler();
+    let loop_var = Var::new("tx", "int64").unwrap();
+    let minimum = typed_int_expression("int64", 0);
+    let extent = typed_int_expression("int64", 8);
+    let thread_axis = IterVar::with_metadata(
+        Some(Range::from_min_extent(minimum.clone(), extent.clone()).unwrap()),
+        loop_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let annotations: Map<tvm::tvm_ffi::String, Any> = [
+        (
+            tvm::tvm_ffi::String::from("pragma_zeta"),
+            Any::from(tvm::tirx::StringImm::new("z")),
+        ),
+        (
+            tvm::tvm_ffi::String::from("pragma_alpha"),
+            Any::from(IntImm::new("int32", 3).unwrap()),
+        ),
+        (tvm::tvm_ffi::String::from("pragma_unroll"), Any::from(1i64)),
+        (
+            tvm::tvm_ffi::String::from("software_pipeline_stage"),
+            Any::from(2i64),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let body = Evaluate::new(Expr::from(loop_var.clone())).unwrap();
+    let loop_statement = For::with_metadata(
+        loop_var,
+        minimum,
+        extent,
+        tvm::tirx::ForKind::kThreadBinding,
+        body.into(),
+        Some(thread_axis),
+        annotations,
+        None,
+        None,
+    )
+    .unwrap();
+    let function = PrimFunc::from_body(&loop_statement).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::lower_tirx_opaque_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTIRxOpaque")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let pragma_alpha = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    assert_eq!(pragma_alpha.attr_key.as_str(), "pragma_alpha");
+    let pragma_zeta = pragma_alpha.body.clone().try_cast::<AttrStmt>().unwrap();
+    assert_eq!(pragma_zeta.attr_key.as_str(), "pragma_zeta");
+    let launch = pragma_zeta.body.clone().try_cast::<AttrStmt>().unwrap();
+    assert_eq!(launch.attr_key.as_str(), "thread_extent");
+}
+
+#[test]
+fn rust_remap_thread_axis_matches_cpp() {
+    load_tvm_compiler();
+    let extent = typed_int_expression("int64", 16);
+    let old_var = Var::new("tx", "int64").unwrap();
+    let old_axis = IterVar::with_metadata(
+        Some(Range::from_min_extent(typed_int_expression("int64", 0), extent.clone()).unwrap()),
+        old_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let new_var = Var::new("ty", "int64").unwrap();
+    let new_axis = IterVar::with_metadata(
+        Some(Range::from_min_extent(typed_int_expression("int64", 0), extent.clone()).unwrap()),
+        new_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.y",
+        None,
+    )
+    .unwrap();
+    let body = Evaluate::new(Expr::from(old_var)).unwrap();
+    let attr = AttrStmt::new(old_axis.clone(), "thread_extent", extent, body).unwrap();
+    let attrs = DictAttrs::from_dictionary(
+        [(
+            tvm::tvm_ffi::String::from("tirx.kernel_launch_params"),
+            Any::from(Array::new(vec![old_axis])),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    let function = PrimFunc::with_metadata(Vec::new(), attr, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+    let thread_map: Map<tvm::tvm_ffi::String, IterVar> =
+        [(tvm::tvm_ffi::String::from("threadIdx.x"), new_axis.clone())]
+            .into_iter()
+            .collect();
+
+    let rust_function = transform::remap_thread_axis_prim_func(function, &thread_map).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_pass: transform::Pass = Function::get_global("tirx.transform.RemapThreadAxis")
+        .unwrap()
+        .call_tuple((thread_map,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = cpp_pass.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let remapped_attr = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let remapped_axis = IterVar::try_from(remapped_attr.node.clone()).unwrap();
+    assert!(remapped_axis.same_as(&new_axis));
+    let remapped_body = remapped_attr.body.clone().try_cast::<Evaluate>().unwrap();
+    let remapped_var = remapped_body.value.clone().try_cast::<Var>().unwrap();
+    assert!(remapped_var.same_as(&new_var));
+    let launch_params = rust_function
+        .attrs
+        .dict
+        .get(&tvm::tvm_ffi::String::from("tirx.kernel_launch_params"))
+        .unwrap()
+        .unwrap();
+    let launch_params = Array::<IterVar>::try_from(launch_params).unwrap();
+    assert!(launch_params.get(0).unwrap().same_as(&new_axis));
+}
+
+#[test]
+fn rust_remove_assume_matches_cpp_for_a_root_assume() {
+    load_tvm_compiler();
+    let assume_op: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.assume"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let condition = typed_int_expression("bool", 1);
+    let call = Call::new(PrimType::new("bool").unwrap(), assume_op, vec![condition]);
+    let function = PrimFunc::from_body(Evaluate::new(call).unwrap()).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::remove_assume_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.RemoveAssume").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let evaluate = rust_function.body.clone().try_cast::<Evaluate>().unwrap();
+    assert_eq!(
+        evaluate.value.clone().try_cast::<IntImm>().unwrap().value,
+        0
+    );
 }

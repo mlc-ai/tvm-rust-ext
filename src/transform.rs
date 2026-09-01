@@ -28,7 +28,10 @@ mod decorate_device_scope;
 mod eliminate_unit_loops;
 mod filter;
 mod fold_integer_constants;
+mod lower_tirx_opaque;
 mod prune_unreachable_functions;
+mod remap_thread_axis;
+mod remove_assume;
 mod simplify_add_zero;
 mod simplify_known_control_flow;
 mod simplify_neutral_elements;
@@ -38,6 +41,9 @@ mod utils;
 pub use annotate_entry_func::annotate_entry_func;
 pub use decorate_device_scope::{decorate_device_scope, decorate_device_scope_prim_func};
 pub use filter::filter;
+pub use lower_tirx_opaque::{lower_tirx_opaque, lower_tirx_opaque_prim_func};
+pub use remap_thread_axis::{remap_thread_axis, remap_thread_axis_prim_func};
+pub use remove_assume::{remove_assume_internal, remove_assume_prim_func};
 pub use skip_assert::{skip_assert, skip_assert_prim_func};
 
 /// Partial transformations used to exercise structural walk/map/mutate.
