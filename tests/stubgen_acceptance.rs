@@ -357,7 +357,7 @@ fn generated_bindings_support_structural_map() {
 
     let mapped = structural_map(
         original.clone(),
-        |addition: Add| -> Result<Any> {
+        |addition: Add| -> Result<PrimExpr> {
             let lhs = addition.a.clone();
             let rhs = addition.b.clone();
             let rhs_is_zero = rhs
@@ -366,7 +366,7 @@ fn generated_bindings_support_structural_map() {
                 .ok()
                 .map(|value| value.value)
                 == Some(0);
-            Ok(Any::from(if rhs_is_zero { lhs } else { addition.into() }))
+            Ok(if rhs_is_zero { lhs } else { addition.into() })
         },
         WalkOrder::PostOrder,
     )

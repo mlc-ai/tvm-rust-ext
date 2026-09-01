@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_map, Any, DLDataType, DLDataTypeCode, ObjectRefCast, Result, WalkOrder};
+use tvm_ffi::{structural_map, DLDataType, DLDataTypeCode, ObjectRefCast, Result, WalkOrder};
 
 use super::utils::LazyAnalyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Span};
@@ -48,22 +48,22 @@ impl IntegerConstantFolder {
         rhs: &Expr,
         span: Option<&Span>,
         operation: fn(i64, i64) -> Option<i64>,
-    ) -> Result<Any> {
+    ) -> Result<PrimExpr> {
         let Some((lhs, rhs, dtype)) = matching_integer_literals(lhs, rhs) else {
-            return Ok(Any::from(original));
+            return Ok(original);
         };
         if let Some(value) = operation(lhs, rhs) {
             if let Ok(folded) = IntImm::from_dtype_with_span(dtype, value, span) {
-                return Ok(Any::from(folded));
+                return Ok(folded.into());
             }
         }
-        Ok(Any::from(self.analyzer.get()?.simplify(&original)?))
+        self.analyzer.get()?.simplify(&original)
     }
 }
 
 #[tvm_ffi::dispatch(map)]
 impl IntegerConstantFolder {
-    fn map_add(&mut self, value: Add) -> Result<Any> {
+    fn map_add(&mut self, value: Add) -> Result<PrimExpr> {
         self.fold_or_analyze(
             value.clone().into(),
             &value.a,
@@ -73,7 +73,7 @@ impl IntegerConstantFolder {
         )
     }
 
-    fn map_subtract(&mut self, value: Sub) -> Result<Any> {
+    fn map_subtract(&mut self, value: Sub) -> Result<PrimExpr> {
         self.fold_or_analyze(
             value.clone().into(),
             &value.a,
@@ -83,7 +83,7 @@ impl IntegerConstantFolder {
         )
     }
 
-    fn map_multiply(&mut self, value: Mul) -> Result<Any> {
+    fn map_multiply(&mut self, value: Mul) -> Result<PrimExpr> {
         self.fold_or_analyze(
             value.clone().into(),
             &value.a,

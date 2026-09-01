@@ -18,8 +18,7 @@
  */
 
 use tvm_ffi::{
-    structural_map, structural_mutate, Any, AnyCompatible, DefRegionKind, Result,
-    StructuralMutator, WalkOrder,
+    structural_map, structural_mutate, DefRegionKind, Result, StructuralMutator, WalkOrder,
 };
 
 use super::utils::int_value;
@@ -45,31 +44,31 @@ struct NeutralElementSimplifier;
 
 #[tvm_ffi::dispatch(map)]
 impl NeutralElementSimplifier {
-    fn map_add(&mut self, value: Add) -> Any {
+    fn map_add(&mut self, value: Add) -> PrimExpr {
         if int_value(&value.a) == Some(0) {
-            return value.b.to_any();
+            return value.b.clone();
         }
         if int_value(&value.b) == Some(0) {
-            return value.a.to_any();
+            return value.a.clone();
         }
-        Any::from(value)
+        value.into()
     }
 
-    fn map_subtract(&mut self, value: Sub) -> Any {
+    fn map_subtract(&mut self, value: Sub) -> PrimExpr {
         if int_value(&value.b) == Some(0) {
-            return value.a.to_any();
+            return value.a.clone();
         }
-        Any::from(value)
+        value.into()
     }
 
-    fn map_multiply(&mut self, value: Mul) -> Any {
+    fn map_multiply(&mut self, value: Mul) -> PrimExpr {
         if int_value(&value.a) == Some(1) {
-            return value.b.to_any();
+            return value.b.clone();
         }
         if int_value(&value.b) == Some(1) {
-            return value.a.to_any();
+            return value.a.clone();
         }
-        Any::from(value)
+        value.into()
     }
 }
 
@@ -91,7 +90,7 @@ pub fn simplify_neutral_elements_in_loop_bodies(statement: Stmt) -> Result<Stmt>
 
 #[tvm_ffi::dispatch(mutate)]
 impl LoopBodyMutator {
-    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Any> {
+    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Stmt> {
         // A matched `mutate_for` owns recursion. Mutate executable loop
         // expressions at the current depth and enter the new scope only for
         // `body`; structural metadata remains unchanged.
@@ -105,7 +104,7 @@ impl LoopBodyMutator {
 
         let step = Option::<PrimExpr>::try_from(self.mutate(&value.step, region)?)?;
 
-        Ok(Any::from(For::from_complete_fields(
+        Ok(For::from_complete_fields(
             value.span.clone(),
             value.loop_var.clone(),
             minimum,
@@ -115,42 +114,43 @@ impl LoopBodyMutator {
             value.thread_binding.clone(),
             value.annotations.clone(),
             step,
-        )))
+        )
+        .into())
     }
 
-    fn mutate_scoped_add(&mut self, value: Add, region: DefRegionKind) -> Result<Any> {
+    fn mutate_scoped_add(&mut self, value: Add, region: DefRegionKind) -> Result<PrimExpr> {
         let value = Add::try_from(self.default_mutate_value(&value, region)?)?;
         if self.depth == 0 {
-            return Ok(Any::from(value));
+            return Ok(value.into());
         }
         if int_value(&value.a) == Some(0) {
-            return Ok(value.b.to_any());
+            return Ok(value.b.clone());
         }
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return Ok(value.a.clone());
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 
-    fn mutate_scoped_subtract(&mut self, value: Sub, region: DefRegionKind) -> Result<Any> {
+    fn mutate_scoped_subtract(&mut self, value: Sub, region: DefRegionKind) -> Result<PrimExpr> {
         let value = Sub::try_from(self.default_mutate_value(&value, region)?)?;
         if self.depth > 0 && int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return Ok(value.a.clone());
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 
-    fn mutate_scoped_multiply(&mut self, value: Mul, region: DefRegionKind) -> Result<Any> {
+    fn mutate_scoped_multiply(&mut self, value: Mul, region: DefRegionKind) -> Result<PrimExpr> {
         let value = Mul::try_from(self.default_mutate_value(&value, region)?)?;
         if self.depth == 0 {
-            return Ok(Any::from(value));
+            return Ok(value.into());
         }
         if int_value(&value.a) == Some(1) {
-            return Ok(value.b.to_any());
+            return Ok(value.b.clone());
         }
         if int_value(&value.b) == Some(1) {
-            return Ok(value.a.to_any());
+            return Ok(value.a.clone());
         }
-        Ok(Any::from(value))
+        Ok(value.into())
     }
 }
