@@ -21,9 +21,9 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, DefRegionKind, Error, Map, MutateCallbacks, Mutator,
-    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, StructuralVisitor, VisitInterrupt,
-    VisitValue, TYPE_ERROR,
+    structural_mutate, structural_visit, Any, Error, Map, MutateCallbacks, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    TYPE_ERROR,
 };
 
 use super::utils::{
@@ -220,7 +220,7 @@ struct CsePlanner {
 
 impl CsePlanner {
     fn plan(body: &Stmt) -> Result<CsePlan> {
-        let mut planner = Self {
+        let planner = Self {
             scopes: vec![ScopeEntry {
                 parent: None,
                 depth: 0,
@@ -232,25 +232,9 @@ impl CsePlanner {
             expression_frames: Vec::new(),
             table: ExprTable::default(),
         };
-        structural_visit(body, &mut planner)?;
-        planner.compute_plan()
-    }
-
-    fn visit_child<T>(&mut self, child: &T, region: DefRegionKind) -> Result<()>
-    where
-        for<'a> tvm_ffi::AnyView<'a>: From<&'a T>,
-    {
-        if let Some(interrupt) = StructuralVisitor::visit_child(self, child, region)? {
-            return Err(Error::new(
-                TYPE_ERROR,
-                &format!(
-                    "unexpected interrupt while planning CSE: type_index={}",
-                    interrupt.value.type_index()
-                ),
-                "",
-            ));
-        }
-        Ok(())
+        let mut visitor = VisitCallbacks::new(planner, visit_cse_value);
+        structural_visit(body, &mut visitor)?;
+        visitor.into_state().compute_plan()
     }
 
     fn allocate_scope(&mut self, creator: Stmt) -> usize {
@@ -286,111 +270,72 @@ impl CsePlanner {
     }
 
     fn visit_statement(
-        &mut self,
         value: &VisitValue,
         statement: Stmt,
-        region: DefRegionKind,
+        visitor: &mut VisitContext<'_, Self>,
     ) -> Result<Option<VisitInterrupt>> {
-        self.current_stmt = Some(statement.clone());
+        visitor.state_mut().current_stmt = Some(statement.clone());
 
         if let Some(node) = value.cast::<For>() {
-            self.visit_child(&node.min, region)?;
-            self.visit_child(&node.extent, region)?;
-            let saved_scope = self.current_scope;
-            self.current_scope = self.allocate_scope(statement);
-            self.visit_child(&node.body, region)?;
-            self.current_scope = saved_scope;
+            visit_cse_child(visitor, &node.min)?;
+            visit_cse_child(visitor, &node.extent)?;
+            visit_cse_scope(visitor, statement, &node.body)?;
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<IfThenElse>() {
-            self.visit_child(&node.condition, region)?;
-            let saved_scope = self.current_scope;
-            self.current_scope = self.allocate_scope(statement.clone());
-            self.visit_child(&node.then_case, region)?;
+            visit_cse_child(visitor, &node.condition)?;
+            visit_cse_scope(visitor, statement.clone(), &node.then_case)?;
             if let Some(else_case) = &node.else_case {
-                self.current_scope = saved_scope;
-                self.current_scope = self.allocate_scope(statement);
-                self.visit_child(else_case, region)?;
+                visit_cse_scope(visitor, statement, else_case)?;
             }
-            self.current_scope = saved_scope;
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<AttrStmt>() {
-            self.visit_child(&node.value, region)?;
-            let saved_scope = self.current_scope;
-            self.current_scope = self.allocate_scope(statement);
-            self.visit_child(&node.body, region)?;
-            self.current_scope = saved_scope;
+            visit_cse_child(visitor, &node.value)?;
+            visit_cse_scope(visitor, statement, &node.body)?;
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<AllocBuffer>() {
-            self.visit_buffer_definition(&node.buffer, region)?;
+            visit_cse_buffer_definition(visitor, &node.buffer)?;
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<DeclBuffer>() {
-            self.visit_buffer_definition(&node.buffer, region)?;
+            visit_cse_buffer_definition(visitor, &node.buffer)?;
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<BufferStore>() {
-            self.visit_child(&node.value, region)?;
+            visit_cse_child(visitor, &node.value)?;
             for index in node.indices.iter() {
-                self.visit_child(&index, region)?;
+                visit_cse_child(visitor, &index)?;
             }
             return Ok(None);
         }
 
         if let Some(node) = value.cast::<While>() {
-            self.visit_child(&node.condition, region)?;
-            let saved_scope = self.current_scope;
-            self.current_scope = self.allocate_scope(statement);
-            self.visit_child(&node.body, region)?;
-            self.current_scope = saved_scope;
+            visit_cse_child(visitor, &node.condition)?;
+            visit_cse_scope(visitor, statement, &node.body)?;
             return Ok(None);
         }
 
-        visit_stmt_expr_default(self, value, region)
-    }
-
-    fn visit_buffer_definition(&mut self, buffer: &BufferVar, region: DefRegionKind) -> Result<()> {
-        let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
-        for expression in buffer_type.shape.iter() {
-            self.visit_child(&expression, region)?;
-        }
-        for expression in buffer_type.strides.iter() {
-            self.visit_child(&expression, region)?;
-        }
-        self.visit_child(&buffer_type.elem_offset, region)?;
-        for expression in buffer_type.allocated_addr.iter() {
-            self.visit_child(&expression, region)?;
-        }
-        if let Some(layout) = &buffer_type.layout {
-            if let Ok(layout) = layout.clone().try_cast::<TileLayout>() {
-                for iter in layout.shard()?.iter().chain(layout.replica()?.iter()) {
-                    self.visit_child(&iter.extent, region)?;
-                    self.visit_child(&iter.stride, region)?;
-                }
-            }
-        }
-        Ok(())
+        visit_stmt_expr_default(visitor, value)
     }
 
     fn visit_expression(
-        &mut self,
         value: &VisitValue,
         expression: PrimExpr,
-        region: DefRegionKind,
+        visitor: &mut VisitContext<'_, Self>,
     ) -> Result<Option<VisitInterrupt>> {
-        if let Some(parent) = self.expression_frames.last_mut() {
+        if let Some(parent) = visitor.state_mut().expression_frames.last_mut() {
             parent.direct_children.push(expression.clone());
         }
 
         let class = expr_class(value.type_index())?;
-        self.expression_frames.push(ExprFrame {
+        visitor.state_mut().expression_frames.push(ExprFrame {
             expression,
             class,
             direct_children: Vec::new(),
@@ -398,73 +343,80 @@ impl CsePlanner {
         });
 
         if matches!(class, ExprClass::Call | ExprClass::TensorLoad) {
-            for frame in &mut self.expression_frames {
+            for frame in &mut visitor.state_mut().expression_frames {
                 frame.contains_forbidden = true;
             }
         }
 
-        match class {
-            ExprClass::Leaf => {}
-            ExprClass::Let => {
-                let node = value
-                    .cast::<Let>()
-                    .expect("tirx.Let has already been classified above");
-                self.visit_child(&node.value, region)?;
-                self.let_depth += 1;
-                let body_result = self.visit_child(&node.body, region);
-                self.let_depth -= 1;
-                body_result?;
-            }
-            ExprClass::Call => {
-                let node = value
-                    .cast::<Call>()
-                    .expect("ir.Call has already been classified above");
-                for argument in node.args.iter() {
-                    self.visit_child(&argument, region)?;
+        let visit_result = (|| -> Result<()> {
+            match class {
+                ExprClass::Leaf => {}
+                ExprClass::Let => {
+                    let node = value
+                        .cast::<Let>()
+                        .expect("tirx.Let has already been classified above");
+                    visit_cse_child(visitor, &node.value)?;
+                    visitor.state_mut().let_depth += 1;
+                    let body_result = visit_cse_child(visitor, &node.body);
+                    visitor.state_mut().let_depth -= 1;
+                    body_result?;
                 }
-            }
-            ExprClass::TensorLoad => {
-                let node = value
-                    .cast::<TensorLoad>()
-                    .expect("ir.TensorLoad has already been classified above");
-                for index in node.indices.iter() {
-                    self.visit_child(&index, region)?;
+                ExprClass::Call => {
+                    let node = value
+                        .cast::<Call>()
+                        .expect("ir.Call has already been classified above");
+                    for argument in node.args.iter() {
+                        visit_cse_child(visitor, &argument)?;
+                    }
                 }
-            }
-            ExprClass::Other => {
-                if let Some(node) = value.cast::<Reduce>() {
-                    for axis in node.axis.iter() {
-                        if let Some(domain) = axis.dom()? {
-                            self.visit_child(&domain.min, region)?;
-                            self.visit_child(&domain.extent, region)?;
+                ExprClass::TensorLoad => {
+                    let node = value
+                        .cast::<TensorLoad>()
+                        .expect("ir.TensorLoad has already been classified above");
+                    for index in node.indices.iter() {
+                        visit_cse_child(visitor, &index)?;
+                    }
+                }
+                ExprClass::Other => {
+                    if let Some(node) = value.cast::<Reduce>() {
+                        for axis in node.axis.iter() {
+                            if let Some(domain) = axis.dom()? {
+                                visit_cse_child(visitor, &domain.min)?;
+                                visit_cse_child(visitor, &domain.extent)?;
+                            }
                         }
+                        for source in node.source.iter() {
+                            visit_cse_child(visitor, &source)?;
+                        }
+                        for init in node.init.iter() {
+                            visit_cse_child(visitor, &init)?;
+                        }
+                        visit_cse_child(visitor, &node.condition)?;
+                    } else {
+                        reject_cse_interrupt(visit_stmt_expr_default(visitor, value)?)?;
                     }
-                    for source in node.source.iter() {
-                        self.visit_child(&source, region)?;
-                    }
-                    for init in node.init.iter() {
-                        self.visit_child(&init, region)?;
-                    }
-                    self.visit_child(&node.condition, region)?;
-                } else {
-                    visit_stmt_expr_default(self, value, region)?;
+                }
+                ExprClass::Recordable => {
+                    reject_cse_interrupt(visit_stmt_expr_default(visitor, value)?)?;
                 }
             }
-            ExprClass::Recordable => {
-                visit_stmt_expr_default(self, value, region)?;
-            }
-        }
+            Ok(())
+        })();
 
-        let frame = self
+        let frame = visitor
+            .state_mut()
             .expression_frames
             .pop()
             .expect("the expression frame was pushed above");
+        visit_result?;
         if frame.class == ExprClass::Recordable
             && !frame.contains_forbidden
-            && self.let_depth == 0
+            && visitor.state().let_depth == 0
             && !is_bool(&frame.expression)?
         {
-            self.record_expression(frame.expression, frame.direct_children)?;
+            visitor
+                .state_mut()
+                .record_expression(frame.expression, frame.direct_children)?;
         }
         Ok(None)
     }
@@ -600,22 +552,79 @@ impl CsePlanner {
     }
 }
 
-impl StructuralVisitor for CsePlanner {
-    // CSE runs code both before and after each expression's children and opens
-    // scopes around branches, so it controls recursion through the visitor.
-    fn visit(
-        &mut self,
-        value: &VisitValue,
-        region: DefRegionKind,
-    ) -> Result<Option<VisitInterrupt>> {
-        if let Some(statement) = value.cast::<Stmt>() {
-            return self.visit_statement(value, statement, region);
-        }
-        if let Some(expression) = value.cast::<PrimExpr>() {
-            return self.visit_expression(value, expression, region);
-        }
-        self.default_visit_children(value, region)
+// CSE runs code both before and after each expression's children and opens
+// scopes around branches, so its callback controls recursion through VisitContext.
+fn visit_cse_value(
+    value: &VisitValue,
+    visitor: &mut VisitContext<'_, CsePlanner>,
+) -> Result<Option<VisitInterrupt>> {
+    if let Some(statement) = value.cast::<Stmt>() {
+        return CsePlanner::visit_statement(value, statement, visitor);
     }
+    if let Some(expression) = value.cast::<PrimExpr>() {
+        return CsePlanner::visit_expression(value, expression, visitor);
+    }
+    visitor.visit_children()
+}
+
+fn visit_cse_child<T>(visitor: &mut VisitContext<'_, CsePlanner>, child: &T) -> Result<()>
+where
+    for<'a> tvm_ffi::AnyView<'a>: From<&'a T>,
+{
+    reject_cse_interrupt(visitor.visit(child)?)
+}
+
+fn reject_cse_interrupt(interrupt: Option<VisitInterrupt>) -> Result<()> {
+    if let Some(interrupt) = interrupt {
+        return Err(Error::new(
+            TYPE_ERROR,
+            &format!(
+                "unexpected interrupt while planning CSE: type_index={}",
+                interrupt.value.type_index()
+            ),
+            "",
+        ));
+    }
+    Ok(())
+}
+
+fn visit_cse_scope(
+    visitor: &mut VisitContext<'_, CsePlanner>,
+    creator: Stmt,
+    child: &Stmt,
+) -> Result<()> {
+    let saved_scope = visitor.state().current_scope;
+    let child_scope = visitor.state_mut().allocate_scope(creator);
+    visitor.state_mut().current_scope = child_scope;
+    let result = visit_cse_child(visitor, child);
+    visitor.state_mut().current_scope = saved_scope;
+    result
+}
+
+fn visit_cse_buffer_definition(
+    visitor: &mut VisitContext<'_, CsePlanner>,
+    buffer: &BufferVar,
+) -> Result<()> {
+    let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    for expression in buffer_type.shape.iter() {
+        visit_cse_child(visitor, &expression)?;
+    }
+    for expression in buffer_type.strides.iter() {
+        visit_cse_child(visitor, &expression)?;
+    }
+    visit_cse_child(visitor, &buffer_type.elem_offset)?;
+    for expression in buffer_type.allocated_addr.iter() {
+        visit_cse_child(visitor, &expression)?;
+    }
+    if let Some(layout) = &buffer_type.layout {
+        if let Ok(layout) = layout.clone().try_cast::<TileLayout>() {
+            for iter in layout.shard()?.iter().chain(layout.replica()?.iter()) {
+                visit_cse_child(visitor, &iter.extent)?;
+                visit_cse_child(visitor, &iter.stride)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn is_bool(expression: &PrimExpr) -> Result<bool> {

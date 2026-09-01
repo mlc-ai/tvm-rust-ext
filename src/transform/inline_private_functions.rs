@@ -21,9 +21,9 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, DefRegionKind, Error, Map, MapValue,
-    MutateCallbacks, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    StructuralVisitor, VisitInterrupt, VisitValue, VALUE_ERROR,
+    structural_mutate, structural_visit, Any, Array, Error, Map, MapValue, MutateCallbacks,
+    Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext,
+    VisitInterrupt, VisitValue, VALUE_ERROR,
 };
 
 use super::utils::{
@@ -129,9 +129,17 @@ fn collect_prim_funcs(module: &IRModule) -> FunctionTable {
 fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<ObjectIdentity>> {
     let mut call_graph = HashMap::<ObjectIdentity, HashSet<ObjectIdentity>>::new();
     for (caller_identity, (_, function)) in functions {
-        let mut collector = CallGraphCollector::default();
+        let mut collector = VisitCallbacks::new(
+            CallGraphState::default(),
+            (
+                visit_call,
+                visit_attribute,
+                visit_loop,
+                visit_stmt_expr_default_callback,
+            ),
+        );
         structural_visit(&function.body, &mut collector)?;
-        call_graph.insert(caller_identity.clone(), collector.callees);
+        call_graph.insert(caller_identity.clone(), collector.into_state().callees);
     }
 
     let mut recursive = HashSet::new();
@@ -158,48 +166,47 @@ fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<Obje
 }
 
 #[derive(Default)]
-struct CallGraphCollector {
+struct CallGraphState {
     callees: HashSet<ObjectIdentity>,
 }
 
-#[tvm_ffi::dispatch(visit)]
-impl CallGraphCollector {
-    fn visit_call(&mut self, call: Call, region: DefRegionKind) -> Result<()> {
-        if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
-            self.callees.insert(ObjectIdentity::of(&global));
-        }
-        if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
-            self.visit_child(&call.op, region)?;
-        }
-        for argument in call.args.iter() {
-            self.visit_child(&argument, region)?;
-        }
-        Ok(())
+fn visit_call(call: Call, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
+    if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
+        visitor
+            .state_mut()
+            .callees
+            .insert(ObjectIdentity::of(&global));
     }
+    if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+        visitor.visit(&call.op)?;
+    }
+    for argument in call.args.iter() {
+        visitor.visit(&argument)?;
+    }
+    Ok(())
+}
 
-    fn visit_attribute(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<()> {
-        self.visit_child(&value.value, region)?;
-        self.visit_child(&value.body, region)?;
-        Ok(())
-    }
+fn visit_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
+    visitor.visit(&value.value)?;
+    visitor.visit(&value.body)?;
+    Ok(())
+}
 
-    fn visit_loop(&mut self, value: For, region: DefRegionKind) -> Result<()> {
-        self.visit_child(&value.min, region)?;
-        self.visit_child(&value.extent, region)?;
-        if let Some(step) = &value.step {
-            self.visit_child(step, region)?;
-        }
-        self.visit_child(&value.body, region)?;
-        Ok(())
+fn visit_loop(value: For, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
+    visitor.visit(&value.min)?;
+    visitor.visit(&value.extent)?;
+    if let Some(step) = &value.step {
+        visitor.visit(step)?;
     }
+    visitor.visit(&value.body)?;
+    Ok(())
+}
 
-    fn visit_stmt_expr_default(
-        &mut self,
-        value: &VisitValue,
-        region: DefRegionKind,
-    ) -> Result<Option<VisitInterrupt>> {
-        visit_stmt_expr_default(self, value, region)
-    }
+fn visit_stmt_expr_default_callback(
+    value: &VisitValue,
+    visitor: &mut VisitContext<'_, CallGraphState>,
+) -> Result<Option<VisitInterrupt>> {
+    visit_stmt_expr_default(visitor, value)
 }
 
 fn is_inlinable(
