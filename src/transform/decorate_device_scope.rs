@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{Any, Result};
+use tvm_ffi::Result;
 
 use super::{create_prim_func_pass, Pass};
 use crate::ir::IntImm;
@@ -28,7 +28,7 @@ const DEVICE_SCOPE: &str = "device_scope";
 /// Wrap a PrimFunc body in the device-scope attribute used by TVM.
 pub fn decorate_device_scope_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let body = AttrStmt::new(
-        Any::from(0i64),
+        0i64,
         DEVICE_SCOPE,
         IntImm::new("int32", 0)?,
         function.body.clone(),
