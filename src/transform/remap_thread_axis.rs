@@ -20,14 +20,19 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Array, DefRegionKind, Error, Map, ObjectIdentity, ObjectRefCore, Result,
-    String as FfiString, StructuralMutator, RUNTIME_ERROR,
+    structural_mutate, Any, Array, DefRegionKind, Error, Map, MapValue, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, StructuralMutator, RUNTIME_ERROR,
 };
 
-use super::utils::{with_prim_func_attr, with_prim_func_body};
+use super::utils::{
+    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_attr,
+    with_prim_func_body, BufferRemaps,
+};
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{Expr, Var};
-use crate::tirx::{AttrStmt, IterVar, PrimFunc, Stmt};
+use crate::ir::{Expr, PrimExpr, TensorLoad, Var};
+use crate::tirx::{
+    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, IterVar, PrimFunc, Stmt,
+};
 
 const KERNEL_LAUNCH_PARAMS: &str = "tirx.kernel_launch_params";
 const THREAD_EXTENT: &str = "thread_extent";
@@ -43,6 +48,7 @@ pub fn remap_thread_axis_prim_func(
     let mut rewriter = ThreadAxisRewriter {
         thread_map,
         variable_map: HashMap::new(),
+        buffer_remaps: BufferRemaps::default(),
     };
     let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
     Ok(with_prim_func_body(function, body))
@@ -62,15 +68,14 @@ pub fn remap_thread_axis(thread_map: Map<FfiString, IterVar>) -> Result<Pass> {
 struct ThreadAxisRewriter {
     thread_map: HashMap<std::string::String, IterVar>,
     variable_map: HashMap<ObjectIdentity, Var>,
+    buffer_remaps: BufferRemaps,
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl ThreadAxisRewriter {
-    fn mutate_thread_extent(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_thread_extent(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<AttrStmt> {
         if value.attr_key.as_str() != THREAD_EXTENT {
-            return self
-                .default_mutate_value(&value, region)
-                .and_then(Stmt::try_from);
+            return self.mutate_regular_attribute(value, region);
         }
 
         let iter_var = IterVar::try_from(value.node.clone())?;
@@ -83,9 +88,7 @@ impl ThreadAxisRewriter {
             ));
         }
         let Some(new_iter_var) = self.thread_map.get(thread_tag.as_str()).cloned() else {
-            return self
-                .default_mutate_value(&value, region)
-                .and_then(Stmt::try_from);
+            return self.mutate_regular_attribute(value, region);
         };
 
         let old_variable = iter_var.var()?;
@@ -104,21 +107,150 @@ impl ThreadAxisRewriter {
         }
 
         let body = Stmt::try_from(self.mutate(&value.body, region)?)?;
-        Ok(AttrStmt::new(
+        AttrStmt::new(
             new_iter_var,
             value.attr_key.as_str(),
             value.value.clone(),
             body,
-        )?
-        .into())
+        )
     }
 
-    fn mutate_thread_variable(&mut self, value: Var, region: DefRegionKind) -> Result<Expr> {
-        if let Some(replacement) = self.variable_map.get(&ObjectIdentity::of(&value)) {
-            return Ok(replacement.clone().into());
+    fn mutate_loop(&mut self, value: For, region: DefRegionKind) -> Result<For> {
+        // Match StmtExprMutator::VisitStmt_(For): loop metadata and the binder
+        // are not recursive uses of thread variables.
+        let minimum: PrimExpr = self.mutate(&value.min, region)?.try_into()?;
+        let extent: PrimExpr = self.mutate(&value.extent, region)?.try_into()?;
+        let step: Option<PrimExpr> = self.mutate(&value.step, region)?.try_into()?;
+        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
+        if minimum.same_as(&value.min)
+            && extent.same_as(&value.extent)
+            && option_same_as(&step, &value.step)
+            && body.same_as(&value.body)
+        {
+            return Ok(value);
         }
-        self.default_mutate_value(&value, region)
-            .and_then(Expr::try_from)
+        Ok(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
+            minimum,
+            extent,
+            value.kind,
+            body,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
+            step,
+        ))
+    }
+
+    fn mutate_thread_variable(&mut self, value: Var) -> Var {
+        if let Some(replacement) = self.variable_map.get(&ObjectIdentity::of(&value)) {
+            return replacement.clone();
+        }
+        self.buffer_remaps.use_variable(&value)
+    }
+
+    fn mutate_load(&mut self, value: TensorLoad, region: DefRegionKind) -> Result<TensorLoad> {
+        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source = self.buffer_remaps.use_buffer(&source);
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
+            return Ok(value);
+        }
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
+    }
+
+    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<BufferStore> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        let stored_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if buffer.same_as(&value.buffer)
+            && stored_value.same_as(&value.value)
+            && array_same_as(&indices, &value.indices)
+        {
+            return Ok(value);
+        }
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
+    }
+
+    fn mutate_alloc_buffer(
+        &mut self,
+        value: AllocBuffer,
+        region: DefRegionKind,
+    ) -> Result<AllocBuffer> {
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
+    }
+
+    fn mutate_decl_buffer(
+        &mut self,
+        value: DeclBuffer,
+        region: DefRegionKind,
+    ) -> Result<DeclBuffer> {
+        let data: Expr = self.mutate(&value.data, region)?.try_into()?;
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
+    }
+}
+
+impl ThreadAxisRewriter {
+    fn mutate_buffer_definition(
+        &mut self,
+        buffer: &BufferVar,
+        region: DefRegionKind,
+    ) -> Result<BufferVar> {
+        let mut remaps = std::mem::take(&mut self.buffer_remaps);
+        let result = remaps.mutate_definition(buffer, |expression| {
+            self.mutate(expression, region)?.try_into()
+        });
+        self.buffer_remaps = remaps;
+        result
+    }
+
+    fn mutate_regular_attribute(
+        &mut self,
+        value: AttrStmt,
+        region: DefRegionKind,
+    ) -> Result<AttrStmt> {
+        let attr_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
+        if attr_value.same_as(&value.value) && body.same_as(&value.body) {
+            return Ok(value);
+        }
+        Ok(AttrStmt::from_complete_fields(
+            value.span.clone(),
+            value.node.clone(),
+            value.attr_key.clone(),
+            attr_value,
+            body,
+        ))
     }
 }
 

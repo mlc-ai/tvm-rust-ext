@@ -17,27 +17,29 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_map, Result, WalkOrder};
+use tvm_ffi::{structural_mutate, Any, DefRegionKind, MapValue, Result};
 
+use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
-use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc, SeqStmt, Stmt};
+use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
-    let mut mapper = AssertSkipper;
-    structural_map(func, &mut mapper, WalkOrder::PostOrder)?.try_into()
+    let mut mutator = AssertSkipper;
+    let body = structural_mutate(func.body.clone(), &mut mutator)?.try_into()?;
+    Ok(with_prim_func_body(func, body))
 }
 
 struct AssertSkipper;
 
-#[tvm_ffi::dispatch(map)]
+#[tvm_ffi::dispatch(mutate)]
 impl AssertSkipper {
-    fn map_assert(&mut self, _value: &AssertStmtObj) -> Result<Stmt> {
-        Ok(Evaluate::from_i64(0)?.into())
+    fn mutate_assert(&mut self, _value: &AssertStmtObj) -> Result<Evaluate> {
+        Evaluate::from_i64(0)
     }
 
-    fn map_sequence(&mut self, value: SeqStmt) -> Result<Stmt> {
-        value.flatten()
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
     }
 }
 

@@ -20,13 +20,20 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, DefRegionKind, Error, Map, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, StructuralMutator, WalkOrder, WalkResult, VALUE_ERROR,
+    structural_mutate, structural_visit, Any, Array, DefRegionKind, Error, Map, MapValue,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, StructuralMutator, StructuralVisitor,
+    VisitInterrupt, VisitValue, VALUE_ERROR,
 };
 
+use super::utils::{
+    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, BufferRemaps,
+};
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, Var};
-use crate::tirx::{BufferType, Evaluate, PrimFunc, Stmt};
+use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, OpaqueExpr, PrimExpr, TensorLoad, Var};
+use crate::tirx::{
+    AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, For, PrimFunc,
+    Stmt,
+};
 
 type FunctionTable = HashMap<ObjectIdentity, (GlobalVar, PrimFunc)>;
 
@@ -48,6 +55,7 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
         removable: inlinable.keys().cloned().collect(),
         inlinable,
         current_target: None,
+        buffer_remaps: BufferRemaps::default(),
     };
     let mut changed = false;
     let mut updated_functions = Vec::with_capacity(module.functions.len());
@@ -103,18 +111,9 @@ fn collect_prim_funcs(module: &IRModule) -> FunctionTable {
 fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<ObjectIdentity>> {
     let mut call_graph = HashMap::<ObjectIdentity, HashSet<ObjectIdentity>>::new();
     for (caller_identity, (_, function)) in functions {
-        let mut callees = HashSet::new();
-        structural_walk(
-            &function.body,
-            |call: Call| {
-                if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
-                    callees.insert(ObjectIdentity::of(&global));
-                }
-                WalkResult::Advance
-            },
-            WalkOrder::PreOrder,
-        )?;
-        call_graph.insert(caller_identity.clone(), callees);
+        let mut collector = CallGraphCollector::default();
+        structural_visit(&function.body, &mut collector)?;
+        call_graph.insert(caller_identity.clone(), collector.callees);
     }
 
     let mut recursive = HashSet::new();
@@ -138,6 +137,51 @@ fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<Obje
         }
     }
     Ok(recursive)
+}
+
+#[derive(Default)]
+struct CallGraphCollector {
+    callees: HashSet<ObjectIdentity>,
+}
+
+#[tvm_ffi::dispatch(visit)]
+impl CallGraphCollector {
+    fn visit_call(&mut self, call: Call, region: DefRegionKind) -> Result<()> {
+        if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
+            self.callees.insert(ObjectIdentity::of(&global));
+        }
+        if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+            self.visit_child(&call.op, region)?;
+        }
+        for argument in call.args.iter() {
+            self.visit_child(&argument, region)?;
+        }
+        Ok(())
+    }
+
+    fn visit_attribute(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<()> {
+        self.visit_child(&value.value, region)?;
+        self.visit_child(&value.body, region)?;
+        Ok(())
+    }
+
+    fn visit_loop(&mut self, value: For, region: DefRegionKind) -> Result<()> {
+        self.visit_child(&value.min, region)?;
+        self.visit_child(&value.extent, region)?;
+        if let Some(step) = &value.step {
+            self.visit_child(step, region)?;
+        }
+        self.visit_child(&value.body, region)?;
+        Ok(())
+    }
+
+    fn visit_stmt_expr_default(
+        &mut self,
+        value: &VisitValue,
+        region: DefRegionKind,
+    ) -> Result<Option<VisitInterrupt>> {
+        visit_stmt_expr_default(self, value, region)
+    }
 }
 
 fn is_inlinable(
@@ -166,9 +210,23 @@ struct PrimFuncInliner {
     inlinable: FunctionTable,
     removable: HashSet<ObjectIdentity>,
     current_target: Option<Any>,
+    buffer_remaps: BufferRemaps,
 }
 
 impl PrimFuncInliner {
+    fn mutate_buffer_definition(
+        &mut self,
+        buffer: &BufferVar,
+        region: DefRegionKind,
+    ) -> Result<BufferVar> {
+        let mut remaps = std::mem::take(&mut self.buffer_remaps);
+        let result = remaps.mutate_definition(buffer, |expression| {
+            self.mutate(expression, region)?.try_into()
+        });
+        self.buffer_remaps = remaps;
+        result
+    }
+
     fn visit_function(&mut self, function: PrimFunc) -> Result<PrimFunc> {
         let previous = std::mem::replace(&mut self.current_target, function_target(&function)?);
         let body = structural_mutate(function.body.clone(), &mut *self).and_then(Stmt::try_from);
@@ -194,6 +252,76 @@ impl PrimFuncInliner {
 
 #[tvm_ffi::dispatch(mutate)]
 impl PrimFuncInliner {
+    fn mutate_variable(&mut self, value: Var) -> Var {
+        self.buffer_remaps.use_variable(&value)
+    }
+
+    fn mutate_load(&mut self, value: TensorLoad, region: DefRegionKind) -> Result<TensorLoad> {
+        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source = self.buffer_remaps.use_buffer(&source);
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
+            return Ok(value);
+        }
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
+    }
+
+    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<BufferStore> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        let stored_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if buffer.same_as(&value.buffer)
+            && stored_value.same_as(&value.value)
+            && array_same_as(&indices, &value.indices)
+        {
+            return Ok(value);
+        }
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
+    }
+
+    fn mutate_alloc_buffer(
+        &mut self,
+        value: AllocBuffer,
+        region: DefRegionKind,
+    ) -> Result<AllocBuffer> {
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
+    }
+
+    fn mutate_decl_buffer(
+        &mut self,
+        value: DeclBuffer,
+        region: DefRegionKind,
+    ) -> Result<DeclBuffer> {
+        let data: Expr = self.mutate(&value.data, region)?.try_into()?;
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
+    }
+
     fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Stmt> {
         if let Ok(call) = value.value.clone().try_cast::<Call>() {
             if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
@@ -227,16 +355,38 @@ impl PrimFuncInliner {
                 }
             }
         }
-        self.default_mutate_value(&value, region)
-            .and_then(Stmt::try_from)
+        let evaluated: Expr = self.mutate(&value.value, region)?.try_into()?;
+        if evaluated.same_as(&value.value) {
+            return Ok(value.into());
+        }
+        Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
     }
 
-    fn mutate_call(&mut self, value: Call, region: DefRegionKind) -> Result<Expr> {
+    fn mutate_call(&mut self, value: Call, region: DefRegionKind) -> Result<Call> {
         if let Ok(global) = value.op.clone().try_cast::<GlobalVar>() {
             self.removable.remove(&ObjectIdentity::of(&global));
         }
-        self.default_mutate_value(&value, region)
-            .and_then(Expr::try_from)
+        let op = if value.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+            self.mutate(&value.op, region)?.try_into()?
+        } else {
+            value.op.clone()
+        };
+        let args: Array<Expr> = self.mutate(&value.args, region)?.try_into()?;
+        if op.same_as(&value.op) && array_same_as(&args, &value.args) {
+            return Ok(value);
+        }
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone(),
+            op,
+            args,
+            value.attrs.clone(),
+            value.ty_args.clone(),
+        ))
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
     }
 }
 

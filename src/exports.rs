@@ -30,7 +30,7 @@
 //! import tvm                                  # loads libtvm_compiler first
 //! import tvm_ffi
 //! lib = tvm_ffi.load_module("target/debug/libtvm.so")
-//! simplified = lib["simplify_add_zero"](prim_func)
+//! simplified = lib["remove_no_op"](prim_func)
 //! ```
 //!
 //! Arguments and results cross the boundary as TVM objects: a
@@ -45,42 +45,24 @@ use tvm_ffi::tvm_ffi_dll_export_typed_func;
 
 use crate::analysis;
 use crate::tirx::PrimFunc;
-use crate::transform::{self, examples};
+use crate::transform;
 
 // PrimFunc -> PrimFunc transformations.
-tvm_ffi_dll_export_typed_func!(simplify_add_zero, examples::simplify_add_zero_prim_func);
-tvm_ffi_dll_export_typed_func!(
-    fold_integer_constants,
-    examples::fold_integer_constants_prim_func
-);
-tvm_ffi_dll_export_typed_func!(
-    simplify_neutral_elements,
-    examples::simplify_neutral_elements_prim_func
-);
-tvm_ffi_dll_export_typed_func!(
-    simplify_known_control_flow,
-    examples::simplify_known_control_flow_prim_func
-);
-tvm_ffi_dll_export_typed_func!(
-    eliminate_unit_loops,
-    examples::eliminate_unit_loops_prim_func
-);
 tvm_ffi_dll_export_typed_func!(skip_assert, transform::skip_assert_prim_func);
 tvm_ffi_dll_export_typed_func!(lower_tirx_opaque, transform::lower_tirx_opaque_prim_func);
 tvm_ffi_dll_export_typed_func!(remove_no_op, transform::remove_no_op_prim_func);
 tvm_ffi_dll_export_typed_func!(remove_assume, transform::remove_assume_prim_func);
 tvm_ffi_dll_export_typed_func!(unroll_loop, transform::unroll_loop_prim_func);
 tvm_ffi_dll_export_typed_func!(
+    common_subexpr_elim,
+    transform::common_subexpr_elim_prim_func
+);
+tvm_ffi_dll_export_typed_func!(
     decorate_device_scope,
     transform::decorate_device_scope_prim_func
 );
 
 // IRModule -> IRModule transformations.
-tvm_ffi_dll_export_typed_func!(simplify_add_zero_module, examples::simplify_add_zero_module);
-tvm_ffi_dll_export_typed_func!(
-    prune_unreachable_functions_from_main,
-    examples::prune_unreachable_functions_from_main
-);
 tvm_ffi_dll_export_typed_func!(
     inline_private_functions,
     transform::inline_private_functions_module
@@ -102,6 +84,7 @@ tvm_ffi_dll_export_typed_func!(
     transform::inline_private_functions
 );
 tvm_ffi_dll_export_typed_func!(convert_ssa_pass, transform::convert_ssa);
+tvm_ffi_dll_export_typed_func!(common_subexpr_elim_pass, transform::common_subexpr_elim);
 
 // Analyses.
 tvm_ffi_dll_export_typed_func!(expr_complexity, |func: PrimFunc| {

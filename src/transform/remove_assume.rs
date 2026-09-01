@@ -18,14 +18,14 @@
  */
 
 use tvm_ffi::{
-    structural_mutate, DefRegionKind, ObjectIdentity, ObjectRefCast, Result, String,
-    StructuralMutator,
+    structural_mutate, Any, DefRegionKind, MapValue, ObjectIdentity, ObjectRefCast, ObjectRefCore,
+    Result, String, StructuralMutator,
 };
 
-use super::utils::with_prim_func_body;
+use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
 use crate::ir::{Call, Expr};
-use crate::tirx::{Evaluate, PrimFunc, Stmt};
+use crate::tirx::{Evaluate, PrimFunc};
 
 /// Remove `Evaluate(tirx.assume(...))` using TVM's operator-identity rule.
 pub fn remove_assume_prim_func(function: PrimFunc) -> Result<PrimFunc> {
@@ -69,13 +69,23 @@ struct AssumeRemover {
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssumeRemover {
-    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Evaluate> {
         if let Ok(call) = value.value.clone().try_cast::<Call>() {
             if ObjectIdentity::of(&call.op) == self.assume_op {
-                return Ok(Evaluate::from_i64(0)?.into());
+                return Evaluate::from_i64(0);
             }
         }
-        self.default_mutate_value(&value, region)
-            .and_then(Stmt::try_from)
+        let evaluated: Expr = self.mutate(&value.value, region)?.try_into()?;
+        if evaluated.same_as(&value.value) {
+            return Ok(value);
+        }
+        Ok(Evaluate::from_complete_fields(
+            value.span.clone(),
+            evaluated,
+        ))
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
     }
 }

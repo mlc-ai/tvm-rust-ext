@@ -20,14 +20,20 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, DefRegionKind, Error, Map, ObjectIdentity, ObjectRefCast, Result,
-    String as FfiString, StructuralMutator, TYPE_ERROR,
+    structural_mutate, Any, Array, DefRegionKind, Error, Map, MapValue, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, StructuralMutator, TYPE_ERROR,
 };
 
-use super::utils::{cast_prim_expr, int_value, with_prim_func_body};
+use super::utils::{
+    array_same_as, cast_prim_expr, int_value, mutate_stmt_expr_default, with_prim_func_body,
+    BufferRemaps,
+};
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{Expr, PrimExpr, PrimType, Range, Var};
-use crate::tirx::{AttrStmt, For, ForKind, IterVar, IterVarType, PrimFunc, Stmt, StringImm};
+use crate::ir::{Expr, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::tirx::{
+    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar, IterVarType,
+    PrimFunc, Stmt, StringImm,
+};
 
 const PRAGMA_UNROLL: &str = "pragma_unroll";
 const IRREGULAR_LOOP_MARK: &str = "irregular_loop_mark";
@@ -56,6 +62,7 @@ pub fn lower_tirx_opaque() -> Result<Pass> {
 #[derive(Default)]
 struct TIRxOpaqueLower {
     unit_loop_values: HashMap<ObjectIdentity, PrimExpr>,
+    buffer_remaps: BufferRemaps,
 }
 
 #[tvm_ffi::dispatch(mutate)]
@@ -121,15 +128,13 @@ impl TIRxOpaqueLower {
         Ok(lowered)
     }
 
-    fn mutate_variable(&mut self, value: Var, region: DefRegionKind) -> Result<Expr> {
+    fn mutate_variable(&mut self, value: Var, _region: DefRegionKind) -> Result<Expr> {
         let Some(replacement) = self
             .unit_loop_values
             .get(&ObjectIdentity::of(&value))
             .cloned()
         else {
-            return self
-                .default_mutate_value(&value, region)
-                .and_then(Expr::try_from);
+            return Ok(self.buffer_remaps.use_variable(&value).into());
         };
 
         let variable_type = value.ty.clone().try_cast::<PrimType>()?;
@@ -139,6 +144,91 @@ impl TIRxOpaqueLower {
         } else {
             Ok(cast_prim_expr(replacement, variable_type)?.into())
         }
+    }
+
+    fn mutate_load(&mut self, value: TensorLoad, region: DefRegionKind) -> Result<TensorLoad> {
+        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source = self.buffer_remaps.use_buffer(&source);
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
+            return Ok(value);
+        }
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
+    }
+
+    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<BufferStore> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        let stored_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if buffer.same_as(&value.buffer)
+            && stored_value.same_as(&value.value)
+            && array_same_as(&indices, &value.indices)
+        {
+            return Ok(value);
+        }
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
+    }
+
+    fn mutate_alloc_buffer(
+        &mut self,
+        value: AllocBuffer,
+        region: DefRegionKind,
+    ) -> Result<AllocBuffer> {
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
+    }
+
+    fn mutate_decl_buffer(
+        &mut self,
+        value: DeclBuffer,
+        region: DefRegionKind,
+    ) -> Result<DeclBuffer> {
+        let data: Expr = self.mutate(&value.data, region)?.try_into()?;
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
+    }
+}
+
+impl TIRxOpaqueLower {
+    fn mutate_buffer_definition(
+        &mut self,
+        buffer: &BufferVar,
+        region: DefRegionKind,
+    ) -> Result<BufferVar> {
+        let mut remaps = std::mem::take(&mut self.buffer_remaps);
+        let result = remaps.mutate_definition(buffer, |expression| {
+            self.mutate(expression, region)?.try_into()
+        });
+        self.buffer_remaps = remaps;
+        result
     }
 }
 
