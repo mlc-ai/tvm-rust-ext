@@ -26,6 +26,7 @@ use crate::ir::IRModule;
 use crate::tirx::PrimFunc;
 
 mod annotate_entry_func;
+mod convert_ssa;
 mod decorate_device_scope;
 mod eliminate_unit_loops;
 mod filter;
@@ -44,6 +45,7 @@ mod unroll_loop;
 mod utils;
 
 pub use annotate_entry_func::annotate_entry_func;
+pub use convert_ssa::{convert_ssa, convert_ssa_module, convert_ssa_prim_func};
 pub use decorate_device_scope::{decorate_device_scope, decorate_device_scope_prim_func};
 pub use filter::filter;
 pub use inline_private_functions::{inline_private_functions, inline_private_functions_module};

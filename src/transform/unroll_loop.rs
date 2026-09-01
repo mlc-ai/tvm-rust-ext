@@ -72,9 +72,9 @@ impl UnrollLoopConfig {
 
 #[derive(Clone, Copy)]
 struct UnrollOptions {
-    auto_max_step: i64,
-    auto_max_depth: i64,
-    auto_max_extent: i64,
+    auto_max_step: i32,
+    auto_max_depth: i32,
+    auto_max_extent: i32,
     explicit_unroll: bool,
     unroll_local_access: bool,
 }
@@ -98,9 +98,12 @@ impl UnrollOptions {
         };
         let config = UnrollLoopConfig::try_from(raw)?;
         Ok(Self {
-            auto_max_step: config.field("auto_max_step")?,
-            auto_max_depth: config.field("auto_max_depth")?,
-            auto_max_extent: config.field("auto_max_extent")?,
+            auto_max_step: checked_i32_config(config.field("auto_max_step")?, "auto_max_step")?,
+            auto_max_depth: checked_i32_config(config.field("auto_max_depth")?, "auto_max_depth")?,
+            auto_max_extent: checked_i32_config(
+                config.field("auto_max_extent")?,
+                "auto_max_extent",
+            )?,
             explicit_unroll: config.field::<i64>("explicit_unroll")? != 0,
             unroll_local_access: config.field::<i64>("unroll_local_access")? != 0,
         })
@@ -127,7 +130,8 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
     if !unroller.changed && body.same_as(&original_body) {
         return Ok(function);
     }
-    convert_ssa(with_prim_func_body(function, body))
+    let body = super::convert_ssa::convert_ssa_stmt(body)?;
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.UnrollLoop` PrimFunc pass in Rust.
@@ -146,9 +150,9 @@ pub fn unroll_loop() -> Result<Pass> {
 struct LoopUnroller {
     analyzer: Analyzer,
     options: UnrollOptions,
-    normal_loop_depth: i64,
-    unroll_depth: i64,
-    step_count: i64,
+    normal_loop_depth: i32,
+    unroll_depth: i32,
+    step_count: i32,
     variables_touching_local: HashSet<ObjectIdentity>,
     changed: bool,
 }
@@ -164,7 +168,7 @@ impl LoopUnroller {
                         "pragma_auto_unroll_max_step must be an integer literal",
                         "",
                     )
-                })?;
+                })? as i32;
                 let previous = std::mem::replace(&mut self.options.auto_max_step, replacement);
                 let body = self.mutate(&value.body, region).and_then(Stmt::try_from);
                 self.options.auto_max_step = previous;
@@ -199,7 +203,7 @@ impl LoopUnroller {
             && self.normal_loop_depth == 0
             && self.unroll_depth <= self.options.auto_max_depth;
         automatic = automatic
-            && (extent.saturating_mul(self.step_count) <= self.options.auto_max_step
+            && (extent * self.step_count <= self.options.auto_max_step
                 || extent <= self.options.auto_max_extent);
 
         if mutated.kind == ForKind::kUnrolled {
@@ -223,7 +227,7 @@ impl LoopUnroller {
         }
 
         if automatic {
-            self.step_count = self.step_count.saturating_mul(extent);
+            self.step_count *= extent;
             self.unroll_depth += 1;
         } else {
             self.normal_loop_depth += 1;
@@ -297,7 +301,7 @@ impl LoopUnroller {
             changed |= !mutated.same_as(&statement);
             sequence.push(mutated);
 
-            self.step_count = self.step_count.saturating_add(saved_steps);
+            self.step_count += saved_steps;
             self.unroll_depth = self.unroll_depth.max(saved_unroll_depth);
             self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
         }
@@ -310,14 +314,14 @@ impl LoopUnroller {
 }
 
 impl LoopUnroller {
-    fn constant_extent(&self, loop_node: &For) -> Result<i64> {
+    fn constant_extent(&self, loop_node: &For) -> Result<i32> {
         let simplified = self.analyzer.simplify(&loop_node.extent)?;
         Ok(literal_value(&simplified)
-            .filter(|value| i32::try_from(*value).is_ok())
+            .and_then(|value| i32::try_from(value).ok())
             .unwrap_or(-1))
     }
 
-    fn unroll(&self, loop_node: &For, extent: i64) -> Result<Stmt> {
+    fn unroll(&self, loop_node: &For, extent: i32) -> Result<Stmt> {
         if extent < 0 {
             return Err(Error::new(
                 VALUE_ERROR,
@@ -331,7 +335,8 @@ impl LoopUnroller {
         let loop_type = loop_node.loop_var.ty.clone().try_cast::<PrimType>()?;
         let mut unrolled = Vec::with_capacity(extent as usize);
         for offset in 0..extent {
-            let offset = IntImm::from_complete_fields(None, loop_type.clone(), offset).into();
+            let offset =
+                IntImm::from_complete_fields(None, loop_type.clone(), i64::from(offset)).into();
             let replacement = add_with_constant_folding(&loop_node.min, offset)?;
             let replacements = Map::<Var, Expr>::from_iter([(
                 loop_node.loop_var.as_var().clone(),
@@ -369,6 +374,16 @@ fn literal_value(value: &PrimExpr) -> Option<i64> {
         .map(|literal| literal.value)
 }
 
+fn checked_i32_config(value: i64, field: &str) -> Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        Error::new(
+            VALUE_ERROR,
+            &format!("tirx.UnrollLoop {field} does not fit the native i32 field"),
+            "",
+        )
+    })
+}
+
 fn add_with_constant_folding(lhs: &PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
     let lhs_value = literal_value(lhs);
     let rhs_value = literal_value(&rhs);
@@ -398,23 +413,4 @@ fn is_local_or_warp(buffer: &BufferVar) -> Result<bool> {
     let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
     let scope = buffer_type.storage_scope.as_str();
     Ok(scope.starts_with("local") || scope.starts_with("warp"))
-}
-
-fn convert_ssa(function: PrimFunc) -> Result<PrimFunc> {
-    let module = crate::ir::IRModule::from_expr(&function)?;
-    let pass: Pass = tvm_ffi::cached_global_func!("tirx.transform.ConvertSSA")
-        .call_tuple(())?
-        .try_into()?;
-    let module = pass.run(module)?;
-    module
-        .functions
-        .iter()
-        .find_map(|(_, function)| function.try_cast::<PrimFunc>().ok())
-        .ok_or_else(|| {
-            Error::new(
-                VALUE_ERROR,
-                "ConvertSSA did not return the input PrimFunc",
-                "",
-            )
-        })
 }

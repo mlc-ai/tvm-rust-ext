@@ -27,9 +27,10 @@ use tvm::ir::{
     Var,
 };
 use tvm::tirx::{
-    Add, AddObj, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferRegion, BufferStore, BufferType,
-    Evaluate, EvaluateObj, For, ForKind, IfThenElse, Iter, IterVar, IterVarType, Layout,
-    MatchBufferRegion, Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
+    Add, AddObj, AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Axis, Bind, BufferRegion,
+    BufferStore, BufferType, DeclBuffer, Evaluate, EvaluateObj, For, ForKind, IfThenElse, Iter,
+    IterVar, IterVarType, Layout, MatchBufferRegion, Mul, Not, PrimFunc, SeqStmt, Stmt, Sub,
+    TileLayout, GE, GT, LE, LT, NE,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -1646,6 +1647,38 @@ fn rust_remove_no_op_matches_cpp_on_non_sblock_control_and_effects() {
 }
 
 #[test]
+fn rust_remove_no_op_selects_constant_branches_and_preserves_effect_spans() {
+    load_tvm_compiler();
+    let span = Span::new(SourceName::get("remove_no_op.rs").unwrap(), 7, 7, 3, 19).unwrap();
+    let effect: Expr = Call::new(
+        PrimType::new("int32").unwrap(),
+        GlobalVar::new("effect"),
+        Vec::new(),
+    )
+    .into();
+    let effect_statement = Evaluate::with_span(effect, Some(&span)).unwrap();
+    let effect_pointer = object_pointer(&effect_statement);
+    let conditional = IfThenElse::new(
+        typed_int_expression("bool", 1),
+        effect_statement,
+        Some(Evaluate::from_i64(0).unwrap().into()),
+    )
+    .unwrap();
+    let function = PrimFunc::from_body(conditional).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::remove_no_op_prim_func(function).unwrap();
+    let rust_evaluate = rust_function.body.clone().try_cast::<Evaluate>().unwrap();
+    let cpp_result = cpp_pass("tirx.transform.RemoveNoOp")
+        .run(module.clone())
+        .unwrap();
+
+    assert_eq!(object_pointer(&rust_evaluate), effect_pointer);
+    assert_eq!(rust_evaluate.span.as_ref().unwrap().line, 7);
+    assert_structural_equal(&IRModule::from_expr(rust_function).unwrap(), &cpp_result);
+}
+
+#[test]
 fn rust_remove_no_op_matches_cpp_on_redundant_buffer_store() {
     load_tvm_compiler();
     let buffer_type =
@@ -1668,7 +1701,14 @@ fn rust_remove_no_op_matches_cpp_on_redundant_buffer_store() {
 fn rust_unroll_loop_matches_cpp_for_explicit_loop() {
     load_tvm_compiler();
     let loop_var = Var::new("i", "int32").unwrap();
-    let body = Evaluate::new(loop_var.clone()).unwrap();
+    let temporary = Var::new("temporary", "int32").unwrap();
+    let body = SeqStmt::new(vec![
+        Bind::new(temporary.clone(), loop_var.clone())
+            .unwrap()
+            .into(),
+        Evaluate::new(temporary).unwrap().into(),
+    ])
+    .unwrap();
     let loop_node = For::with_metadata(
         loop_var,
         int_expression(2),
@@ -1719,6 +1759,256 @@ fn rust_unroll_loop_matches_cpp_for_scoped_auto_unroll_pragma() {
     let cpp_result = cpp_pass("tirx.transform.UnrollLoop").run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_unroll_loop_matches_cpp_when_explicit_expansion_is_disabled() {
+    load_tvm_compiler();
+    let loop_var = Var::new("i", "int32").unwrap();
+    let loop_node = For::serial(
+        loop_var.clone(),
+        int_expression(0),
+        int_expression(3),
+        Evaluate::new(loop_var.clone()).unwrap(),
+    )
+    .unwrap();
+    let explicit = AttrStmt::new(
+        loop_var.clone(),
+        "pragma_unroll_explicit",
+        int_expression(0),
+        loop_node,
+    )
+    .unwrap();
+    let body = AttrStmt::new(
+        loop_var,
+        "pragma_auto_unroll_max_step",
+        int_expression(8),
+        explicit,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::from_body(body).unwrap()).unwrap();
+
+    let rust_result = transform::unroll_loop()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.UnrollLoop").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
+    assert_eq!(
+        function.body.clone().try_cast::<For>().unwrap().kind,
+        ForKind::kUnrolled
+    );
+}
+
+#[test]
+fn rust_unroll_loop_matches_cpp_for_local_buffer_indices() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("local", "int32", vec![typed_int_expression("int64", 4)]).unwrap();
+    let buffer = buffer_type.new_var("local_buffer");
+    let loop_var = Var::new("i", "int32").unwrap();
+    let store =
+        BufferStore::new(&buffer, int_expression(1), vec![loop_var.clone().into()]).unwrap();
+    let loop_node = For::serial(loop_var, int_expression(0), int_expression(4), store).unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], loop_node).unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let unroll_config = Map::<tvm::tvm_ffi::String, Any>::from_iter([(
+        tvm::tvm_ffi::String::from("unroll_local_access"),
+        Any::from(true),
+    )]);
+    let pass_config = Map::<tvm::tvm_ffi::String, Any>::from_iter([(
+        tvm::tvm_ffi::String::from("tirx.UnrollLoop"),
+        Any::from(unroll_config),
+    )]);
+    let context: transform::PassContext = Function::get_global("transform.PassContext")
+        .unwrap()
+        .call_tuple((
+            2_i64,
+            Array::<tvm::tvm_ffi::String>::new(Vec::new()),
+            Array::<tvm::tvm_ffi::String>::new(Vec::new()),
+            Array::<Any>::new(Vec::new()),
+            Some(pass_config),
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    Function::get_global("transform.EnterPassContext")
+        .unwrap()
+        .call_tuple((&context,))
+        .unwrap();
+    let rust_result = transform::unroll_loop().and_then(|pass| pass.run(module.clone()));
+    let cpp_result = cpp_pass("tirx.transform.UnrollLoop").run(module);
+    Function::get_global("transform.ExitPassContext")
+        .unwrap()
+        .call_tuple((&context,))
+        .unwrap();
+
+    assert_structural_equal(&rust_result.unwrap(), &cpp_result.unwrap());
+}
+
+#[test]
+fn rust_convert_ssa_matches_cpp_for_flat_redefinitions() {
+    load_tvm_compiler();
+    let variable = Var::new("value", "int32").unwrap();
+    let body = SeqStmt::new(vec![
+        Bind::new(variable.clone(), int_expression(1))
+            .unwrap()
+            .into(),
+        Evaluate::new(variable.clone()).unwrap().into(),
+        Bind::new(variable.clone(), int_expression(2))
+            .unwrap()
+            .into(),
+        Evaluate::new(variable).unwrap().into(),
+    ])
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::from_body(body).unwrap()).unwrap();
+
+    let rust_result = transform::convert_ssa()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+
+    let unchanged =
+        IRModule::from_expr(PrimFunc::from_body(Evaluate::from_i64(0).unwrap()).unwrap()).unwrap();
+    let unchanged_pointer = object_pointer(&unchanged);
+    let converted = transform::convert_ssa_module(unchanged).unwrap();
+    assert_eq!(object_pointer(&converted), unchanged_pointer);
+}
+
+#[test]
+fn rust_convert_ssa_matches_cpp_for_reused_dynamic_buffer_parameters() {
+    load_tvm_compiler();
+    let shape = Var::new("n", "int64").unwrap();
+    let buffer_type = BufferType::new("global", "int32", vec![shape.into()]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let make_function = || {
+        PrimFunc::new(
+            vec![buffer.as_var().clone()],
+            BufferStore::new(
+                &buffer,
+                int_expression(1),
+                vec![typed_int_expression("int64", 0)],
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let module = IRModule::with_metadata(
+        Map::from_iter([
+            (GlobalVar::new("first"), BaseFunc::from(make_function())),
+            (GlobalVar::new("second"), BaseFunc::from(make_function())),
+        ]),
+        SourceMap::new(),
+        DictAttrs::empty(),
+        Map::new(),
+    )
+    .unwrap();
+
+    let rust_result = transform::convert_ssa()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn new_non_sblock_bindings_match_native_constructors() {
+    load_tvm_compiler();
+    let lhs = prim_int_expression(1);
+    let rhs = prim_int_expression(2);
+
+    macro_rules! assert_binary_constructor {
+        ($rust:expr, $name:literal) => {{
+            let native: Expr = Function::get_global($name)
+                .unwrap()
+                .call_tuple((lhs.clone(), rhs.clone(), Option::<Span>::None))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            assert_structural_equal(&$rust, &native);
+        }};
+    }
+
+    assert_binary_constructor!(
+        Expr::from(NE::new(lhs.clone(), rhs.clone()).unwrap()),
+        "tirx.NE"
+    );
+    assert_binary_constructor!(
+        Expr::from(LT::new(lhs.clone(), rhs.clone()).unwrap()),
+        "tirx.LT"
+    );
+    assert_binary_constructor!(
+        Expr::from(LE::new(lhs.clone(), rhs.clone()).unwrap()),
+        "tirx.LE"
+    );
+    assert_binary_constructor!(
+        Expr::from(GT::new(lhs.clone(), rhs.clone()).unwrap()),
+        "tirx.GT"
+    );
+    assert_binary_constructor!(
+        Expr::from(GE::new(lhs.clone(), rhs.clone()).unwrap()),
+        "tirx.GE"
+    );
+
+    let condition = PrimExpr::try_from(typed_int_expression("bool", 1)).unwrap();
+    let native_not: Expr = Function::get_global("tirx.Not")
+        .unwrap()
+        .call_tuple((condition.clone(), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Expr::from(Not::new(condition).unwrap()), &native_not);
+
+    let variable = Var::new("bound", "int32").unwrap();
+    let rust_bind = Bind::new(variable.clone(), int_expression(1)).unwrap();
+    let native_bind: Bind = Function::get_global("tirx.Bind")
+        .unwrap()
+        .call_tuple((variable, int_expression(1), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_bind, &native_bind);
+
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int64", 4)]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let data = int_expression(0);
+    let rust_decl = DeclBuffer::new(&buffer, data.clone()).unwrap();
+    let native_decl: DeclBuffer = Function::get_global("tirx.DeclBuffer")
+        .unwrap()
+        .call_tuple((buffer.clone(), data, Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_decl, &native_decl);
+
+    let rust_alloc = AllocBuffer::new(&buffer).unwrap();
+    let native_alloc: AllocBuffer = Function::get_global("tirx.AllocBuffer")
+        .unwrap()
+        .call_tuple((
+            buffer,
+            Option::<Map<tvm::tvm_ffi::String, Any>>::None,
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_alloc, &native_alloc);
 }
 
 #[test]
@@ -1779,6 +2069,92 @@ fn rust_inline_private_functions_matches_cpp() {
 
     assert_structural_equal(&rust_result, &cpp_result);
     assert_eq!(rust_result.functions.len(), 2);
+}
+
+#[test]
+fn rust_inline_private_functions_matches_cpp_for_targets_and_expression_calls() {
+    load_tvm_compiler();
+    let make_target = |kind: &str| {
+        Function::get_global("target.Target")
+            .unwrap()
+            .call_packed(&[AnyView::from(&tvm::tvm_ffi::String::from(kind))])
+            .unwrap()
+    };
+    let llvm = make_target("llvm");
+    let cuda = make_target("cuda");
+    let int_type = PrimType::new("int32").unwrap();
+
+    let target_global = GlobalVar::new("private_cuda");
+    let target_callee = PrimFunc::with_metadata(
+        Vec::new(),
+        Evaluate::from_i64(1).unwrap(),
+        int_type.clone(),
+        DictAttrs::from_dictionary(Map::from_iter([(
+            tvm::tvm_ffi::String::from("target"),
+            cuda,
+        )])),
+        None,
+    )
+    .unwrap();
+
+    let expression_global = GlobalVar::new("private_expression");
+    let expression_callee = PrimFunc::with_metadata(
+        Vec::new(),
+        Evaluate::from_i64(2).unwrap(),
+        int_type.clone(),
+        DictAttrs::from_dictionary(Map::from_iter([(
+            tvm::tvm_ffi::String::from("target"),
+            llvm.clone(),
+        )])),
+        None,
+    )
+    .unwrap();
+
+    let target_call = Call::new(int_type.clone(), target_global.clone(), Vec::new());
+    let expression_call = Call::new(int_type.clone(), expression_global.clone(), Vec::new());
+    let caller_body = SeqStmt::new(vec![
+        Evaluate::new(target_call).unwrap().into(),
+        Evaluate::new(Add::new(expression_call, int_expression(1)).unwrap())
+            .unwrap()
+            .into(),
+    ])
+    .unwrap();
+    let caller = PrimFunc::with_metadata(
+        Vec::new(),
+        caller_body,
+        Type::missing(),
+        DictAttrs::from_dictionary(Map::from_iter([
+            (
+                tvm::tvm_ffi::String::from("global_symbol"),
+                Any::from(tvm::tvm_ffi::String::from("main")),
+            ),
+            (tvm::tvm_ffi::String::from("target"), llvm),
+        ])),
+        None,
+    )
+    .unwrap();
+    let module = IRModule::with_metadata(
+        Map::from_iter([
+            (target_global, BaseFunc::from(target_callee)),
+            (expression_global, BaseFunc::from(expression_callee)),
+            (GlobalVar::new("main"), BaseFunc::from(caller)),
+        ]),
+        SourceMap::new(),
+        DictAttrs::empty(),
+        Map::new(),
+    )
+    .unwrap();
+
+    let rust_result = transform::inline_private_functions()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.InlinePrivateFunctions")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    assert_eq!(rust_result.functions.len(), 3);
 }
 
 #[test]

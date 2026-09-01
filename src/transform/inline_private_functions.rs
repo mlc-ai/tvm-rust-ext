@@ -73,7 +73,7 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
         module.attrs.clone(),
         module.global_infos.clone(),
     )?;
-    convert_ssa(updated)
+    super::convert_ssa::convert_ssa_module(updated)
 }
 
 /// Build TVM's `tirx.InlinePrivateFunctions` module pass in Rust.
@@ -185,7 +185,7 @@ impl PrimFuncInliner {
         let callee_target = function_target(callee)?;
         match (&self.current_target, callee_target) {
             (Some(caller), Some(callee)) => tvm_ffi::cached_global_func!("ffi.StructuralEqual")
-                .call_tuple((caller, callee))?
+                .call_tuple((caller, callee, false, false))?
                 .try_into(),
             _ => Ok(true),
         }
@@ -242,11 +242,4 @@ impl PrimFuncInliner {
 
 fn function_target(function: &PrimFunc) -> Result<Option<Any>> {
     function.attrs.dict.get(&tvm_ffi::String::from("target"))
-}
-
-fn convert_ssa(module: IRModule) -> Result<IRModule> {
-    let pass: Pass = tvm_ffi::cached_global_func!("tirx.transform.ConvertSSA")
-        .call_tuple(())?
-        .try_into()?;
-    pass.run(module)
 }

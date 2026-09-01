@@ -704,7 +704,7 @@ impl Bind {
     {
         let value = value.into();
         let same_type: bool = tvm_ffi::cached_global_func!("ffi.StructuralEqual")
-            .call_tuple((&var.ty, &value.ty))?
+            .call_tuple((&var.ty, &value.ty, false, false))?
             .try_into()?;
         if !same_type {
             return Err(Error::new(

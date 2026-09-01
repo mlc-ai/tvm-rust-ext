@@ -168,6 +168,14 @@ impl NoOpRemover {
             return Ok(mutated);
         };
 
+        if let Some(condition) = int_value(&self.analyzer.simplify(&conditional.condition)?) {
+            return if condition != 0 {
+                Ok(conditional.then_case.clone())
+            } else {
+                conditional.else_case.clone().map_or_else(evaluate_zero, Ok)
+            };
+        }
+
         let then_is_no_op = is_no_op(&conditional.then_case);
         match conditional.else_case.clone() {
             Some(else_case) if then_is_no_op && is_no_op(&else_case) => {
@@ -231,7 +239,11 @@ impl NoOpRemover {
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate) -> Result<Stmt> {
-        self.make_evaluate(value.value.clone())
+        if self.has_side_effect(&value.value)? {
+            Ok(value.into())
+        } else {
+            evaluate_zero()
+        }
     }
 
     fn mutate_store(&mut self, value: BufferStore) -> Result<Stmt> {

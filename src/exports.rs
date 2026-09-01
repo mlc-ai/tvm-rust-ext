@@ -85,6 +85,7 @@ tvm_ffi_dll_export_typed_func!(
     inline_private_functions,
     transform::inline_private_functions_module
 );
+tvm_ffi_dll_export_typed_func!(convert_ssa, transform::convert_ssa_module);
 
 // Pass factories: each returns a `transform.Pass` object that composes with
 // TVM's pass infrastructure (`tvm.transform.Sequential`, `PassContext`, ...).
@@ -100,6 +101,7 @@ tvm_ffi_dll_export_typed_func!(
     inline_private_functions_pass,
     transform::inline_private_functions
 );
+tvm_ffi_dll_export_typed_func!(convert_ssa_pass, transform::convert_ssa);
 
 // Analyses.
 tvm_ffi_dll_export_typed_func!(expr_complexity, |func: PrimFunc| {
