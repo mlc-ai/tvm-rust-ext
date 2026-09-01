@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_mutate, Any, DefRegionKind, MapValue, Result};
+use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, Result};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
@@ -25,8 +25,7 @@ use crate::tirx::{AssertStmt, Evaluate, PrimFunc};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
-    let mut mutator = AssertSkipper;
-    let body = structural_mutate(func.body.clone(), &mut mutator)?.try_into()?;
+    let body = structural_mutate(func.body.clone(), AssertSkipper)?.try_into()?;
     Ok(with_prim_func_body(func, body))
 }
 
@@ -34,12 +33,12 @@ struct AssertSkipper;
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssertSkipper {
-    fn mutate_assert(&mut self, _value: AssertStmt) -> Result<Evaluate> {
+    fn mutate_assert(&self, _value: AssertStmt, _mutator: &mut Mutator) -> Result<Evaluate> {
         Evaluate::from_i64(0)
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
-        mutate_stmt_expr_default(self, value, region)
+    fn mutate_stmt_expr_default(&self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutate_stmt_expr_default(mutator, value)
     }
 }
 

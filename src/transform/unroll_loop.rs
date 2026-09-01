@@ -19,13 +19,6 @@
 
 use std::collections::HashSet;
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, DefRegionKind, Error, FieldGetter, Map,
-    MapValue, ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String,
-    StructuralMutator, WalkOrder, WalkResult, VALUE_ERROR,
-};
-
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
@@ -33,6 +26,13 @@ use crate::ir::{Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
     Add, AttrStmt, BufferStore, BufferType, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt,
     Stmt,
+};
+use tvm_ffi::derive::{Object, ObjectRef};
+use tvm_ffi::extra::structural_mutate::MutateContextDriver;
+use tvm_ffi::{
+    structural_mutate, structural_walk, Any, Array, Error, FieldGetter, Map, MapValue,
+    MutateCallbacks, Mutator, ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore,
+    Result, String, WalkOrder, WalkResult, VALUE_ERROR,
 };
 
 const AUTO_UNROLL_MAX_STEP: &str = "pragma_auto_unroll_max_step";
@@ -117,7 +117,7 @@ pub fn unroll_loop_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Result<PrimFunc> {
     let original_body = function.body.clone();
-    let mut unroller = LoopUnroller {
+    let state = LoopUnrollState {
         analyzer: Analyzer::new()?,
         options,
         normal_loop_depth: 0,
@@ -126,8 +126,9 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
         variables_touching_local: HashSet::new(),
         changed: false,
     };
+    let mut unroller = MutateCallbacks::new(state, LoopUnroller);
     let body: Stmt = structural_mutate(function.body.clone(), &mut unroller)?.try_into()?;
-    if !unroller.changed && body.same_as(&original_body) {
+    if !unroller.state().changed && body.same_as(&original_body) {
         return Ok(function);
     }
     let body = super::convert_ssa::convert_ssa_stmt(body)?;
@@ -147,7 +148,7 @@ pub fn unroll_loop() -> Result<Pass> {
     )
 }
 
-struct LoopUnroller {
+struct LoopUnrollState {
     analyzer: Analyzer,
     options: UnrollOptions,
     normal_loop_depth: i32,
@@ -157,9 +158,15 @@ struct LoopUnroller {
     changed: bool,
 }
 
+struct LoopUnroller;
+
 #[tvm_ffi::dispatch(mutate)]
 impl LoopUnroller {
-    fn mutate_attribute(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_attribute(
+        &self,
+        value: AttrStmt,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<Stmt> {
         match value.attr_key.as_str() {
             AUTO_UNROLL_MAX_STEP => {
                 let replacement = literal_value(&value.value).ok_or_else(|| {
@@ -169,10 +176,11 @@ impl LoopUnroller {
                         "",
                     )
                 })? as i32;
-                let previous = std::mem::replace(&mut self.options.auto_max_step, replacement);
-                let body = self.mutate(&value.body, region).and_then(Stmt::try_from);
-                self.options.auto_max_step = previous;
-                self.changed = true;
+                let previous =
+                    std::mem::replace(&mut mutator.state_mut().options.auto_max_step, replacement);
+                let body = mutator.mutate(&value.body).and_then(Stmt::try_from);
+                mutator.state_mut().options.auto_max_step = previous;
+                mutator.state_mut().changed = true;
                 body
             }
             UNROLL_EXPLICIT => {
@@ -183,28 +191,29 @@ impl LoopUnroller {
                         "",
                     )
                 })? != 0;
-                let previous = std::mem::replace(&mut self.options.explicit_unroll, replacement);
-                let body = self.mutate(&value.body, region).and_then(Stmt::try_from);
-                self.options.explicit_unroll = previous;
-                self.changed = true;
+                let previous = std::mem::replace(
+                    &mut mutator.state_mut().options.explicit_unroll,
+                    replacement,
+                );
+                let body = mutator.mutate(&value.body).and_then(Stmt::try_from);
+                mutator.state_mut().options.explicit_unroll = previous;
+                mutator.state_mut().changed = true;
                 body
             }
-            _ => self
-                .rewrite_regular_attribute(value, region)
-                .map(Into::into),
+            _ => rewrite_regular_attribute(mutator, value).map(Into::into),
         }
     }
 
-    fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Stmt> {
-        let mutated = self.rewrite_loop_children(value, region)?;
-        let extent = self.constant_extent(&mutated)?;
+    fn mutate_for(&self, value: For, mutator: &mut Mutator<LoopUnrollState>) -> Result<Stmt> {
+        let mutated = rewrite_loop_children(mutator, value)?;
+        let extent = mutator.state().constant_extent(&mutated)?;
         let mut automatic = mutated.kind == ForKind::kSerial
             && extent >= 0
-            && self.normal_loop_depth == 0
-            && self.unroll_depth <= self.options.auto_max_depth;
+            && mutator.state().normal_loop_depth == 0
+            && mutator.state().unroll_depth <= mutator.state().options.auto_max_depth;
         automatic = automatic
-            && (extent * self.step_count <= self.options.auto_max_step
-                || extent <= self.options.auto_max_extent);
+            && (extent * mutator.state().step_count <= mutator.state().options.auto_max_step
+                || extent <= mutator.state().options.auto_max_extent);
 
         if mutated.kind == ForKind::kUnrolled {
             if extent < 0 {
@@ -218,8 +227,9 @@ impl LoopUnroller {
         }
 
         if extent > 0
-            && self.options.unroll_local_access
-            && self
+            && mutator.state().options.unroll_local_access
+            && mutator
+                .state()
                 .variables_touching_local
                 .contains(&ObjectIdentity::of(mutated.loop_var.as_var()))
         {
@@ -227,23 +237,23 @@ impl LoopUnroller {
         }
 
         if automatic {
-            self.step_count *= extent;
-            self.unroll_depth += 1;
+            mutator.state_mut().step_count *= extent;
+            mutator.state_mut().unroll_depth += 1;
         } else {
-            self.normal_loop_depth += 1;
+            mutator.state_mut().normal_loop_depth += 1;
         }
 
-        if (automatic && self.options.explicit_unroll)
+        if (automatic && mutator.state().options.explicit_unroll)
             || (0 <= extent
-                && extent <= self.options.auto_max_extent
-                && self.options.auto_max_extent == 1)
+                && extent <= mutator.state().options.auto_max_extent
+                && mutator.state().options.auto_max_extent == 1)
         {
-            self.changed = true;
-            return self.unroll(&mutated, extent);
+            mutator.state_mut().changed = true;
+            return mutator.state().unroll(&mutated, extent);
         }
 
         if automatic && mutated.kind != ForKind::kUnrolled {
-            self.changed = true;
+            mutator.state_mut().changed = true;
             return Ok(For::from_complete_fields(
                 mutated.span.clone(),
                 mutated.loop_var.clone(),
@@ -260,24 +270,32 @@ impl LoopUnroller {
         Ok(mutated.into())
     }
 
-    fn mutate_load(&mut self, value: TensorLoad) -> Result<TensorLoad> {
-        if self.options.unroll_local_access {
+    fn mutate_load(
+        &self,
+        value: TensorLoad,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<TensorLoad> {
+        if mutator.state().options.unroll_local_access {
             let variable = value.source.clone().try_cast::<Var>()?;
             let buffer = BufferVar::try_from(variable)?;
             if is_local_or_warp(&buffer)? {
-                self.record_index_variables(&value.indices)?;
+                mutator.state_mut().record_index_variables(&value.indices)?;
             }
         }
         Ok(value)
     }
 
-    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<BufferStore> {
-        self.step_count += 1;
-        if self.options.unroll_local_access && is_local_or_warp(&value.buffer)? {
-            self.record_index_variables(&value.indices)?;
+    fn mutate_store(
+        &self,
+        value: BufferStore,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<BufferStore> {
+        mutator.state_mut().step_count += 1;
+        if mutator.state().options.unroll_local_access && is_local_or_warp(&value.buffer)? {
+            mutator.state_mut().record_index_variables(&value.indices)?;
         }
-        let stored_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
-        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        let stored_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
         if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
@@ -289,9 +307,13 @@ impl LoopUnroller {
         ))
     }
 
-    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Evaluate> {
-        self.step_count += 1;
-        let expression: Expr = self.mutate(&value.value, region)?.try_into()?;
+    fn mutate_evaluate(
+        &self,
+        value: Evaluate,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<Evaluate> {
+        mutator.state_mut().step_count += 1;
+        let expression: Expr = mutator.mutate(&value.value)?.try_into()?;
         if expression.same_as(&value.value) {
             return Ok(value);
         }
@@ -301,24 +323,29 @@ impl LoopUnroller {
         ))
     }
 
-    fn mutate_sequence(&mut self, value: SeqStmt, region: DefRegionKind) -> Result<SeqStmt> {
+    fn mutate_sequence(
+        &self,
+        value: SeqStmt,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<SeqStmt> {
         let mut changed = false;
         let mut sequence = Vec::with_capacity(value.seq.len());
         for statement in value.seq.iter() {
-            let saved_steps = self.step_count;
-            let saved_unroll_depth = self.unroll_depth;
-            let saved_normal_depth = self.normal_loop_depth;
-            self.step_count = 0;
-            self.unroll_depth = 0;
-            self.normal_loop_depth = 0;
+            let saved_steps = mutator.state().step_count;
+            let saved_unroll_depth = mutator.state().unroll_depth;
+            let saved_normal_depth = mutator.state().normal_loop_depth;
+            mutator.state_mut().step_count = 0;
+            mutator.state_mut().unroll_depth = 0;
+            mutator.state_mut().normal_loop_depth = 0;
 
-            let mutated: Stmt = self.mutate(&statement, region)?.try_into()?;
+            let mutated: Stmt = mutator.mutate(&statement)?.try_into()?;
             changed |= !mutated.same_as(&statement);
             sequence.push(mutated);
 
-            self.step_count += saved_steps;
-            self.unroll_depth = self.unroll_depth.max(saved_unroll_depth);
-            self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
+            mutator.state_mut().step_count += saved_steps;
+            mutator.state_mut().unroll_depth = mutator.state().unroll_depth.max(saved_unroll_depth);
+            mutator.state_mut().normal_loop_depth =
+                mutator.state().normal_loop_depth.max(saved_normal_depth);
         }
         if changed {
             Ok(SeqStmt::from_complete_fields(
@@ -330,58 +357,68 @@ impl LoopUnroller {
         }
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
-        mutate_stmt_expr_default(self, value, region)
+    fn mutate_stmt_expr_default(
+        &self,
+        value: &MapValue,
+        mutator: &mut Mutator<LoopUnrollState>,
+    ) -> Result<Any> {
+        mutate_stmt_expr_default(mutator, value)
     }
 }
 
-impl LoopUnroller {
-    fn rewrite_regular_attribute(
-        &mut self,
-        value: AttrStmt,
-        region: DefRegionKind,
-    ) -> Result<AttrStmt> {
-        let attr_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
-        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
-        if attr_value.same_as(&value.value) && body.same_as(&value.body) {
-            return Ok(value);
-        }
-        Ok(AttrStmt::from_complete_fields(
-            value.span.clone(),
-            value.node.clone(),
-            value.attr_key.clone(),
-            attr_value,
-            body,
-        ))
+fn rewrite_regular_attribute<Driver>(
+    mutator: &mut Mutator<LoopUnrollState, Driver>,
+    value: AttrStmt,
+) -> Result<AttrStmt>
+where
+    Driver: MutateContextDriver<LoopUnrollState> + ?Sized,
+{
+    let attr_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+    let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
+    if attr_value.same_as(&value.value) && body.same_as(&value.body) {
+        return Ok(value);
     }
-
-    fn rewrite_loop_children(&mut self, value: For, region: DefRegionKind) -> Result<For> {
-        let minimum: PrimExpr = self.mutate(&value.min, region)?.try_into()?;
-        let extent: PrimExpr = self.mutate(&value.extent, region)?.try_into()?;
-        let step: Option<PrimExpr> = self.mutate(&value.step, region)?.try_into()?;
-        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
-        if minimum.same_as(&value.min)
-            && extent.same_as(&value.extent)
-            && option_same_as(&step, &value.step)
-            && body.same_as(&value.body)
-        {
-            return Ok(value);
-        }
-        Ok(For::from_complete_fields(
-            value.span.clone(),
-            value.loop_var.clone(),
-            minimum,
-            extent,
-            value.kind,
-            body,
-            value.thread_binding.clone(),
-            value.annotations.clone(),
-            step,
-        ))
-    }
+    Ok(AttrStmt::from_complete_fields(
+        value.span.clone(),
+        value.node.clone(),
+        value.attr_key.clone(),
+        attr_value,
+        body,
+    ))
 }
 
-impl LoopUnroller {
+fn rewrite_loop_children<Driver>(
+    mutator: &mut Mutator<LoopUnrollState, Driver>,
+    value: For,
+) -> Result<For>
+where
+    Driver: MutateContextDriver<LoopUnrollState> + ?Sized,
+{
+    let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
+    let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
+    let step: Option<PrimExpr> = mutator.mutate(&value.step)?.try_into()?;
+    let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
+    if minimum.same_as(&value.min)
+        && extent.same_as(&value.extent)
+        && option_same_as(&step, &value.step)
+        && body.same_as(&value.body)
+    {
+        return Ok(value);
+    }
+    Ok(For::from_complete_fields(
+        value.span.clone(),
+        value.loop_var.clone(),
+        minimum,
+        extent,
+        value.kind,
+        body,
+        value.thread_binding.clone(),
+        value.annotations.clone(),
+        step,
+    ))
+}
+
+impl LoopUnrollState {
     fn constant_extent(&self, loop_node: &For) -> Result<i32> {
         let simplified = self.analyzer.simplify(&loop_node.extent)?;
         Ok(literal_value(&simplified)

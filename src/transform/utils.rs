@@ -19,9 +19,10 @@
 
 use std::collections::HashMap;
 
+use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    Any, Array, DefRegionKind, Map, MapValue, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    String, StructuralMutator, StructuralVisitor, VisitInterrupt, VisitValue,
+    Any, Array, DefRegionKind, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String, StructuralVisitor, VisitInterrupt, VisitValue,
 };
 
 use crate::ir::{
@@ -423,36 +424,34 @@ where
 /// expression types, and source metadata are not ordinary recursive children.
 /// Pass-specific handlers run first; this catch-all supplies the matching TIR
 /// default for the remaining handwritten node set.
-pub(super) fn mutate_stmt_expr_default<M>(
-    mutator: &mut M,
+pub(super) fn mutate_stmt_expr_default<State, Driver>(
+    mutator: &mut Mutator<State, Driver>,
     value: &MapValue,
-    region: DefRegionKind,
 ) -> Result<Any>
 where
-    M: StructuralMutator,
+    Driver: MutateContextDriver<State> + ?Sized,
 {
     if let Some(expression) = value.cast::<Expr>() {
-        return mutate_expr_default(mutator, expression, region).map(Into::into);
+        return mutate_expr_default(mutator, expression).map(Into::into);
     }
     if let Some(statement) = value.cast::<Stmt>() {
-        return mutate_stmt_default(mutator, statement, region).map(Into::into);
+        return mutate_stmt_default(mutator, statement).map(Into::into);
     }
-    mutator.default_mutate(value, region)
+    mutator.default_mutate()
 }
 
-pub(super) fn mutate_expr_default<M>(
-    mutator: &mut M,
+pub(super) fn mutate_expr_default<State, Driver>(
+    mutator: &mut Mutator<State, Driver>,
     value: Expr,
-    region: DefRegionKind,
 ) -> Result<Expr>
 where
-    M: StructuralMutator,
+    Driver: MutateContextDriver<State> + ?Sized,
 {
     if value.clone().try_cast::<Var>().is_ok() {
         return Ok(value);
     }
     if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
-        let indices: Array<PrimExpr> = mutator.mutate(&load.indices, region)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(&load.indices)?.try_into()?;
         if array_same_as(&indices, &load.indices) {
             return Ok(value);
         }
@@ -466,11 +465,11 @@ where
     }
     if let Ok(call) = value.clone().try_cast::<Call>() {
         let op = if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
-            mutator.mutate(&call.op, region)?.try_into()?
+            mutator.mutate(&call.op)?.try_into()?
         } else {
             call.op.clone()
         };
-        let args: Array<Expr> = mutator.mutate(&call.args, region)?.try_into()?;
+        let args: Array<Expr> = mutator.mutate(&call.args)?.try_into()?;
         if op.same_as(&call.op) && array_same_as(&args, &call.args) {
             return Ok(value);
         }
@@ -485,8 +484,8 @@ where
         .into());
     }
     if let Ok(let_expr) = value.clone().try_cast::<Let>() {
-        let bound_value: PrimExpr = mutator.mutate(&let_expr.value, region)?.try_into()?;
-        let body: PrimExpr = mutator.mutate(&let_expr.body, region)?.try_into()?;
+        let bound_value: PrimExpr = mutator.mutate(&let_expr.value)?.try_into()?;
+        let body: PrimExpr = mutator.mutate(&let_expr.body)?.try_into()?;
         if bound_value.same_as(&let_expr.value) && body.same_as(&let_expr.body) {
             return Ok(value);
         }
@@ -500,9 +499,9 @@ where
         .into());
     }
     if let Ok(select) = value.clone().try_cast::<Select>() {
-        let condition: PrimExpr = mutator.mutate(&select.condition, region)?.try_into()?;
-        let true_value: PrimExpr = mutator.mutate(&select.true_value, region)?.try_into()?;
-        let false_value: PrimExpr = mutator.mutate(&select.false_value, region)?.try_into()?;
+        let condition: PrimExpr = mutator.mutate(&select.condition)?.try_into()?;
+        let true_value: PrimExpr = mutator.mutate(&select.true_value)?.try_into()?;
+        let false_value: PrimExpr = mutator.mutate(&select.false_value)?.try_into()?;
         if condition.same_as(&select.condition)
             && true_value.same_as(&select.true_value)
             && false_value.same_as(&select.false_value)
@@ -524,7 +523,7 @@ where
             let old_domain = axis.dom()?;
             let domain = old_domain
                 .as_ref()
-                .map(|domain| mutate_range(mutator, domain, region))
+                .map(|domain| mutate_range(mutator, domain))
                 .transpose()?;
             if option_same_as(&domain, &old_domain) {
                 axes.push(axis);
@@ -538,9 +537,9 @@ where
                 )?);
             }
         }
-        let source: Array<PrimExpr> = mutator.mutate(&reduce.source, region)?.try_into()?;
-        let init: Array<PrimExpr> = mutator.mutate(&reduce.init, region)?.try_into()?;
-        let condition: PrimExpr = mutator.mutate(&reduce.condition, region)?.try_into()?;
+        let source: Array<PrimExpr> = mutator.mutate(&reduce.source)?.try_into()?;
+        let init: Array<PrimExpr> = mutator.mutate(&reduce.init)?.try_into()?;
+        let condition: PrimExpr = mutator.mutate(&reduce.condition)?.try_into()?;
         let axes = Array::new(axes);
         if array_same_as(&source, &reduce.source)
             && array_same_as(&init, &reduce.init)
@@ -561,21 +560,18 @@ where
         )
         .into());
     }
-    mutator
-        .default_mutate_value(&value, region)
-        .and_then(Expr::try_from)
+    mutator.default_mutate().and_then(Expr::try_from)
 }
 
-pub(super) fn mutate_stmt_default<M>(
-    mutator: &mut M,
+pub(super) fn mutate_stmt_default<State, Driver>(
+    mutator: &mut Mutator<State, Driver>,
     value: Stmt,
-    region: DefRegionKind,
 ) -> Result<Stmt>
 where
-    M: StructuralMutator,
+    Driver: MutateContextDriver<State> + ?Sized,
 {
     if let Ok(bind) = value.clone().try_cast::<Bind>() {
-        let bound_value: Expr = mutator.mutate(&bind.value, region)?.try_into()?;
+        let bound_value: Expr = mutator.mutate(&bind.value)?.try_into()?;
         if bound_value.same_as(&bind.value) {
             return Ok(value);
         }
@@ -584,8 +580,8 @@ where
         );
     }
     if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
-        let attr_value: PrimExpr = mutator.mutate(&attribute.value, region)?.try_into()?;
-        let body: Stmt = mutator.mutate(&attribute.body, region)?.try_into()?;
+        let attr_value: PrimExpr = mutator.mutate(&attribute.value)?.try_into()?;
+        let body: Stmt = mutator.mutate(&attribute.body)?.try_into()?;
         if attr_value.same_as(&attribute.value) && body.same_as(&attribute.body) {
             return Ok(value);
         }
@@ -599,10 +595,10 @@ where
         .into());
     }
     if let Ok(loop_node) = value.clone().try_cast::<For>() {
-        let minimum: PrimExpr = mutator.mutate(&loop_node.min, region)?.try_into()?;
-        let extent: PrimExpr = mutator.mutate(&loop_node.extent, region)?.try_into()?;
-        let step: Option<PrimExpr> = mutator.mutate(&loop_node.step, region)?.try_into()?;
-        let body: Stmt = mutator.mutate(&loop_node.body, region)?.try_into()?;
+        let minimum: PrimExpr = mutator.mutate(&loop_node.min)?.try_into()?;
+        let extent: PrimExpr = mutator.mutate(&loop_node.extent)?.try_into()?;
+        let step: Option<PrimExpr> = mutator.mutate(&loop_node.step)?.try_into()?;
+        let body: Stmt = mutator.mutate(&loop_node.body)?.try_into()?;
         if minimum.same_as(&loop_node.min)
             && extent.same_as(&loop_node.extent)
             && option_same_as(&step, &loop_node.step)
@@ -624,8 +620,8 @@ where
         .into());
     }
     if let Ok(while_node) = value.clone().try_cast::<While>() {
-        let condition: PrimExpr = mutator.mutate(&while_node.condition, region)?.try_into()?;
-        let body: Stmt = mutator.mutate(&while_node.body, region)?.try_into()?;
+        let condition: PrimExpr = mutator.mutate(&while_node.condition)?.try_into()?;
+        let body: Stmt = mutator.mutate(&while_node.body)?.try_into()?;
         if condition.same_as(&while_node.condition) && body.same_as(&while_node.body) {
             return Ok(value);
         }
@@ -637,7 +633,7 @@ where
         return Ok(value);
     }
     if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
-        let data: Expr = mutator.mutate(&declaration.data, region)?.try_into()?;
+        let data: Expr = mutator.mutate(&declaration.data)?.try_into()?;
         if data.same_as(&declaration.data) {
             return Ok(value);
         }
@@ -649,8 +645,8 @@ where
         .into());
     }
     if let Ok(store) = value.clone().try_cast::<BufferStore>() {
-        let stored_value: PrimExpr = mutator.mutate(&store.value, region)?.try_into()?;
-        let indices: Array<PrimExpr> = mutator.mutate(&store.indices, region)?.try_into()?;
+        let stored_value: PrimExpr = mutator.mutate(&store.value)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(&store.indices)?.try_into()?;
         if stored_value.same_as(&store.value) && array_same_as(&indices, &store.indices) {
             return Ok(value);
         }
@@ -663,9 +659,9 @@ where
         .into());
     }
     if let Ok(conditional) = value.clone().try_cast::<IfThenElse>() {
-        let condition: PrimExpr = mutator.mutate(&conditional.condition, region)?.try_into()?;
-        let then_case: Stmt = mutator.mutate(&conditional.then_case, region)?.try_into()?;
-        let else_case: Option<Stmt> = mutator.mutate(&conditional.else_case, region)?.try_into()?;
+        let condition: PrimExpr = mutator.mutate(&conditional.condition)?.try_into()?;
+        let then_case: Stmt = mutator.mutate(&conditional.then_case)?.try_into()?;
+        let else_case: Option<Stmt> = mutator.mutate(&conditional.else_case)?.try_into()?;
         if condition.same_as(&conditional.condition)
             && then_case.same_as(&conditional.then_case)
             && option_same_as(&else_case, &conditional.else_case)
@@ -681,11 +677,10 @@ where
         .into());
     }
     if let Ok(assertion) = value.clone().try_cast::<AssertStmt>() {
-        let condition: PrimExpr = mutator.mutate(&assertion.condition, region)?.try_into()?;
-        let error_kind: StringImm = mutator.mutate(&assertion.error_kind, region)?.try_into()?;
-        let message_parts: Array<StringImm> = mutator
-            .mutate(&assertion.message_parts, region)?
-            .try_into()?;
+        let condition: PrimExpr = mutator.mutate(&assertion.condition)?.try_into()?;
+        let error_kind: StringImm = mutator.mutate(&assertion.error_kind)?.try_into()?;
+        let message_parts: Array<StringImm> =
+            mutator.mutate(&assertion.message_parts)?.try_into()?;
         if condition.same_as(&assertion.condition)
             && error_kind.same_as(&assertion.error_kind)
             && array_same_as(&message_parts, &assertion.message_parts)
@@ -701,27 +696,25 @@ where
         .into());
     }
     if let Ok(sequence) = value.clone().try_cast::<SeqStmt>() {
-        let statements: Array<Stmt> = mutator.mutate(&sequence.seq, region)?.try_into()?;
+        let statements: Array<Stmt> = mutator.mutate(&sequence.seq)?.try_into()?;
         return Stmt::sequence_with_span(statements.iter().collect(), sequence.span.as_ref());
     }
     if let Ok(evaluate) = value.clone().try_cast::<Evaluate>() {
-        let evaluated: Expr = mutator.mutate(&evaluate.value, region)?.try_into()?;
+        let evaluated: Expr = mutator.mutate(&evaluate.value)?.try_into()?;
         if evaluated.same_as(&evaluate.value) {
             return Ok(value);
         }
         return Ok(Evaluate::from_complete_fields(evaluate.span.clone(), evaluated).into());
     }
-    mutator
-        .default_mutate_value(&value, region)
-        .and_then(Stmt::try_from)
+    mutator.default_mutate().and_then(Stmt::try_from)
 }
 
-fn mutate_range<M>(mutator: &mut M, value: &Range, region: DefRegionKind) -> Result<Range>
+fn mutate_range<State, Driver>(mutator: &mut Mutator<State, Driver>, value: &Range) -> Result<Range>
 where
-    M: StructuralMutator,
+    Driver: MutateContextDriver<State> + ?Sized,
 {
-    let minimum: PrimExpr = mutator.mutate(&value.min, region)?.try_into()?;
-    let extent: PrimExpr = mutator.mutate(&value.extent, region)?.try_into()?;
+    let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
+    let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
     if minimum.same_as(&value.min) && extent.same_as(&value.extent) {
         Ok(value.clone())
     } else {

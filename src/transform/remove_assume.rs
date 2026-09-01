@@ -18,8 +18,8 @@
  */
 
 use tvm_ffi::{
-    structural_mutate, Any, DefRegionKind, MapValue, ObjectIdentity, ObjectRefCast, ObjectRefCore,
-    Result, String, StructuralMutator,
+    structural_mutate, Any, MapValue, MutateCallbacks, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String,
 };
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
@@ -36,9 +36,10 @@ fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
     let assume_op: Expr = tvm_ffi::cached_global_func!("ir.GetOp")
         .call_tuple((String::from("tirx.assume"),))?
         .try_into()?;
-    let mut remover = AssumeRemover {
+    let state = AssumeRemoverState {
         assume_op: ObjectIdentity::of(&assume_op),
     };
+    let mut remover = MutateCallbacks::new(state, AssumeRemover);
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
@@ -63,19 +64,25 @@ pub fn remove_assume() -> Result<Pass> {
     )
 }
 
-struct AssumeRemover {
+struct AssumeRemover;
+
+struct AssumeRemoverState {
     assume_op: ObjectIdentity,
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssumeRemover {
-    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Evaluate> {
+    fn mutate_evaluate(
+        &self,
+        value: Evaluate,
+        mutator: &mut Mutator<AssumeRemoverState>,
+    ) -> Result<Evaluate> {
         if let Ok(call) = value.value.clone().try_cast::<Call>() {
-            if ObjectIdentity::of(&call.op) == self.assume_op {
+            if ObjectIdentity::of(&call.op) == mutator.state().assume_op {
                 return Evaluate::from_i64(0);
             }
         }
-        let evaluated: Expr = self.mutate(&value.value, region)?.try_into()?;
+        let evaluated: Expr = mutator.mutate(&value.value)?.try_into()?;
         if evaluated.same_as(&value.value) {
             return Ok(value);
         }
@@ -85,7 +92,11 @@ impl AssumeRemover {
         ))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
-        mutate_stmt_expr_default(self, value, region)
+    fn mutate_stmt_expr_default(
+        &self,
+        value: &MapValue,
+        mutator: &mut Mutator<AssumeRemoverState>,
+    ) -> Result<Any> {
+        mutate_stmt_expr_default(mutator, value)
     }
 }

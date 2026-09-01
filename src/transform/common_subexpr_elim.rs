@@ -19,9 +19,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, DefRegionKind, Error, Map, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, StructuralMutator, StructuralVisitor, VisitInterrupt,
+    structural_mutate, structural_visit, Any, DefRegionKind, Error, Map, MutateCallbacks, Mutator,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, StructuralVisitor, VisitInterrupt,
     VisitValue, TYPE_ERROR,
 };
 
@@ -44,7 +45,7 @@ pub fn common_subexpr_elim_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         return Ok(function);
     }
 
-    let mut rewriter = CseRewriter::new(plan);
+    let mut rewriter = MutateCallbacks::new(CseRewriteState::new(plan), CseRewriter);
     let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
@@ -622,20 +623,26 @@ fn is_bool(expression: &PrimExpr) -> Result<bool> {
     Ok(primitive_type.dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8)
 }
 
-struct StructuralExprReplacer {
+struct StructuralExprReplaceState {
     target: PrimExpr,
     replacement: PrimExpr,
 }
 
+struct StructuralExprReplacer;
+
 #[tvm_ffi::dispatch(mutate)]
 impl StructuralExprReplacer {
-    fn mutate_expression(&mut self, value: Expr, region: DefRegionKind) -> Result<Expr> {
+    fn mutate_expression(
+        &self,
+        value: Expr,
+        mutator: &mut Mutator<StructuralExprReplaceState>,
+    ) -> Result<Expr> {
         if let Ok(expression) = PrimExpr::try_from(value.clone()) {
-            if structurally_equal(&expression, &self.target)? {
-                return Ok(self.replacement.clone().into());
+            if structurally_equal(&expression, &mutator.state().target)? {
+                return Ok(mutator.state().replacement.clone().into());
             }
         }
-        mutate_expr_default(self, value, region)
+        mutate_expr_default(mutator, value)
     }
 }
 
@@ -644,21 +651,22 @@ fn replace_structural_subexpression(
     target: &PrimExpr,
     replacement: &PrimExpr,
 ) -> Result<PrimExpr> {
-    let mut replacer = StructuralExprReplacer {
+    let state = StructuralExprReplaceState {
         target: target.clone(),
         replacement: replacement.clone(),
     };
+    let mut replacer = MutateCallbacks::new(state, StructuralExprReplacer);
     structural_mutate(expression, &mut replacer)?.try_into()
 }
 
-struct CseRewriter {
+struct CseRewriteState {
     insert_before: HashMap<ObjectIdentity, Vec<Stmt>>,
     expression_remap: StructuralExprMap<Expr>,
     materialized: HashSet<ObjectIdentity>,
     buffer_remaps: BufferRemaps,
 }
 
-impl CseRewriter {
+impl CseRewriteState {
     fn new(plan: CsePlan) -> Self {
         Self {
             insert_before: plan.insert_before,
@@ -699,104 +707,125 @@ impl CseRewriter {
         statements.push(visited);
         Stmt::sequence(statements)
     }
+}
 
-    fn mutate_expression_children(&mut self, value: Expr, region: DefRegionKind) -> Result<Expr> {
-        if let Ok(variable) = value.clone().try_cast::<Var>() {
-            return Ok(self.buffer_remaps.use_variable(&variable).into());
-        }
-        if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
-            let source = BufferVar::try_from(load.source.clone().try_cast::<Var>()?)?;
-            let source = self.buffer_remaps.use_buffer(&source);
-            let indices = self.mutate(&load.indices, region)?.try_into()?;
-            if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
-                return Ok(value);
-            }
-            return Ok(TensorLoad::from_complete_fields(
-                load.span.clone(),
-                load.ty.clone().try_cast()?,
-                source.into(),
-                indices,
-            )
-            .into());
-        }
-        mutate_expr_default(self, value, region)
-    }
+struct CseRewriter;
 
-    fn mutate_statement_children(&mut self, value: Stmt, region: DefRegionKind) -> Result<Stmt> {
-        if let Ok(allocation) = value.clone().try_cast::<AllocBuffer>() {
-            let buffer = self.mutate_buffer_definition(&allocation.buffer, region)?;
-            if buffer.same_as(&allocation.buffer) {
-                return Ok(value);
-            }
-            return Ok(AllocBuffer::from_complete_fields(
-                allocation.span.clone(),
-                buffer,
-                allocation.annotations.clone(),
-            )
-            .into());
-        }
-        if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
-            let data: Expr = self.mutate(&declaration.data, region)?.try_into()?;
-            let buffer = self.mutate_buffer_definition(&declaration.buffer, region)?;
-            if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
-                return Ok(value);
-            }
-            return Ok(
-                DeclBuffer::from_complete_fields(declaration.span.clone(), buffer, data).into(),
-            );
-        }
-        if let Ok(store) = value.clone().try_cast::<BufferStore>() {
-            let buffer = self.buffer_remaps.use_buffer(&store.buffer);
-            let stored_value: PrimExpr = self.mutate(&store.value, region)?.try_into()?;
-            let indices = self.mutate(&store.indices, region)?.try_into()?;
-            if buffer.same_as(&store.buffer)
-                && stored_value.same_as(&store.value)
-                && array_same_as(&indices, &store.indices)
-            {
-                return Ok(value);
-            }
-            return Ok(BufferStore::from_complete_fields(
-                store.span.clone(),
-                buffer,
-                stored_value,
-                indices,
-            )
-            .into());
-        }
-        mutate_stmt_default(self, value, region)
+fn mutate_expression_children<Driver>(
+    mutator: &mut Mutator<CseRewriteState, Driver>,
+    value: Expr,
+) -> Result<Expr>
+where
+    Driver: MutateContextDriver<CseRewriteState> + ?Sized,
+{
+    if let Ok(variable) = value.clone().try_cast::<Var>() {
+        return Ok(mutator.state().buffer_remaps.use_variable(&variable).into());
     }
+    if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
+        let source = BufferVar::try_from(load.source.clone().try_cast::<Var>()?)?;
+        let source = mutator.state().buffer_remaps.use_buffer(&source);
+        let indices = mutator.mutate(&load.indices)?.try_into()?;
+        if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
+            return Ok(value);
+        }
+        return Ok(TensorLoad::from_complete_fields(
+            load.span.clone(),
+            load.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        )
+        .into());
+    }
+    mutate_expr_default(mutator, value)
+}
 
-    fn mutate_buffer_definition(
-        &mut self,
-        buffer: &BufferVar,
-        region: DefRegionKind,
-    ) -> Result<BufferVar> {
-        let mut remaps = std::mem::take(&mut self.buffer_remaps);
-        let result = remaps.mutate_definition(buffer, |expression| {
-            self.mutate(expression, region)?.try_into()
-        });
-        self.buffer_remaps = remaps;
-        result
+fn mutate_statement_children<Driver>(
+    mutator: &mut Mutator<CseRewriteState, Driver>,
+    value: Stmt,
+) -> Result<Stmt>
+where
+    Driver: MutateContextDriver<CseRewriteState> + ?Sized,
+{
+    if let Ok(allocation) = value.clone().try_cast::<AllocBuffer>() {
+        let buffer = mutate_buffer_definition(mutator, &allocation.buffer)?;
+        if buffer.same_as(&allocation.buffer) {
+            return Ok(value);
+        }
+        return Ok(AllocBuffer::from_complete_fields(
+            allocation.span.clone(),
+            buffer,
+            allocation.annotations.clone(),
+        )
+        .into());
     }
+    if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
+        let data: Expr = mutator.mutate(&declaration.data)?.try_into()?;
+        let buffer = mutate_buffer_definition(mutator, &declaration.buffer)?;
+        if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
+            return Ok(value);
+        }
+        return Ok(DeclBuffer::from_complete_fields(declaration.span.clone(), buffer, data).into());
+    }
+    if let Ok(store) = value.clone().try_cast::<BufferStore>() {
+        let buffer = mutator.state().buffer_remaps.use_buffer(&store.buffer);
+        let stored_value: PrimExpr = mutator.mutate(&store.value)?.try_into()?;
+        let indices = mutator.mutate(&store.indices)?.try_into()?;
+        if buffer.same_as(&store.buffer)
+            && stored_value.same_as(&store.value)
+            && array_same_as(&indices, &store.indices)
+        {
+            return Ok(value);
+        }
+        return Ok(BufferStore::from_complete_fields(
+            store.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        )
+        .into());
+    }
+    mutate_stmt_default(mutator, value)
+}
+
+fn mutate_buffer_definition<Driver>(
+    mutator: &mut Mutator<CseRewriteState, Driver>,
+    buffer: &BufferVar,
+) -> Result<BufferVar>
+where
+    Driver: MutateContextDriver<CseRewriteState> + ?Sized,
+{
+    let mut remaps = std::mem::take(&mut mutator.state_mut().buffer_remaps);
+    let result =
+        remaps.mutate_definition(buffer, |expression| mutator.mutate(expression)?.try_into());
+    mutator.state_mut().buffer_remaps = remaps;
+    result
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl CseRewriter {
-    fn mutate_expression(&mut self, value: Expr, region: DefRegionKind) -> Result<Expr> {
+    fn mutate_expression(
+        &self,
+        value: Expr,
+        mutator: &mut Mutator<CseRewriteState>,
+    ) -> Result<Expr> {
         if let Ok(expression) = PrimExpr::try_from(value.clone()) {
-            if let Some(replacement) = self.replacement(&expression)? {
+            if let Some(replacement) = mutator.state().replacement(&expression)? {
                 return Ok(replacement);
             }
         }
-        self.mutate_expression_children(value, region)
+        mutate_expression_children(mutator, value)
     }
 
-    fn mutate_statement(&mut self, value: Stmt, region: DefRegionKind) -> Result<Stmt> {
-        let mut visited = self.mutate_statement_children(value.clone(), region)?;
+    fn mutate_statement(
+        &self,
+        value: Stmt,
+        mutator: &mut Mutator<CseRewriteState>,
+    ) -> Result<Stmt> {
+        let mut visited = mutate_statement_children(mutator, value.clone())?;
         if let Ok(sequence) = visited.clone().try_cast::<SeqStmt>() {
             visited = sequence.flatten()?;
         }
-        self.materialize_insertions(&value, visited)
+        mutator.state_mut().materialize_insertions(&value, visited)
     }
 }
 
