@@ -19,9 +19,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, DefRegionKind, Map, MapValue, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, StructuralMutator, WalkOrder, WalkResult,
+    structural_mutate, structural_walk, Any, Array, Map, MapValue, MutateCallbacks, Mutator,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
 };
 
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
@@ -40,12 +41,12 @@ struct Scope {
 
 /// Convert repeated variable definitions to SSA form without requiring SBlock bindings.
 pub fn convert_ssa_module(module: IRModule) -> Result<IRModule> {
-    let mut converter = SsaConverter::default();
+    let mut state = SsaState::default();
     let mut changed = false;
     let mut functions = Vec::with_capacity(module.functions.len());
     for (global, function) in module.functions.iter() {
         let function = if let Ok(primitive) = function.clone().try_cast::<PrimFunc>() {
-            let converted = converter.convert_function(primitive)?;
+            let converted = convert_function(&mut state, primitive)?;
             changed |= !converted.same_as(&function);
             BaseFunc::from(converted)
         } else {
@@ -66,7 +67,7 @@ pub fn convert_ssa_module(module: IRModule) -> Result<IRModule> {
 
 /// Convert repeated definitions in a single PrimFunc to SSA form.
 pub fn convert_ssa_prim_func(function: PrimFunc) -> Result<PrimFunc> {
-    SsaConverter::default().convert_function(function)
+    convert_function(&mut SsaState::default(), function)
 }
 
 /// Build TVM's `tirx.ConvertSSA` module pass in Rust.
@@ -76,15 +77,15 @@ pub fn convert_ssa() -> Result<Pass> {
 
 /// Convert repeated definitions in an isolated statement.
 pub(crate) fn convert_ssa_stmt(statement: Stmt) -> Result<Stmt> {
-    let mut converter = SsaConverter::default();
-    converter.enter_scope();
+    let mut converter = MutateCallbacks::new(SsaState::default(), SsaConverter);
+    converter.state_mut().enter_scope();
     let converted = structural_mutate(statement, &mut converter).and_then(Stmt::try_from);
-    converter.exit_scope();
+    converter.state_mut().exit_scope();
     converted
 }
 
 #[derive(Default)]
-struct SsaConverter {
+struct SsaState {
     defined: HashSet<ObjectIdentity>,
     variable_remaps: HashMap<ObjectIdentity, Vec<Var>>,
     function_remaps: HashMap<ObjectIdentity, Var>,
@@ -92,132 +93,9 @@ struct SsaConverter {
     scopes: Vec<Scope>,
 }
 
-impl SsaConverter {
-    fn convert_function(&mut self, function: PrimFunc) -> Result<PrimFunc> {
-        self.enter_scope();
-        let converted = (|| -> Result<PrimFunc> {
-            let mut params = Vec::with_capacity(function.params.len());
-            for parameter in function.params.iter() {
-                let identity = ObjectIdentity::of(&parameter);
-                if self.defined.insert(identity.clone()) {
-                    params.push(parameter);
-                } else {
-                    let replacement = fresh_variable(&parameter);
-                    self.function_remaps.insert(identity, replacement.clone());
-                    params.push(replacement);
-                }
-            }
-            self.register_implicit_buffer_variables(&function)?;
-
-            let mut converted_params = Vec::with_capacity(params.len());
-            for (original, parameter) in function.params.iter().zip(params) {
-                if let Ok(buffer) = BufferVar::try_from(&original) {
-                    converted_params.push(self.remap_buffer_root(&buffer)?.into());
-                } else {
-                    converted_params.push(parameter);
-                }
-            }
-            let attrs = self.mutate_function_attrs(&function.attrs)?;
-            let body: Stmt = structural_mutate(function.body.clone(), &mut *self)?.try_into()?;
-            let params_changed = converted_params.len() != function.params.len()
-                || converted_params
-                    .iter()
-                    .zip(function.params.iter())
-                    .any(|(converted, original)| !converted.same_as(&original));
-            if !params_changed && attrs.same_as(&function.attrs) && body.same_as(&function.body) {
-                return Ok(function);
-            }
-            PrimFunc::with_metadata(
-                converted_params,
-                body,
-                function.ret_type.clone(),
-                attrs,
-                function.span.as_ref(),
-            )
-        })();
-
-        self.exit_scope();
-        self.function_remaps.clear();
-        self.buffer_remaps.clear();
-        converted
-    }
-
+impl SsaState {
     fn enter_scope(&mut self) {
         self.scopes.push(Scope::default());
-    }
-
-    fn mutate_function_attrs(&mut self, attrs: &DictAttrs) -> Result<DictAttrs> {
-        let mut changed = false;
-        let mut converted = Vec::with_capacity(attrs.dict.len());
-        for (key, original) in attrs.dict.iter() {
-            let (value, value_changed) = if let Ok(expression) =
-                PrimExpr::try_from(original.clone())
-            {
-                let mapped: PrimExpr =
-                    structural_mutate(expression.clone(), &mut *self)?.try_into()?;
-                let changed = !mapped.same_as(&expression);
-                (Any::from(mapped), changed)
-            } else if let Ok(statement) = Stmt::try_from(original.clone()) {
-                let mapped: Stmt = structural_mutate(statement.clone(), &mut *self)?.try_into()?;
-                let changed = !mapped.same_as(&statement);
-                (Any::from(mapped), changed)
-            } else {
-                (original.clone(), false)
-            };
-            changed |= value_changed;
-            converted.push((key, value));
-        }
-        if changed {
-            Ok(DictAttrs::from_dictionary(Map::from_iter(converted)))
-        } else {
-            Ok(attrs.clone())
-        }
-    }
-
-    fn register_implicit_buffer_variables(&mut self, function: &PrimFunc) -> Result<()> {
-        let explicit = function
-            .params
-            .iter()
-            .map(|parameter| ObjectIdentity::of(&parameter))
-            .collect::<HashSet<_>>();
-        let mut matched = HashSet::new();
-        for parameter in function.params.iter() {
-            let Ok(buffer) = BufferVar::try_from(parameter) else {
-                continue;
-            };
-            let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
-            let mut record = |variable: Var| {
-                let identity = ObjectIdentity::of(&variable);
-                if explicit.contains(&identity) || !matched.insert(identity.clone()) {
-                    return;
-                }
-                if self.defined.insert(identity.clone()) {
-                    return;
-                }
-                self.function_remaps
-                    .entry(identity)
-                    .or_insert_with(|| fresh_variable(&variable));
-            };
-            for expression in buffer_type.shape.iter() {
-                structural_walk(
-                    &expression,
-                    |variable: Var| {
-                        record(variable);
-                        WalkResult::Advance
-                    },
-                    WalkOrder::PostOrder,
-                )?;
-            }
-            for stride in buffer_type.strides.iter() {
-                if let Ok(variable) = stride.try_cast::<Var>() {
-                    record(variable);
-                }
-            }
-            if let Ok(variable) = buffer_type.elem_offset.clone().try_cast::<Var>() {
-                record(variable);
-            }
-        }
-        Ok(())
     }
 
     fn exit_scope(&mut self) {
@@ -294,126 +172,6 @@ impl SsaConverter {
         }
     }
 
-    fn remap_buffer(&mut self, buffer: &BufferVar) -> Result<BufferVar> {
-        let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
-        let shape: Array<PrimExpr> = self
-            .mutate(&old_type.shape, DefRegionKind::None)?
-            .try_into()?;
-        let strides: Array<PrimExpr> = self
-            .mutate(&old_type.strides, DefRegionKind::None)?
-            .try_into()?;
-        let elem_offset: PrimExpr = self
-            .mutate(&old_type.elem_offset, DefRegionKind::None)?
-            .try_into()?;
-        let layout = self.remap_tile_layout(&old_type.layout)?;
-
-        self.finish_buffer_remap(buffer, shape, strides, elem_offset, layout)
-    }
-
-    fn remap_buffer_root(&mut self, buffer: &BufferVar) -> Result<BufferVar> {
-        let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
-        let shape: Array<PrimExpr> =
-            structural_mutate(old_type.shape.clone(), &mut *self)?.try_into()?;
-        let strides: Array<PrimExpr> =
-            structural_mutate(old_type.strides.clone(), &mut *self)?.try_into()?;
-        let elem_offset: PrimExpr =
-            structural_mutate(old_type.elem_offset.clone(), &mut *self)?.try_into()?;
-        let layout = self.remap_tile_layout_root(&old_type.layout)?;
-        self.finish_buffer_remap(buffer, shape, strides, elem_offset, layout)
-    }
-
-    fn remap_tile_layout(&mut self, layout: &Option<Layout>) -> Result<Option<Layout>> {
-        let Some(original) = layout else {
-            return Ok(None);
-        };
-        let Ok(tile) = original.clone().try_cast::<TileLayout>() else {
-            return Ok(Some(original.clone()));
-        };
-        let old_shard = tile.shard()?;
-        let old_replica = tile.replica()?;
-        let remap = |this: &mut Self, iter: Iter| -> Result<Iter> {
-            let extent: PrimExpr = this.mutate(&iter.extent, DefRegionKind::None)?.try_into()?;
-            let stride: PrimExpr = this.mutate(&iter.stride, DefRegionKind::None)?.try_into()?;
-            if extent.same_as(&iter.extent) && stride.same_as(&iter.stride) {
-                Ok(iter)
-            } else {
-                Ok(Iter::from_complete_fields(
-                    extent,
-                    stride,
-                    iter.axis.clone(),
-                ))
-            }
-        };
-        let shard = old_shard
-            .iter()
-            .map(|iter| remap(self, iter))
-            .collect::<Result<Vec<_>>>()?;
-        let replica = old_replica
-            .iter()
-            .map(|iter| remap(self, iter))
-            .collect::<Result<Vec<_>>>()?;
-        let shard = Array::new(shard);
-        let replica = Array::new(replica);
-        if array_same_as(&shard, &old_shard) && array_same_as(&replica, &old_replica) {
-            return Ok(Some(original.clone()));
-        }
-        Ok(Some(
-            TileLayout::new(
-                shard.iter().collect(),
-                replica.iter().collect(),
-                tile.offset()?,
-            )?
-            .into(),
-        ))
-    }
-
-    fn remap_tile_layout_root(&mut self, layout: &Option<Layout>) -> Result<Option<Layout>> {
-        let Some(original) = layout else {
-            return Ok(None);
-        };
-        let Ok(tile) = original.clone().try_cast::<TileLayout>() else {
-            return Ok(Some(original.clone()));
-        };
-        let old_shard = tile.shard()?;
-        let old_replica = tile.replica()?;
-        let remap = |this: &mut Self, iter: Iter| -> Result<Iter> {
-            let extent: PrimExpr =
-                structural_mutate(iter.extent.clone(), &mut *this)?.try_into()?;
-            let stride: PrimExpr =
-                structural_mutate(iter.stride.clone(), &mut *this)?.try_into()?;
-            if extent.same_as(&iter.extent) && stride.same_as(&iter.stride) {
-                Ok(iter)
-            } else {
-                Ok(Iter::from_complete_fields(
-                    extent,
-                    stride,
-                    iter.axis.clone(),
-                ))
-            }
-        };
-        let shard = old_shard
-            .iter()
-            .map(|iter| remap(self, iter))
-            .collect::<Result<Vec<_>>>()?;
-        let replica = old_replica
-            .iter()
-            .map(|iter| remap(self, iter))
-            .collect::<Result<Vec<_>>>()?;
-        let shard = Array::new(shard);
-        let replica = Array::new(replica);
-        if array_same_as(&shard, &old_shard) && array_same_as(&replica, &old_replica) {
-            return Ok(Some(original.clone()));
-        }
-        Ok(Some(
-            TileLayout::new(
-                shard.iter().collect(),
-                replica.iter().collect(),
-                tile.offset()?,
-            )?
-            .into(),
-        ))
-    }
-
     fn finish_buffer_remap(
         &mut self,
         buffer: &BufferVar,
@@ -478,26 +236,254 @@ impl SsaConverter {
         Ok(replacement)
     }
 
-    fn mutate_scoped_statement(&mut self, statement: &Stmt) -> Result<Stmt> {
-        self.enter_scope();
-        let result = self
-            .mutate(statement, DefRegionKind::None)
-            .and_then(Stmt::try_from);
-        self.exit_scope();
-        result
+    fn register_implicit_buffer_variables(&mut self, function: &PrimFunc) -> Result<()> {
+        let explicit = function
+            .params
+            .iter()
+            .map(|parameter| ObjectIdentity::of(&parameter))
+            .collect::<HashSet<_>>();
+        let mut matched = HashSet::new();
+        for parameter in function.params.iter() {
+            let Ok(buffer) = BufferVar::try_from(parameter) else {
+                continue;
+            };
+            let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
+            let mut record = |variable: Var| {
+                let identity = ObjectIdentity::of(&variable);
+                if explicit.contains(&identity) || !matched.insert(identity.clone()) {
+                    return;
+                }
+                if self.defined.insert(identity.clone()) {
+                    return;
+                }
+                self.function_remaps
+                    .entry(identity)
+                    .or_insert_with(|| fresh_variable(&variable));
+            };
+            for expression in buffer_type.shape.iter() {
+                structural_walk(
+                    &expression,
+                    |variable: Var| {
+                        record(variable);
+                        WalkResult::Advance
+                    },
+                    WalkOrder::PostOrder,
+                )?;
+            }
+            for stride in buffer_type.strides.iter() {
+                if let Ok(variable) = stride.try_cast::<Var>() {
+                    record(variable);
+                }
+            }
+            if let Ok(variable) = buffer_type.elem_offset.clone().try_cast::<Var>() {
+                record(variable);
+            }
+        }
+        Ok(())
     }
+}
+
+struct SsaConverter;
+
+fn convert_function(state: &mut SsaState, function: PrimFunc) -> Result<PrimFunc> {
+    let mut converter = MutateCallbacks::new(std::mem::take(state), SsaConverter);
+    converter.state_mut().enter_scope();
+    let converted = (|| -> Result<PrimFunc> {
+        let mut params = Vec::with_capacity(function.params.len());
+        for parameter in function.params.iter() {
+            let identity = ObjectIdentity::of(&parameter);
+            if converter.state_mut().defined.insert(identity.clone()) {
+                params.push(parameter);
+            } else {
+                let replacement = fresh_variable(&parameter);
+                converter
+                    .state_mut()
+                    .function_remaps
+                    .insert(identity, replacement.clone());
+                params.push(replacement);
+            }
+        }
+        converter
+            .state_mut()
+            .register_implicit_buffer_variables(&function)?;
+
+        let mut converted_params = Vec::with_capacity(params.len());
+        for (original, parameter) in function.params.iter().zip(params) {
+            if let Ok(buffer) = BufferVar::try_from(&original) {
+                converted_params.push(remap_buffer_root(&mut converter, &buffer)?.into());
+            } else {
+                converted_params.push(parameter);
+            }
+        }
+        let attrs = mutate_function_attrs(&mut converter, &function.attrs)?;
+        let body: Stmt = structural_mutate(function.body.clone(), &mut converter)?.try_into()?;
+        let params_changed = converted_params.len() != function.params.len()
+            || converted_params
+                .iter()
+                .zip(function.params.iter())
+                .any(|(converted, original)| !converted.same_as(&original));
+        if !params_changed && attrs.same_as(&function.attrs) && body.same_as(&function.body) {
+            return Ok(function);
+        }
+        PrimFunc::with_metadata(
+            converted_params,
+            body,
+            function.ret_type.clone(),
+            attrs,
+            function.span.as_ref(),
+        )
+    })();
+    converter.state_mut().exit_scope();
+    converter.state_mut().function_remaps.clear();
+    converter.state_mut().buffer_remaps.clear();
+    *state = converter.into_state();
+    converted
+}
+
+fn mutate_function_attrs<State, Link, Marker>(
+    converter: &mut MutateCallbacks<State, Link, Marker>,
+    attrs: &DictAttrs,
+) -> Result<DictAttrs>
+where
+    MutateCallbacks<State, Link, Marker>: tvm_ffi::StructuralMutator,
+{
+    let mut changed = false;
+    let mut converted = Vec::with_capacity(attrs.dict.len());
+    for (key, original) in attrs.dict.iter() {
+        let (value, value_changed) = if let Ok(expression) = PrimExpr::try_from(original.clone()) {
+            let mapped: PrimExpr =
+                structural_mutate(expression.clone(), &mut *converter)?.try_into()?;
+            let changed = !mapped.same_as(&expression);
+            (Any::from(mapped), changed)
+        } else if let Ok(statement) = Stmt::try_from(original.clone()) {
+            let mapped: Stmt = structural_mutate(statement.clone(), &mut *converter)?.try_into()?;
+            let changed = !mapped.same_as(&statement);
+            (Any::from(mapped), changed)
+        } else {
+            (original.clone(), false)
+        };
+        changed |= value_changed;
+        converted.push((key, value));
+    }
+    if changed {
+        Ok(DictAttrs::from_dictionary(Map::from_iter(converted)))
+    } else {
+        Ok(attrs.clone())
+    }
+}
+
+fn remap_buffer<Driver>(
+    mutator: &mut Mutator<SsaState, Driver>,
+    buffer: &BufferVar,
+) -> Result<BufferVar>
+where
+    Driver: MutateContextDriver<SsaState> + ?Sized,
+{
+    let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    let shape: Array<PrimExpr> = mutator.mutate(&old_type.shape)?.try_into()?;
+    let strides: Array<PrimExpr> = mutator.mutate(&old_type.strides)?.try_into()?;
+    let elem_offset: PrimExpr = mutator.mutate(&old_type.elem_offset)?.try_into()?;
+    let layout = remap_tile_layout(&old_type.layout, |expression| {
+        mutator.mutate(expression)?.try_into()
+    })?;
+    mutator
+        .state_mut()
+        .finish_buffer_remap(buffer, shape, strides, elem_offset, layout)
+}
+
+fn remap_buffer_root<Link, Marker>(
+    converter: &mut MutateCallbacks<SsaState, Link, Marker>,
+    buffer: &BufferVar,
+) -> Result<BufferVar>
+where
+    MutateCallbacks<SsaState, Link, Marker>: tvm_ffi::StructuralMutator,
+{
+    let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    let shape: Array<PrimExpr> =
+        structural_mutate(old_type.shape.clone(), &mut *converter)?.try_into()?;
+    let strides: Array<PrimExpr> =
+        structural_mutate(old_type.strides.clone(), &mut *converter)?.try_into()?;
+    let elem_offset: PrimExpr =
+        structural_mutate(old_type.elem_offset.clone(), &mut *converter)?.try_into()?;
+    let layout = remap_tile_layout(&old_type.layout, |expression| {
+        structural_mutate(expression.clone(), &mut *converter)?.try_into()
+    })?;
+    converter
+        .state_mut()
+        .finish_buffer_remap(buffer, shape, strides, elem_offset, layout)
+}
+
+fn remap_tile_layout(
+    layout: &Option<Layout>,
+    mut mutate: impl FnMut(&PrimExpr) -> Result<PrimExpr>,
+) -> Result<Option<Layout>> {
+    let Some(original) = layout else {
+        return Ok(None);
+    };
+    let Ok(tile) = original.clone().try_cast::<TileLayout>() else {
+        return Ok(Some(original.clone()));
+    };
+    let old_shard = tile.shard()?;
+    let old_replica = tile.replica()?;
+    let mut remap = |iter: Iter| -> Result<Iter> {
+        let extent = mutate(&iter.extent)?;
+        let stride = mutate(&iter.stride)?;
+        if extent.same_as(&iter.extent) && stride.same_as(&iter.stride) {
+            Ok(iter)
+        } else {
+            Ok(Iter::from_complete_fields(
+                extent,
+                stride,
+                iter.axis.clone(),
+            ))
+        }
+    };
+    let shard = old_shard
+        .iter()
+        .map(&mut remap)
+        .collect::<Result<Vec<_>>>()?;
+    let replica = old_replica
+        .iter()
+        .map(&mut remap)
+        .collect::<Result<Vec<_>>>()?;
+    let shard = Array::new(shard);
+    let replica = Array::new(replica);
+    if array_same_as(&shard, &old_shard) && array_same_as(&replica, &old_replica) {
+        return Ok(Some(original.clone()));
+    }
+    Ok(Some(
+        TileLayout::new(
+            shard.iter().collect(),
+            replica.iter().collect(),
+            tile.offset()?,
+        )?
+        .into(),
+    ))
+}
+
+fn mutate_scoped_statement<Driver>(
+    mutator: &mut Mutator<SsaState, Driver>,
+    statement: &Stmt,
+) -> Result<Stmt>
+where
+    Driver: MutateContextDriver<SsaState> + ?Sized,
+{
+    mutator.state_mut().enter_scope();
+    let result = mutator.mutate(statement).and_then(Stmt::try_from);
+    mutator.state_mut().exit_scope();
+    result
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl SsaConverter {
-    fn mutate_variable(&mut self, value: Var) -> Var {
-        self.current_variable(&value)
+    fn mutate_variable(&self, value: Var, mutator: &mut Mutator<SsaState>) -> Var {
+        mutator.state().current_variable(&value)
     }
 
-    fn mutate_bind(&mut self, value: Bind) -> Result<Bind> {
+    fn mutate_bind(&self, value: Bind, mutator: &mut Mutator<SsaState>) -> Result<Bind> {
         // The RHS sees the previous definition; the new definition starts afterwards.
-        let bound_value: Expr = self.mutate(&value.value, DefRegionKind::None)?.try_into()?;
-        let variable = self.define_local(&value.var);
+        let bound_value: Expr = mutator.mutate(&value.value)?.try_into()?;
+        let variable = mutator.state_mut().define_local(&value.var);
         if variable.same_as(&value.var) && bound_value.same_as(&value.value) {
             return Ok(value);
         }
@@ -508,15 +494,13 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_let(&mut self, value: Let) -> Result<Let> {
+    fn mutate_let(&self, value: Let, mutator: &mut Mutator<SsaState>) -> Result<Let> {
         // The bound value sees the old definition.  Only the body sees this binder.
-        let bound_value: PrimExpr = self.mutate(&value.value, DefRegionKind::None)?.try_into()?;
-        self.enter_scope();
-        let variable = self.define_local(&value.var);
-        let body = self
-            .mutate(&value.body, DefRegionKind::None)
-            .and_then(PrimExpr::try_from);
-        self.exit_scope();
+        let bound_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+        mutator.state_mut().enter_scope();
+        let variable = mutator.state_mut().define_local(&value.var);
+        let body = mutator.mutate(&value.body).and_then(PrimExpr::try_from);
+        mutator.state_mut().exit_scope();
         let body = body?;
         if variable.same_as(&value.var)
             && bound_value.same_as(&value.value)
@@ -533,17 +517,14 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_loop(&mut self, value: For) -> Result<For> {
-        self.enter_scope();
-        let variable = self.define_local(value.loop_var.as_var());
+    fn mutate_loop(&self, value: For, mutator: &mut Mutator<SsaState>) -> Result<For> {
+        mutator.state_mut().enter_scope();
+        let variable = mutator.state_mut().define_local(value.loop_var.as_var());
         let converted = (|| -> Result<For> {
-            let minimum: PrimExpr = self.mutate(&value.min, DefRegionKind::None)?.try_into()?;
-            let extent: PrimExpr = self
-                .mutate(&value.extent, DefRegionKind::None)?
-                .try_into()?;
-            let step: Option<PrimExpr> =
-                self.mutate(&value.step, DefRegionKind::None)?.try_into()?;
-            let body: Stmt = self.mutate(&value.body, DefRegionKind::None)?.try_into()?;
+            let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
+            let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
+            let step: Option<PrimExpr> = mutator.mutate(&value.step)?.try_into()?;
+            let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
             if variable.same_as(value.loop_var.as_var())
                 && minimum.same_as(&value.min)
                 && extent.same_as(&value.extent)
@@ -564,17 +545,15 @@ impl SsaConverter {
                 step,
             ))
         })();
-        self.exit_scope();
+        mutator.state_mut().exit_scope();
         converted
     }
 
-    fn mutate_while(&mut self, value: While) -> Result<While> {
-        self.enter_scope();
+    fn mutate_while(&self, value: While, mutator: &mut Mutator<SsaState>) -> Result<While> {
+        mutator.state_mut().enter_scope();
         let converted = (|| -> Result<While> {
-            let condition: PrimExpr = self
-                .mutate(&value.condition, DefRegionKind::None)?
-                .try_into()?;
-            let body: Stmt = self.mutate(&value.body, DefRegionKind::None)?.try_into()?;
+            let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
+            let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
             if condition.same_as(&value.condition) && body.same_as(&value.body) {
                 return Ok(value);
             }
@@ -584,19 +563,21 @@ impl SsaConverter {
                 body,
             ))
         })();
-        self.exit_scope();
+        mutator.state_mut().exit_scope();
         converted
     }
 
-    fn mutate_conditional(&mut self, value: IfThenElse) -> Result<IfThenElse> {
-        let condition: PrimExpr = self
-            .mutate(&value.condition, DefRegionKind::None)?
-            .try_into()?;
-        let then_case = self.mutate_scoped_statement(&value.then_case)?;
+    fn mutate_conditional(
+        &self,
+        value: IfThenElse,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<IfThenElse> {
+        let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
+        let then_case = mutate_scoped_statement(mutator, &value.then_case)?;
         let else_case = value
             .else_case
             .as_ref()
-            .map(|branch| self.mutate_scoped_statement(branch))
+            .map(|branch| mutate_scoped_statement(mutator, branch))
             .transpose()?;
         if condition.same_as(&value.condition)
             && then_case.same_as(&value.then_case)
@@ -612,13 +593,17 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_attribute(&mut self, value: AttrStmt) -> Result<AttrStmt> {
+    fn mutate_attribute(
+        &self,
+        value: AttrStmt,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<AttrStmt> {
         if let Ok(iteration) = IterVar::try_from(value.node.clone()) {
-            return self.mutate_iter_var_attribute(value, iteration);
+            return mutate_iter_var_attribute(mutator, value, iteration);
         }
 
         let (node, node_unchanged) = if let Ok(variable) = Var::try_from(value.node.clone()) {
-            let mapped = self.current_variable(&variable);
+            let mapped = mutator.state().current_variable(&variable);
             let unchanged = mapped.same_as(&variable);
             (Any::from(mapped), unchanged)
         } else {
@@ -626,8 +611,8 @@ impl SsaConverter {
             // recursive expression child.
             (value.node.clone(), true)
         };
-        let attr_value: PrimExpr = self.mutate(&value.value, DefRegionKind::None)?.try_into()?;
-        let body = self.mutate_scoped_statement(&value.body)?;
+        let attr_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+        let body = mutate_scoped_statement(mutator, &value.body)?;
         if node_unchanged && attr_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
         }
@@ -640,10 +625,14 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_decl_buffer(&mut self, value: DeclBuffer) -> Result<DeclBuffer> {
-        self.define_local(value.buffer.as_var());
-        let buffer = self.remap_buffer(&value.buffer)?;
-        let data: Expr = self.mutate(&value.data, DefRegionKind::None)?.try_into()?;
+    fn mutate_decl_buffer(
+        &self,
+        value: DeclBuffer,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<DeclBuffer> {
+        mutator.state_mut().define_local(value.buffer.as_var());
+        let buffer = remap_buffer(mutator, &value.buffer)?;
+        let data: Expr = mutator.mutate(&value.data)?.try_into()?;
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
@@ -654,9 +643,13 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_alloc_buffer(&mut self, value: AllocBuffer) -> Result<AllocBuffer> {
-        self.define_local(value.buffer.as_var());
-        let buffer = self.remap_buffer(&value.buffer)?;
+    fn mutate_alloc_buffer(
+        &self,
+        value: AllocBuffer,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<AllocBuffer> {
+        mutator.state_mut().define_local(value.buffer.as_var());
+        let buffer = remap_buffer(mutator, &value.buffer)?;
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -667,12 +660,14 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_store(&mut self, value: BufferStore) -> Result<BufferStore> {
-        let buffer = self.remap_buffer(&value.buffer)?;
-        let stored_value: PrimExpr = self.mutate(&value.value, DefRegionKind::None)?.try_into()?;
-        let indices: Array<PrimExpr> = self
-            .mutate(&value.indices, DefRegionKind::None)?
-            .try_into()?;
+    fn mutate_store(
+        &self,
+        value: BufferStore,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<BufferStore> {
+        let buffer = remap_buffer(mutator, &value.buffer)?;
+        let stored_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
         if buffer.same_as(&value.buffer)
             && stored_value.same_as(&value.value)
             && array_same_as(&indices, &value.indices)
@@ -687,12 +682,14 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_load(&mut self, value: TensorLoad) -> Result<TensorLoad> {
+    fn mutate_load(
+        &self,
+        value: TensorLoad,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<TensorLoad> {
         let source = value.source.clone().try_cast::<Var>()?;
-        let buffer = self.remap_buffer(&BufferVar::try_from(&source)?)?;
-        let indices = self
-            .mutate(&value.indices, DefRegionKind::None)?
-            .try_into()?;
+        let buffer = remap_buffer(mutator, &BufferVar::try_from(&source)?)?;
+        let indices = mutator.mutate(&value.indices)?.try_into()?;
         if buffer.as_var().same_as(&source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
@@ -704,87 +701,94 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
-        mutate_stmt_expr_default(self, value, region)
+    fn mutate_stmt_expr_default(
+        &self,
+        value: &MapValue,
+        mutator: &mut Mutator<SsaState>,
+    ) -> Result<Any> {
+        mutate_stmt_expr_default(mutator, value)
     }
 }
 
-impl SsaConverter {
-    fn mutate_iter_var_attribute(
-        &mut self,
-        value: AttrStmt,
-        iteration: IterVar,
-    ) -> Result<AttrStmt> {
-        let original_iteration = iteration.clone();
-        let original_domain = iteration.dom()?;
-        let domain = original_domain
-            .as_ref()
-            .map(|domain| -> Result<Range> {
-                let minimum: PrimExpr =
-                    self.mutate(&domain.min, DefRegionKind::None)?.try_into()?;
-                let extent: PrimExpr = self
-                    .mutate(&domain.extent, DefRegionKind::None)?
-                    .try_into()?;
-                if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
-                    Ok(domain.clone())
-                } else {
-                    Ok(Range::from_complete_fields(
-                        minimum,
-                        extent,
-                        domain.span.clone(),
-                    ))
-                }
-            })
-            .transpose()?;
-        let original_variable = iteration.var()?.as_var().clone();
-        let identity = ObjectIdentity::of(&original_variable);
-        let mut delayed_definition = false;
-        let variable = if let Some(mapped) = self.function_remaps.get(&identity) {
-            mapped.clone()
-        } else if self.defined.contains(&identity) {
-            let replacement = fresh_variable(&original_variable);
-            self.function_remaps
-                .insert(identity.clone(), replacement.clone());
-            replacement
-        } else {
-            delayed_definition = true;
-            original_variable.clone()
-        };
-        let iteration =
-            if option_same_as(&original_domain, &domain) && variable.same_as(&original_variable) {
-                iteration
+fn mutate_iter_var_attribute<Driver>(
+    mutator: &mut Mutator<SsaState, Driver>,
+    value: AttrStmt,
+    iteration: IterVar,
+) -> Result<AttrStmt>
+where
+    Driver: MutateContextDriver<SsaState> + ?Sized,
+{
+    let original_iteration = iteration.clone();
+    let original_domain = iteration.dom()?;
+    let domain = original_domain
+        .as_ref()
+        .map(|domain| -> Result<Range> {
+            let minimum: PrimExpr = mutator.mutate(&domain.min)?.try_into()?;
+            let extent: PrimExpr = mutator.mutate(&domain.extent)?.try_into()?;
+            if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
+                Ok(domain.clone())
             } else {
-                IterVar::with_metadata(
-                    domain,
-                    variable.clone(),
-                    iteration.iter_type()?,
-                    iteration.thread_tag()?.as_str(),
-                    iteration.span()?.as_ref(),
-                )?
-            };
-        let attr_value: PrimExpr = self.mutate(&value.value, DefRegionKind::None)?.try_into()?;
-        let body = self.mutate_scoped_statement(&value.body)?;
+                Ok(Range::from_complete_fields(
+                    minimum,
+                    extent,
+                    domain.span.clone(),
+                ))
+            }
+        })
+        .transpose()?;
+    let original_variable = iteration.var()?.as_var().clone();
+    let identity = ObjectIdentity::of(&original_variable);
+    let mut delayed_definition = false;
+    let variable = if let Some(mapped) = mutator.state().function_remaps.get(&identity) {
+        mapped.clone()
+    } else if mutator.state().defined.contains(&identity) {
+        let replacement = fresh_variable(&original_variable);
+        mutator
+            .state_mut()
+            .function_remaps
+            .insert(identity.clone(), replacement.clone());
+        replacement
+    } else {
+        delayed_definition = true;
+        original_variable.clone()
+    };
+    let iteration =
+        if option_same_as(&original_domain, &domain) && variable.same_as(&original_variable) {
+            iteration
+        } else {
+            IterVar::with_metadata(
+                domain,
+                variable.clone(),
+                iteration.iter_type()?,
+                iteration.thread_tag()?.as_str(),
+                iteration.span()?.as_ref(),
+            )?
+        };
+    let attr_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+    let body = mutate_scoped_statement(mutator, &value.body)?;
 
-        if delayed_definition && !self.defined.contains(&identity) {
-            self.defined.insert(identity.clone());
-            self.function_remaps.insert(identity, variable);
-        }
-
-        if iteration.same_as(&original_iteration)
-            && attr_value.same_as(&value.value)
-            && body.same_as(&value.body)
-        {
-            return Ok(value);
-        }
-
-        Ok(AttrStmt::from_complete_fields(
-            value.span.clone(),
-            Any::from(iteration),
-            value.attr_key.clone(),
-            attr_value,
-            body,
-        ))
+    if delayed_definition && !mutator.state().defined.contains(&identity) {
+        mutator.state_mut().defined.insert(identity.clone());
+        mutator
+            .state_mut()
+            .function_remaps
+            .insert(identity, variable);
     }
+
+    if iteration.same_as(&original_iteration)
+        && attr_value.same_as(&value.value)
+        && body.same_as(&value.body)
+    {
+        return Ok(value);
+    }
+
+    Ok(AttrStmt::from_complete_fields(
+        value.span.clone(),
+        Any::from(iteration),
+        value.attr_key.clone(),
+        attr_value,
+        body,
+    ))
 }
 
 fn fresh_variable(variable: &Var) -> Var {
