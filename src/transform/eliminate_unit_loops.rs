@@ -20,13 +20,12 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, AnyCompatible, DefRegionKind, Map, ObjectIdentity, Result, String,
-    StructuralMutator,
+    structural_mutate, Any, AnyCompatible, DefRegionKind, ObjectIdentity, Result, StructuralMutator,
 };
 
 use super::utils::int_value;
 use crate::ir::{Expr, Var};
-use crate::tirx::{For, PrimFunc, Stmt};
+use crate::tirx::{For, PrimFunc};
 
 #[derive(Default)]
 struct UnitLoopEliminator {
@@ -48,11 +47,9 @@ impl UnitLoopEliminator {
     fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Any> {
         let minimum = Expr::try_from(self.mutate(&value.min, region)?)?;
         let extent = Expr::try_from(self.mutate(&value.extent, region)?)?;
-        let annotations = value.annotations.clone();
-        let kind = value.kind;
-        let should_eliminate = kind != crate::tirx::ForKind::kThreadBinding
+        let should_eliminate = value.kind != crate::tirx::ForKind::kThreadBinding
             && int_value(&extent) == Some(1)
-            && annotations.is_empty();
+            && value.annotations.is_empty();
 
         if should_eliminate {
             let key = ObjectIdentity::of(&value.loop_var);
@@ -69,28 +66,7 @@ impl UnitLoopEliminator {
             return body_result;
         }
 
-        let loop_var = Var::try_from(self.mutate(&value.loop_var, DefRegionKind::Recursive)?)?;
-        let body = Stmt::try_from(self.mutate(&value.body, region)?)?;
-        let thread_binding =
-            Option::<crate::tirx::IterVar>::try_from(self.mutate(&value.thread_binding, region)?)?;
-        let annotations = Map::<String, Any>::try_from(self.mutate(&annotations, region)?)?;
-        let step = value
-            .step
-            .as_ref()
-            .map(|step| self.mutate(step, region).and_then(Expr::try_from))
-            .transpose()?;
-
-        Ok(Any::from(For::with_metadata(
-            loop_var,
-            minimum,
-            extent,
-            kind,
-            body,
-            thread_binding,
-            annotations,
-            step,
-            value.span.as_ref(),
-        )?))
+        self.default_mutate_value(&value, region)
     }
 
     fn mutate_variable(&mut self, value: Var, region: DefRegionKind) -> Result<Any> {

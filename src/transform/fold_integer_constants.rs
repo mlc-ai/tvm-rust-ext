@@ -49,13 +49,15 @@ impl IntegerConstantFolder {
         span: Option<&Span>,
         operation: fn(i64, i64) -> Option<i64>,
     ) -> Result<Any> {
-        if let Some(folded) = try_fold_binary(lhs, rhs, span, operation) {
-            return Ok(Any::from(folded));
+        let Some((lhs, rhs, dtype)) = matching_integer_literals(lhs, rhs) else {
+            return Ok(Any::from(original));
+        };
+        if let Some(value) = operation(lhs, rhs) {
+            if let Ok(folded) = IntImm::from_dtype_with_span(dtype, value, span) {
+                return Ok(Any::from(folded));
+            }
         }
-        if is_matching_integer_pair(lhs, rhs) {
-            return Ok(Any::from(self.analyzer.get()?.simplify(&original)?));
-        }
-        Ok(Any::from(original))
+        Ok(Any::from(self.analyzer.get()?.simplify(&original)?))
     }
 }
 
@@ -92,24 +94,7 @@ impl IntegerConstantFolder {
     }
 }
 
-fn try_fold_binary(
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Option<&Span>,
-    operation: fn(i64, i64) -> Option<i64>,
-) -> Option<Expr> {
-    let (lhs, rhs, dtype) = matching_integer_literals(lhs, rhs)?;
-    let value = operation(lhs.value, rhs.value)?;
-    IntImm::from_dtype_with_span(dtype, value, span)
-        .ok()
-        .map(Expr::from)
-}
-
-fn is_matching_integer_pair(lhs: &Expr, rhs: &Expr) -> bool {
-    matching_integer_literals(lhs, rhs).is_some()
-}
-
-fn matching_integer_literals(lhs: &Expr, rhs: &Expr) -> Option<(IntImm, IntImm, DLDataType)> {
+fn matching_integer_literals(lhs: &Expr, rhs: &Expr) -> Option<(i64, i64, DLDataType)> {
     let lhs = lhs.clone().try_cast::<IntImm>().ok()?;
     let rhs = rhs.clone().try_cast::<IntImm>().ok()?;
     let lhs_dtype = lhs.ty.clone().try_cast::<PrimType>().ok()?.dtype;
@@ -120,5 +105,5 @@ fn matching_integer_literals(lhs: &Expr, rhs: &Expr) -> Option<(IntImm, IntImm, 
     {
         return None;
     }
-    Some((lhs, rhs, lhs_dtype))
+    Some((lhs.value, rhs.value, lhs_dtype))
 }

@@ -56,13 +56,10 @@ impl KnownControlFlowSimplifier {
 #[tvm_ffi::dispatch(map)]
 impl KnownControlFlowSimplifier {
     fn map_evaluation(&mut self, value: Evaluate) -> Result<Any> {
-        if int_value(&value.value).is_some() {
-            Ok(Any::from(no_op()?))
-        } else if expression_may_update_state(&value.value)? {
-            Ok(Any::from(value))
-        } else {
-            Ok(Any::from(no_op()?))
+        if int_value(&value.value).is_some() || !expression_may_update_state(&value.value)? {
+            return Ok(Any::from(no_op()?));
         }
+        Ok(Any::from(value))
     }
 
     fn map_conditional(&mut self, value: IfThenElse) -> Result<Any> {
@@ -100,13 +97,11 @@ impl KnownControlFlowSimplifier {
     }
 
     fn map_for(&mut self, value: For) -> Result<Any> {
-        if self.known_integer(&value.extent)? == Some(0) {
+        let extent = self.known_integer(&value.extent)?;
+        if extent == Some(0) {
             return Ok(Any::from(no_op()?));
         }
-        if is_no_op(&value.body)
-            && self.known_integer(&value.min)?.is_some()
-            && self.known_integer(&value.extent)?.is_some()
-        {
+        if is_no_op(&value.body) && self.known_integer(&value.min)?.is_some() && extent.is_some() {
             return Ok(Any::from(no_op()?));
         }
         Ok(Any::from(value))

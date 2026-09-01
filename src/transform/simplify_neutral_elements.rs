@@ -18,12 +18,12 @@
  */
 
 use tvm_ffi::{
-    structural_map, structural_mutate, Any, AnyCompatible, DefRegionKind, Map, Result, String,
+    structural_map, structural_mutate, Any, AnyCompatible, DefRegionKind, Result,
     StructuralMutator, WalkOrder,
 };
 
 use super::utils::int_value;
-use crate::ir::{Expr, Var};
+use crate::ir::{Expr, PrimExpr};
 use crate::tirx::{Add, For, Mul, PrimFunc, Stmt, Sub};
 
 /// Simplify arithmetic identity operations using framework-controlled mapping.
@@ -45,31 +45,31 @@ struct NeutralElementSimplifier;
 
 #[tvm_ffi::dispatch(map)]
 impl NeutralElementSimplifier {
-    fn map_add(&mut self, value: Add) -> Result<Any> {
+    fn map_add(&mut self, value: Add) -> Any {
         if int_value(&value.a) == Some(0) {
-            return Ok(value.b.to_any());
+            return value.b.to_any();
         }
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 
-    fn map_subtract(&mut self, value: Sub) -> Result<Any> {
+    fn map_subtract(&mut self, value: Sub) -> Any {
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 
-    fn map_multiply(&mut self, value: Mul) -> Result<Any> {
+    fn map_multiply(&mut self, value: Mul) -> Any {
         if int_value(&value.a) == Some(1) {
-            return Ok(value.b.to_any());
+            return value.b.to_any();
         }
         if int_value(&value.b) == Some(1) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 }
 
@@ -92,35 +92,30 @@ pub fn simplify_neutral_elements_in_loop_bodies(statement: Stmt) -> Result<Stmt>
 #[tvm_ffi::dispatch(mutate)]
 impl LoopBodyMutator {
     fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Any> {
-        let loop_var = Var::try_from(self.mutate(&value.loop_var, DefRegionKind::Recursive)?)?;
-        let minimum = Expr::try_from(self.mutate(&value.min, region)?)?;
-        let extent = Expr::try_from(self.mutate(&value.extent, region)?)?;
+        // A matched `mutate_for` owns recursion. Mutate executable loop
+        // expressions at the current depth and enter the new scope only for
+        // `body`; structural metadata remains unchanged.
+        let minimum = PrimExpr::try_from(self.mutate(&value.min, region)?)?;
+        let extent = PrimExpr::try_from(self.mutate(&value.extent, region)?)?;
 
         self.depth += 1;
         let body_result = self.mutate(&value.body, region);
         self.depth -= 1;
         let body = Stmt::try_from(body_result?)?;
 
-        let thread_binding =
-            Option::<crate::tirx::IterVar>::try_from(self.mutate(&value.thread_binding, region)?)?;
-        let annotations = Map::<String, Any>::try_from(self.mutate(&value.annotations, region)?)?;
-        let step = value
-            .step
-            .as_ref()
-            .map(|step| self.mutate(step, region).and_then(Expr::try_from))
-            .transpose()?;
+        let step = Option::<PrimExpr>::try_from(self.mutate(&value.step, region)?)?;
 
-        Ok(Any::from(For::with_metadata(
-            loop_var,
+        Ok(Any::from(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
             minimum,
             extent,
             value.kind,
             body,
-            thread_binding,
-            annotations,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
             step,
-            value.span.as_ref(),
-        )?))
+        )))
     }
 
     fn mutate_scoped_add(&mut self, value: Add, region: DefRegionKind) -> Result<Any> {

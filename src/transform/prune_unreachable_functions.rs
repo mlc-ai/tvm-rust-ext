@@ -70,7 +70,7 @@ pub fn prune_unreachable_functions(module: IRModule, entry_names: &[&str]) -> Re
             function,
             |global: &GlobalVarObj| {
                 callees.push(global.name_hint.as_str().to_owned());
-                WalkResult::Advance
+                WalkResult::Skip
             },
             WalkOrder::PreOrder,
         )?;
