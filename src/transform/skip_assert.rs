@@ -20,7 +20,7 @@
 use tvm_ffi::{structural_map, Any, Result, WalkOrder};
 
 use super::{create_prim_func_pass, Pass};
-use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc, SeqStmt, Stmt};
+use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc, SeqStmt};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
@@ -37,10 +37,7 @@ impl AssertSkipper {
     }
 
     fn map_sequence(&mut self, value: SeqStmt) -> Result<Any> {
-        Ok(Any::from(Stmt::sequence_with_span(
-            value.seq.iter().collect(),
-            value.span.as_ref(),
-        )?))
+        value.flatten().map(Any::from)
     }
 }
 
