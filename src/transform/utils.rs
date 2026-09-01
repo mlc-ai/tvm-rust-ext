@@ -21,8 +21,8 @@ use std::collections::HashMap;
 
 use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    Any, Array, DefRegionKind, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result, String, StructuralVisitor, VisitInterrupt, VisitValue,
+    Any, Array, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
+    String, VisitContext, VisitInterrupt, VisitValue,
 };
 
 use crate::ir::{
@@ -213,21 +213,17 @@ where
 }
 
 /// Apply TVM's `StmtExprVisitor` child policy to a structural value.
-pub(super) fn visit_stmt_expr_default<V>(
-    visitor: &mut V,
+pub(super) fn visit_stmt_expr_default<State>(
+    visitor: &mut VisitContext<'_, State>,
     value: &VisitValue,
-    region: DefRegionKind,
-) -> Result<Option<VisitInterrupt>>
-where
-    V: StructuralVisitor,
-{
+) -> Result<Option<VisitInterrupt>> {
     if let Some(expression) = value.cast::<Expr>() {
         if expression.clone().try_cast::<Var>().is_ok() {
             return Ok(None);
         }
         if let Ok(load) = expression.clone().try_cast::<TensorLoad>() {
             for index in load.indices.iter() {
-                if let Some(interrupt) = visitor.visit_child(&index, region)? {
+                if let Some(interrupt) = visitor.visit(&index)? {
                     return Ok(Some(interrupt));
                 }
             }
@@ -235,129 +231,129 @@ where
         }
         if let Ok(call) = expression.clone().try_cast::<Call>() {
             if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
-                if let Some(interrupt) = visitor.visit_child(&call.op, region)? {
+                if let Some(interrupt) = visitor.visit(&call.op)? {
                     return Ok(Some(interrupt));
                 }
             }
             for argument in call.args.iter() {
-                if let Some(interrupt) = visitor.visit_child(&argument, region)? {
+                if let Some(interrupt) = visitor.visit(&argument)? {
                     return Ok(Some(interrupt));
                 }
             }
             return Ok(None);
         }
         if let Ok(let_expr) = expression.clone().try_cast::<Let>() {
-            if let Some(interrupt) = visitor.visit_child(&let_expr.value, region)? {
+            if let Some(interrupt) = visitor.visit(&let_expr.value)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit_child(&let_expr.body, region);
+            return visitor.visit(&let_expr.body);
         }
         if let Ok(select) = expression.clone().try_cast::<Select>() {
-            if let Some(interrupt) = visitor.visit_child(&select.condition, region)? {
+            if let Some(interrupt) = visitor.visit(&select.condition)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit_child(&select.true_value, region)? {
+            if let Some(interrupt) = visitor.visit(&select.true_value)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit_child(&select.false_value, region);
+            return visitor.visit(&select.false_value);
         }
         if let Ok(reduce) = expression.try_cast::<Reduce>() {
             for axis in reduce.axis.iter() {
                 if let Some(domain) = axis.dom()? {
-                    if let Some(interrupt) = visitor.visit_child(&domain.min, region)? {
+                    if let Some(interrupt) = visitor.visit(&domain.min)? {
                         return Ok(Some(interrupt));
                     }
-                    if let Some(interrupt) = visitor.visit_child(&domain.extent, region)? {
+                    if let Some(interrupt) = visitor.visit(&domain.extent)? {
                         return Ok(Some(interrupt));
                     }
                 }
             }
             for source in reduce.source.iter() {
-                if let Some(interrupt) = visitor.visit_child(&source, region)? {
+                if let Some(interrupt) = visitor.visit(&source)? {
                     return Ok(Some(interrupt));
                 }
             }
             for init in reduce.init.iter() {
-                if let Some(interrupt) = visitor.visit_child(&init, region)? {
+                if let Some(interrupt) = visitor.visit(&init)? {
                     return Ok(Some(interrupt));
                 }
             }
-            return visitor.visit_child(&reduce.condition, region);
+            return visitor.visit(&reduce.condition);
         }
-        return visitor.default_visit_children(value, region);
+        return visitor.visit_children();
     }
 
     if let Some(statement) = value.cast::<Stmt>() {
         if let Ok(bind) = statement.clone().try_cast::<Bind>() {
-            return visitor.visit_child(&bind.value, region);
+            return visitor.visit(&bind.value);
         }
         if let Ok(attribute) = statement.clone().try_cast::<AttrStmt>() {
-            if let Some(interrupt) = visitor.visit_child(&attribute.value, region)? {
+            if let Some(interrupt) = visitor.visit(&attribute.value)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit_child(&attribute.body, region);
+            return visitor.visit(&attribute.body);
         }
         if let Ok(loop_node) = statement.clone().try_cast::<For>() {
-            if let Some(interrupt) = visitor.visit_child(&loop_node.min, region)? {
+            if let Some(interrupt) = visitor.visit(&loop_node.min)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit_child(&loop_node.extent, region)? {
+            if let Some(interrupt) = visitor.visit(&loop_node.extent)? {
                 return Ok(Some(interrupt));
             }
             if let Some(step) = &loop_node.step {
-                if let Some(interrupt) = visitor.visit_child(step, region)? {
+                if let Some(interrupt) = visitor.visit(step)? {
                     return Ok(Some(interrupt));
                 }
             }
-            return visitor.visit_child(&loop_node.body, region);
+            return visitor.visit(&loop_node.body);
         }
         if let Ok(while_node) = statement.clone().try_cast::<While>() {
-            if let Some(interrupt) = visitor.visit_child(&while_node.condition, region)? {
+            if let Some(interrupt) = visitor.visit(&while_node.condition)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit_child(&while_node.body, region);
+            return visitor.visit(&while_node.body);
         }
         if let Ok(allocation) = statement.clone().try_cast::<AllocBuffer>() {
-            return visit_buffer_definition(visitor, &allocation.buffer, region);
+            return visit_buffer_definition(visitor, &allocation.buffer);
         }
         if let Ok(declaration) = statement.clone().try_cast::<DeclBuffer>() {
-            if let Some(interrupt) = visitor.visit_child(&declaration.data, region)? {
+            if let Some(interrupt) = visitor.visit(&declaration.data)? {
                 return Ok(Some(interrupt));
             }
-            return visit_buffer_definition(visitor, &declaration.buffer, region);
+            return visit_buffer_definition(visitor, &declaration.buffer);
         }
         if let Ok(store) = statement.clone().try_cast::<BufferStore>() {
-            if let Some(interrupt) = visitor.visit_child(&store.value, region)? {
+            if let Some(interrupt) = visitor.visit(&store.value)? {
                 return Ok(Some(interrupt));
             }
             for index in store.indices.iter() {
-                if let Some(interrupt) = visitor.visit_child(&index, region)? {
+                if let Some(interrupt) = visitor.visit(&index)? {
                     return Ok(Some(interrupt));
                 }
             }
             return Ok(None);
         }
         if let Ok(conditional) = statement.clone().try_cast::<IfThenElse>() {
-            if let Some(interrupt) = visitor.visit_child(&conditional.condition, region)? {
+            if let Some(interrupt) = visitor.visit(&conditional.condition)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit_child(&conditional.then_case, region)? {
+            if let Some(interrupt) = visitor.visit(&conditional.then_case)? {
                 return Ok(Some(interrupt));
             }
             if let Some(branch) = &conditional.else_case {
-                return visitor.visit_child(branch, region);
+                return visitor.visit(branch);
             }
             return Ok(None);
         }
         if let Ok(assertion) = statement.clone().try_cast::<AssertStmt>() {
-            if let Some(interrupt) = visitor.visit_child(&assertion.condition, region)? {
+            if let Some(interrupt) = visitor.visit(&assertion.condition)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit_child(&assertion.error_kind, region)? {
+            if let Some(interrupt) = visitor.visit(&assertion.error_kind)? {
                 return Ok(Some(interrupt));
             }
             for part in assertion.message_parts.iter() {
-                if let Some(interrupt) = visitor.visit_child(&part, region)? {
+                if let Some(interrupt) = visitor.visit(&part)? {
                     return Ok(Some(interrupt));
                 }
             }
@@ -365,50 +361,46 @@ where
         }
         if let Ok(sequence) = statement.clone().try_cast::<SeqStmt>() {
             for child in sequence.seq.iter() {
-                if let Some(interrupt) = visitor.visit_child(&child, region)? {
+                if let Some(interrupt) = visitor.visit(&child)? {
                     return Ok(Some(interrupt));
                 }
             }
             return Ok(None);
         }
         if let Ok(evaluate) = statement.try_cast::<Evaluate>() {
-            return visitor.visit_child(&evaluate.value, region);
+            return visitor.visit(&evaluate.value);
         }
-        return visitor.default_visit_children(value, region);
+        return visitor.visit_children();
     }
 
-    visitor.default_visit_children(value, region)
+    visitor.visit_children()
 }
 
-fn visit_buffer_definition<V>(
-    visitor: &mut V,
+fn visit_buffer_definition<State>(
+    visitor: &mut VisitContext<'_, State>,
     buffer: &crate::tirx::BufferVar,
-    region: DefRegionKind,
-) -> Result<Option<VisitInterrupt>>
-where
-    V: StructuralVisitor,
-{
+) -> Result<Option<VisitInterrupt>> {
     let buffer_type = buffer.ty.clone().try_cast::<crate::tirx::BufferType>()?;
     for expression in buffer_type.shape.iter().chain(buffer_type.strides.iter()) {
-        if let Some(interrupt) = visitor.visit_child(&expression, region)? {
+        if let Some(interrupt) = visitor.visit(&expression)? {
             return Ok(Some(interrupt));
         }
     }
-    if let Some(interrupt) = visitor.visit_child(&buffer_type.elem_offset, region)? {
+    if let Some(interrupt) = visitor.visit(&buffer_type.elem_offset)? {
         return Ok(Some(interrupt));
     }
     for expression in buffer_type.allocated_addr.iter() {
-        if let Some(interrupt) = visitor.visit_child(&expression, region)? {
+        if let Some(interrupt) = visitor.visit(&expression)? {
             return Ok(Some(interrupt));
         }
     }
     if let Some(layout) = &buffer_type.layout {
         if let Ok(tile) = layout.clone().try_cast::<crate::tirx::TileLayout>() {
             for iter in tile.shard()?.iter().chain(tile.replica()?.iter()) {
-                if let Some(interrupt) = visitor.visit_child(&iter.extent, region)? {
+                if let Some(interrupt) = visitor.visit(&iter.extent)? {
                     return Ok(Some(interrupt));
                 }
-                if let Some(interrupt) = visitor.visit_child(&iter.stride, region)? {
+                if let Some(interrupt) = visitor.visit(&iter.stride)? {
                     return Ok(Some(interrupt));
                 }
             }
