@@ -17,10 +17,11 @@
  * under the License.
  */
 
-use tvm_ffi::{ObjectRefCast, Result};
+use tvm_ffi::{Any, Map, ObjectRefCast, Result, String};
 
 use crate::analysis::Analyzer;
-use crate::ir::{Expr, IntImm};
+use crate::ir::{DictAttrs, Expr, IntImm, PrimExpr, PrimType};
+use crate::tirx::{PrimFunc, Stmt};
 
 /// Lazily create the native analyzer only when a pass reaches a case that needs it.
 #[derive(Default)]
@@ -40,4 +41,46 @@ pub(super) fn int_value(expr: &Expr) -> Option<i64> {
         .try_cast::<IntImm>()
         .ok()
         .map(|value| value.value)
+}
+
+pub(super) fn with_prim_func_body(function: PrimFunc, body: Stmt) -> PrimFunc {
+    PrimFunc::from_complete_fields(
+        function.span.clone(),
+        function.ty.clone(),
+        function.attrs.clone(),
+        function.params.clone(),
+        function.ret_type.clone(),
+        body,
+    )
+}
+
+pub(super) fn with_prim_func_attr(
+    function: PrimFunc,
+    key: &str,
+    value: impl Into<Any>,
+) -> PrimFunc {
+    let key = String::from(key);
+    let mut attributes = function
+        .attrs
+        .dict
+        .iter()
+        .filter(|(existing, _)| existing.as_str() != key.as_str())
+        .collect::<Vec<_>>();
+    attributes.push((key, value.into()));
+    let attrs = DictAttrs::from_dictionary(Map::from_iter(attributes));
+
+    PrimFunc::from_complete_fields(
+        function.span.clone(),
+        function.ty.clone(),
+        attrs,
+        function.params.clone(),
+        function.ret_type.clone(),
+        function.body.clone(),
+    )
+}
+
+pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
+    tvm_ffi::cached_global_func!("tirx.Cast")
+        .call_tuple((target, value, Option::<crate::ir::Span>::None))?
+        .try_into()
 }
