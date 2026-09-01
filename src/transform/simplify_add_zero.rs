@@ -20,7 +20,7 @@
 use tvm_ffi::{structural_map, Any, AnyCompatible, Result, WalkOrder};
 
 use super::utils::int_value;
-use crate::ir::{BaseFunc, Expr, IRModule};
+use crate::ir::{Expr, IRModule};
 use crate::tirx::{Add, PrimFunc};
 
 /// Remove additions whose left or right operand is integer zero.
@@ -38,28 +38,27 @@ pub fn simplify_add_zero_prim_func(func: PrimFunc) -> Result<PrimFunc> {
 /// Apply the add-zero simplifier to every function reachable from a module.
 pub fn simplify_add_zero_module(module: IRModule) -> Result<IRModule> {
     let mut mapper = AddZeroSimplifier;
-    let functions = module.functions.clone();
-    // Rebuild an independent module so callers that retained another handle to
-    // `module` do not observe this pass's updates.
-    let mut output = module.copy_for_update()?;
-    for (global_var, function) in functions.iter() {
-        let mapped = structural_map(function, &mut mapper, WalkOrder::PostOrder)?;
-        output = output.update_function_owned(&global_var, &BaseFunc::try_from(mapped)?)?;
-    }
-    Ok(output)
+    let functions =
+        structural_map(module.functions.clone(), &mut mapper, WalkOrder::PostOrder)?.try_into()?;
+    IRModule::with_metadata(
+        functions,
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )
 }
 
 struct AddZeroSimplifier;
 
 #[tvm_ffi::dispatch(map)]
 impl AddZeroSimplifier {
-    fn map_add(&mut self, value: Add) -> Result<Any> {
+    fn map_add(&mut self, value: Add) -> Any {
         if int_value(&value.a) == Some(0) {
-            return Ok(value.b.to_any());
+            return value.b.to_any();
         }
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 }

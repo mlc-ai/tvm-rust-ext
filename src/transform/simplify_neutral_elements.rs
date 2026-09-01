@@ -45,31 +45,31 @@ struct NeutralElementSimplifier;
 
 #[tvm_ffi::dispatch(map)]
 impl NeutralElementSimplifier {
-    fn map_add(&mut self, value: Add) -> Result<Any> {
+    fn map_add(&mut self, value: Add) -> Any {
         if int_value(&value.a) == Some(0) {
-            return Ok(value.b.to_any());
+            return value.b.to_any();
         }
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 
-    fn map_subtract(&mut self, value: Sub) -> Result<Any> {
+    fn map_subtract(&mut self, value: Sub) -> Any {
         if int_value(&value.b) == Some(0) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 
-    fn map_multiply(&mut self, value: Mul) -> Result<Any> {
+    fn map_multiply(&mut self, value: Mul) -> Any {
         if int_value(&value.a) == Some(1) {
-            return Ok(value.b.to_any());
+            return value.b.to_any();
         }
         if int_value(&value.b) == Some(1) {
-            return Ok(value.a.to_any());
+            return value.a.to_any();
         }
-        Ok(Any::from(value))
+        Any::from(value)
     }
 }
 
