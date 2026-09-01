@@ -30,11 +30,10 @@ use super::utils::{
     with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{CallObj, Expr, PrimExpr, TensorLoad, TensorLoadObj, Var};
+use crate::ir::{Call, Expr, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AllocBufferObj, AttrStmtObj, Bind, BufferStore, BufferStoreObj, BufferType,
-    BufferVar, DeclBuffer, DeclBufferObj, ForObj, IfThenElseObj, LetObj, PrimFunc, ReduceObj,
-    SeqStmt, Stmt, TileLayout, WhileObj,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
+    Let, PrimFunc, Reduce, SeqStmt, Stmt, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -293,7 +292,7 @@ impl CsePlanner {
     ) -> Result<Option<VisitInterrupt>> {
         self.current_stmt = Some(statement.clone());
 
-        if let Some(node) = value.as_node::<ForObj>() {
+        if let Some(node) = value.cast::<For>() {
             self.visit_child(&node.min, region)?;
             self.visit_child(&node.extent, region)?;
             let saved_scope = self.current_scope;
@@ -303,7 +302,7 @@ impl CsePlanner {
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<IfThenElseObj>() {
+        if let Some(node) = value.cast::<IfThenElse>() {
             self.visit_child(&node.condition, region)?;
             let saved_scope = self.current_scope;
             self.current_scope = self.allocate_scope(statement.clone());
@@ -317,7 +316,7 @@ impl CsePlanner {
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<AttrStmtObj>() {
+        if let Some(node) = value.cast::<AttrStmt>() {
             self.visit_child(&node.value, region)?;
             let saved_scope = self.current_scope;
             self.current_scope = self.allocate_scope(statement);
@@ -326,17 +325,17 @@ impl CsePlanner {
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<AllocBufferObj>() {
+        if let Some(node) = value.cast::<AllocBuffer>() {
             self.visit_buffer_definition(&node.buffer, region)?;
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<DeclBufferObj>() {
+        if let Some(node) = value.cast::<DeclBuffer>() {
             self.visit_buffer_definition(&node.buffer, region)?;
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<BufferStoreObj>() {
+        if let Some(node) = value.cast::<BufferStore>() {
             self.visit_child(&node.value, region)?;
             for index in node.indices.iter() {
                 self.visit_child(&index, region)?;
@@ -344,7 +343,7 @@ impl CsePlanner {
             return Ok(None);
         }
 
-        if let Some(node) = value.as_node::<WhileObj>() {
+        if let Some(node) = value.cast::<While>() {
             self.visit_child(&node.condition, region)?;
             let saved_scope = self.current_scope;
             self.current_scope = self.allocate_scope(statement);
@@ -407,8 +406,8 @@ impl CsePlanner {
             ExprClass::Leaf => {}
             ExprClass::Let => {
                 let node = value
-                    .as_node::<LetObj>()
-                    .expect("tirx.Let uses the registered LetNode layout");
+                    .cast::<Let>()
+                    .expect("tirx.Let has already been classified above");
                 self.visit_child(&node.value, region)?;
                 self.let_depth += 1;
                 let body_result = self.visit_child(&node.body, region);
@@ -417,39 +416,40 @@ impl CsePlanner {
             }
             ExprClass::Call => {
                 let node = value
-                    .as_node::<CallObj>()
-                    .expect("ir.Call has the registered CallNode layout");
+                    .cast::<Call>()
+                    .expect("ir.Call has already been classified above");
                 for argument in node.args.iter() {
                     self.visit_child(&argument, region)?;
                 }
             }
             ExprClass::TensorLoad => {
                 let node = value
-                    .as_node::<TensorLoadObj>()
-                    .expect("ir.TensorLoad has the registered TensorLoadNode layout");
+                    .cast::<TensorLoad>()
+                    .expect("ir.TensorLoad has already been classified above");
                 for index in node.indices.iter() {
                     self.visit_child(&index, region)?;
                 }
             }
-            ExprClass::Other if value.as_node::<ReduceObj>().is_some() => {
-                let node = value
-                    .as_node::<ReduceObj>()
-                    .expect("tirx.Reduce uses the registered ReduceNode layout");
-                for axis in node.axis.iter() {
-                    if let Some(domain) = axis.dom()? {
-                        self.visit_child(&domain.min, region)?;
-                        self.visit_child(&domain.extent, region)?;
+            ExprClass::Other => {
+                if let Some(node) = value.cast::<Reduce>() {
+                    for axis in node.axis.iter() {
+                        if let Some(domain) = axis.dom()? {
+                            self.visit_child(&domain.min, region)?;
+                            self.visit_child(&domain.extent, region)?;
+                        }
                     }
+                    for source in node.source.iter() {
+                        self.visit_child(&source, region)?;
+                    }
+                    for init in node.init.iter() {
+                        self.visit_child(&init, region)?;
+                    }
+                    self.visit_child(&node.condition, region)?;
+                } else {
+                    visit_stmt_expr_default(self, value, region)?;
                 }
-                for source in node.source.iter() {
-                    self.visit_child(&source, region)?;
-                }
-                for init in node.init.iter() {
-                    self.visit_child(&init, region)?;
-                }
-                self.visit_child(&node.condition, region)?;
             }
-            ExprClass::Recordable | ExprClass::Other => {
+            ExprClass::Recordable => {
                 visit_stmt_expr_default(self, value, region)?;
             }
         }

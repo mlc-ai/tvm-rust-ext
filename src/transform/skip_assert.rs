@@ -21,7 +21,7 @@ use tvm_ffi::{structural_mutate, Any, DefRegionKind, MapValue, Result};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
-use crate::tirx::{AssertStmtObj, Evaluate, PrimFunc};
+use crate::tirx::{AssertStmt, Evaluate, PrimFunc};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
@@ -34,7 +34,7 @@ struct AssertSkipper;
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssertSkipper {
-    fn mutate_assert(&mut self, _value: &AssertStmtObj) -> Result<Evaluate> {
+    fn mutate_assert(&mut self, _value: AssertStmt) -> Result<Evaluate> {
         Evaluate::from_i64(0)
     }
 
