@@ -23,12 +23,13 @@ use tvm::analysis::{
 };
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, GlobalVar, IRModule, IntImm, OpaqueExpr,
-    PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName, Span, Type, Var,
+    PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName, Span, TensorLoad, Type,
+    Var,
 };
 use tvm::tirx::{
-    Add, AddObj, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferLoad, BufferRegion, BufferStore,
-    BufferType, Evaluate, EvaluateObj, For, IfThenElse, Iter, IterVar, IterVarType, Layout,
-    MatchBufferRegion, Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
+    Add, AddObj, AssertStmt, AssertStmtObj, AttrStmt, Axis, BufferRegion, BufferStore, BufferType,
+    Evaluate, EvaluateObj, For, IfThenElse, Iter, IterVar, IterVarType, Layout, MatchBufferRegion,
+    Mul, PrimFunc, SeqStmt, Stmt, Sub, TileLayout,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -1256,38 +1257,27 @@ fn buffer_bindings_round_trip_cpp_objects() {
         .to_prim_expr()
         .unwrap();
     assert_eq!(object_pointer(&converted_domainless), object_pointer(&axis));
-    assert!(BufferLoad::new(&axis, vec![typed_int_expression("int64", 0)], None).is_err());
-    let predicate = typed_int_expression("bool", 1);
-    let load =
-        BufferLoad::new(&buffer, vec![axis.clone().into()], Some(predicate.clone())).unwrap();
+    assert!(TensorLoad::from_buffer(&axis, vec![typed_int_expression("int64", 0)]).is_err());
+    let load = TensorLoad::from_buffer(&buffer, vec![axis.clone().into()]).unwrap();
     let explicit_load_type = PrimType::new("int32").unwrap();
-    let complete_load = BufferLoad::from_complete_fields(
+    let complete_load = TensorLoad::from_complete_fields(
         None,
         explicit_load_type.clone(),
-        buffer.clone(),
+        buffer.as_var().clone().into(),
         load.indices.clone(),
-        load.predicate.clone(),
     );
     let explicit_load_type: Type = explicit_load_type.into();
     assert_eq!(
         object_pointer(&complete_load.ty),
         object_pointer(&explicit_load_type)
     );
-    let store = BufferStore::new(
-        &buffer,
-        load.clone(),
-        vec![axis.clone().into()],
-        Some(predicate),
-    )
-    .unwrap();
+    let store = BufferStore::new(&buffer, load.clone(), vec![axis.clone().into()]).unwrap();
     let cpp_indices = tvm::tvm_ffi::Array::new(load.indices.iter().collect());
-    let cpp_predicate = load.predicate.clone();
-    let cpp_load: BufferLoad = Function::get_global("tirx.BufferLoad")
+    let cpp_load: TensorLoad = Function::get_global("tirx.BufferLoad")
         .unwrap()
         .call_packed(&[
             AnyView::from(&buffer),
             AnyView::from(&cpp_indices),
-            AnyView::from(&cpp_predicate),
             AnyView::from(&()),
         ])
         .unwrap()
@@ -1302,7 +1292,6 @@ fn buffer_bindings_round_trip_cpp_objects() {
             AnyView::from(&buffer),
             AnyView::from(&load_expr),
             AnyView::from(&cpp_indices),
-            AnyView::from(&cpp_predicate),
             AnyView::from(&()),
         ])
         .unwrap()
@@ -1349,11 +1338,9 @@ fn buffer_bindings_round_trip_cpp_objects() {
             .len(),
         1
     );
-    assert_eq!(object_pointer(&load.buffer), object_pointer(&buffer));
+    assert_eq!(object_pointer(&load.source), object_pointer(&buffer));
     assert_eq!(load.indices.len(), 1);
-    assert!(load.predicate.is_some());
     assert_eq!(object_pointer(&store.buffer), object_pointer(&buffer));
-    assert!(store.predicate.is_some());
     assert_eq!(iter_var.iter_type().unwrap(), IterVarType::kDataPar);
     assert_eq!(
         object_pointer(&iter_var.var().unwrap()),
@@ -1381,8 +1368,6 @@ fn buffer_bindings_round_trip_cpp_objects() {
         tvm::analysis::MemoryAccessStatistics {
             loads: 1,
             stores: 1,
-            predicated_loads: 1,
-            predicated_stores: 1,
             maximum_load_rank: 1,
             maximum_store_rank: 1,
         }
@@ -1400,10 +1385,10 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     let index: Expr = Add::new(outer_var.clone(), unit_var.clone())
         .unwrap()
         .into();
-    let load: Expr = BufferLoad::new(&buffer, vec![index.clone()], None)
+    let load: Expr = TensorLoad::from_buffer(&buffer, vec![index.clone()])
         .unwrap()
         .into();
-    let store: Stmt = BufferStore::new(&buffer, &load, vec![index], None)
+    let store: Stmt = BufferStore::new(&buffer, &load, vec![index])
         .unwrap()
         .into();
     let unit_loop: Stmt = For::serial(
@@ -1578,7 +1563,7 @@ fn known_control_flow_simplification_matches_cpp_on_analyzed_constants() {
         BufferType::new("global", "int32", vec![typed_int_expression("int64", 1)]).unwrap();
     let read_buffer = read_buffer_type.new_var("read_buffer");
     let read_expression: Expr =
-        BufferLoad::new(&read_buffer, vec![typed_int_expression("int64", 0)], None)
+        TensorLoad::from_buffer(&read_buffer, vec![typed_int_expression("int64", 0)])
             .unwrap()
             .into();
     assert_eq!(

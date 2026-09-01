@@ -23,10 +23,10 @@ use tvm_ffi::{
     Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult, VALUE_ERROR,
 };
 
-use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, VarObj};
+use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, TensorLoadObj, VarObj};
 use crate::tirx::{
-    AddObj, AssertStmtObj, BufferLoadObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj,
-    MulObj, SeqStmtObj, StmtObj, SubObj,
+    AddObj, AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, MulObj, SeqStmtObj,
+    StmtObj, SubObj,
 };
 
 /// Opaque Rust view of TVM's stateful arithmetic analyzer.
@@ -181,7 +181,7 @@ impl SideEffectAnalyzer {
 
 #[tvm_ffi::dispatch(walk)]
 impl SideEffectAnalyzer {
-    fn walk_buffer_load(&mut self, _node: &BufferLoadObj) -> WalkResult {
+    fn walk_tensor_load(&mut self, _node: &TensorLoadObj) -> WalkResult {
         self.update(CallEffectKind::kReadState)
     }
 
@@ -317,7 +317,7 @@ impl NodeStatistics {
         WalkResult::Advance
     }
 
-    fn walk_buffer_load(&mut self, _node: &BufferLoadObj) -> WalkResult {
+    fn walk_tensor_load(&mut self, _node: &TensorLoadObj) -> WalkResult {
         self.expressions += 1;
         self.buffer_loads += 1;
         WalkResult::Advance
@@ -356,30 +356,26 @@ where
 pub struct MemoryAccessStatistics {
     pub loads: usize,
     pub stores: usize,
-    pub predicated_loads: usize,
-    pub predicated_stores: usize,
     pub maximum_load_rank: usize,
     pub maximum_store_rank: usize,
 }
 
 #[tvm_ffi::dispatch(walk)]
 impl MemoryAccessStatistics {
-    fn walk_load(&mut self, node: &BufferLoadObj) -> Result<WalkResult> {
+    fn walk_load(&mut self, node: &TensorLoadObj) -> Result<WalkResult> {
         self.loads += 1;
         self.maximum_load_rank = self.maximum_load_rank.max(node.indices.len());
-        self.predicated_loads += usize::from(node.predicate.is_some());
         Ok(WalkResult::Advance)
     }
 
     fn walk_store(&mut self, node: &BufferStoreObj) -> Result<WalkResult> {
         self.stores += 1;
         self.maximum_store_rank = self.maximum_store_rank.max(node.indices.len());
-        self.predicated_stores += usize::from(node.predicate.is_some());
         Ok(WalkResult::Advance)
     }
 }
 
-/// Collect read/write counts, predicate counts, and maximum access rank.
+/// Collect read/write counts and maximum access rank.
 pub fn memory_access_statistics<R>(root: &R) -> Result<MemoryAccessStatistics>
 where
     for<'a> AnyView<'a>: From<&'a R>,

@@ -879,6 +879,58 @@ fn require_primitive_expr(value: Expr, context: &str) -> Result<PrimExpr> {
     })
 }
 
+/// ABI-complete Rust representation of TVM's generic indexed load.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.TensorLoad"]
+#[type_final]
+pub struct TensorLoadObj {
+    base: ExprObj,
+    pub source: Expr,
+    pub indices: Array<PrimExpr>,
+}
+
+/// Reference-counted handle to an indexed expression load.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct TensorLoad {
+    data: ObjectArc<TensorLoadObj>,
+}
+
+impl std::ops::Deref for TensorLoad {
+    type Target = TensorLoadObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for TensorLoadObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl TensorLoad {
+    /// Construct a tensor load from every physical field.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        source: Expr,
+        indices: Array<PrimExpr>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(TensorLoadObj {
+                base: ExprObj::new(span, ty.into()),
+                source,
+                indices,
+            }),
+        }
+    }
+}
+
 impl std::ops::Deref for Span {
     type Target = SpanObj;
 
@@ -1590,6 +1642,8 @@ tvm_ffi::impl_object_upcast!(
     Var => Expr,
     GlobalVar => Expr,
     Call => Expr,
+    TensorLoad => Expr,
+    TensorLoad => PrimExpr,
     DictAttrs => Attrs,
 );
 
