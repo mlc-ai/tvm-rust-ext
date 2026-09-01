@@ -200,7 +200,7 @@ pub fn load_compiler() -> Result<&'static Module, LoadError> {
     }
     let _guard = COMPILER_INIT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(module) = COMPILER.get() {
         return Ok(module);
     }

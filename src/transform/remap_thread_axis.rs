@@ -118,7 +118,7 @@ impl ThreadAxisRewriter {
                 .insert(identity, new_variable);
         }
 
-        let body = Stmt::try_from(mutator.mutate(&value.body)?)?;
+        let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
         AttrStmt::new(
             new_iter_var,
             value.attr_key.as_str(),
@@ -178,7 +178,7 @@ impl ThreadAxisRewriter {
         value: TensorLoad,
         mutator: &mut Mutator<ThreadAxisRewriteState>,
     ) -> Result<TensorLoad> {
-        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source: BufferVar = (&value.source).try_into()?;
         let source = mutator.state().buffer_remaps.use_buffer(&source);
         let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {

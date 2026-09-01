@@ -182,7 +182,7 @@ impl SsaState {
     ) -> Result<BufferVar> {
         let old_variable = buffer.as_var();
         let mapped_variable = self.current_variable(old_variable);
-        let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+        let old_type = buffer.type_annotation();
 
         let identity = ObjectIdentity::of(old_variable);
         if let Some(candidate) = self
@@ -190,7 +190,7 @@ impl SsaState {
             .get(&identity)
             .and_then(|stack| stack.last())
         {
-            let candidate_type = candidate.ty.clone().try_cast::<BufferType>()?;
+            let candidate_type = candidate.type_annotation();
             if candidate.as_var().same_as(&mapped_variable)
                 && buffer_metadata_matches(&candidate_type, &shape, &strides, &elem_offset, &layout)
             {
@@ -199,7 +199,7 @@ impl SsaState {
         }
 
         if let Ok(mapped_buffer) = BufferVar::try_from(&mapped_variable) {
-            let mapped_type = mapped_buffer.ty.clone().try_cast::<BufferType>()?;
+            let mapped_type = mapped_buffer.type_annotation();
             if buffer_metadata_matches(&mapped_type, &shape, &strides, &elem_offset, &layout) {
                 return Ok(mapped_buffer);
             }
@@ -247,7 +247,7 @@ impl SsaState {
             let Ok(buffer) = BufferVar::try_from(parameter) else {
                 continue;
             };
-            let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
+            let buffer_type = buffer.type_annotation();
             let mut record = |variable: Var| {
                 let identity = ObjectIdentity::of(&variable);
                 if explicit.contains(&identity) || !matched.insert(identity.clone()) {
@@ -379,7 +379,7 @@ fn remap_buffer<Driver>(
 where
     Driver: MutateContextDriver<SsaState> + ?Sized,
 {
-    let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    let old_type = buffer.type_annotation();
     let shape: Array<PrimExpr> = mutator.mutate(&old_type.shape)?.try_into()?;
     let strides: Array<PrimExpr> = mutator.mutate(&old_type.strides)?.try_into()?;
     let elem_offset: PrimExpr = mutator.mutate(&old_type.elem_offset)?.try_into()?;
@@ -398,7 +398,7 @@ fn remap_buffer_root<Link, Marker>(
 where
     MutateCallbacks<SsaState, Link, Marker>: tvm_ffi::StructuralMutator,
 {
-    let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    let old_type = buffer.type_annotation();
     let shape: Array<PrimExpr> =
         structural_mutate(old_type.shape.clone(), &mut *converter)?.try_into()?;
     let strides: Array<PrimExpr> =
@@ -510,7 +510,7 @@ impl SsaConverter {
         }
         Ok(Let::from_complete_fields(
             value.span.clone(),
-            body.ty.clone().try_cast()?,
+            body.type_annotation(),
             variable,
             bound_value,
             body,
@@ -687,10 +687,10 @@ impl SsaConverter {
         value: TensorLoad,
         mutator: &mut Mutator<SsaState>,
     ) -> Result<TensorLoad> {
-        let source = value.source.clone().try_cast::<Var>()?;
-        let buffer = remap_buffer(mutator, &BufferVar::try_from(&source)?)?;
+        let source: BufferVar = (&value.source).try_into()?;
+        let buffer = remap_buffer(mutator, &source)?;
         let indices = mutator.mutate(&value.indices)?.try_into()?;
-        if buffer.as_var().same_as(&source) && array_same_as(&indices, &value.indices) {
+        if buffer.same_as(&source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
         Ok(TensorLoad::from_complete_fields(

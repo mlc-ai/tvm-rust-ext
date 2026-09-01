@@ -747,7 +747,7 @@ impl Let {
     {
         let value = value.into();
         let body = body.into();
-        var.ty.clone().try_cast::<PrimType>()?;
+        PrimVar::try_from(&var)?;
         let value = PrimExpr::try_from(value)?;
         let body = PrimExpr::try_from(body)?;
         let same_type: bool = tvm_ffi::cached_global_func!("ffi.StructuralEqual")
@@ -762,7 +762,7 @@ impl Let {
         }
         Ok(Self::from_complete_fields(
             span.cloned(),
-            body.ty.clone().try_cast::<PrimType>()?,
+            body.type_annotation(),
             var,
             value,
             body,
@@ -1814,9 +1814,7 @@ impl Evaluate {
         E: Into<Expr>,
     {
         let value = value.into();
-        if value.clone().try_cast::<Var>().is_ok()
-            && value.ty.clone().try_cast::<buffer::BufferType>().is_ok()
-        {
+        if buffer::BufferVar::try_from(&value).is_ok() {
             return Err(Error::new(
                 VALUE_ERROR,
                 "a buffer variable cannot be used as a scalar Evaluate value",

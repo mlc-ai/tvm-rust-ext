@@ -71,8 +71,8 @@ struct TIRxOpaqueLower;
 #[tvm_ffi::dispatch(mutate)]
 impl TIRxOpaqueLower {
     fn mutate_for(&self, value: For, mutator: &mut Mutator<TIRxOpaqueLowerState>) -> Result<Stmt> {
-        let minimum = PrimExpr::try_from(mutator.mutate(&value.min)?)?;
-        let extent = PrimExpr::try_from(mutator.mutate(&value.extent)?)?;
+        let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
+        let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
         let is_unit_loop = int_value(&extent) == Some(1);
 
         if is_unit_loop && value.annotations.is_empty() {
@@ -82,7 +82,7 @@ impl TIRxOpaqueLower {
                 .insert(ObjectIdentity::of(&value.loop_var), minimum.clone());
         }
 
-        let body = Stmt::try_from(mutator.mutate(&value.body)?)?;
+        let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
         let LoweredAnnotations {
             preserved: annotations,
             mut pragmas,
@@ -148,7 +148,7 @@ impl TIRxOpaqueLower {
         };
 
         let variable_type = value.ty.clone().try_cast::<PrimType>()?;
-        let replacement_type = replacement.ty.clone().try_cast::<PrimType>()?;
+        let replacement_type = replacement.type_annotation();
         if variable_type.dtype == replacement_type.dtype {
             Ok(replacement.into())
         } else {
@@ -161,7 +161,7 @@ impl TIRxOpaqueLower {
         value: TensorLoad,
         mutator: &mut Mutator<TIRxOpaqueLowerState>,
     ) -> Result<TensorLoad> {
-        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source: BufferVar = (&value.source).try_into()?;
         let source = mutator.state().buffer_remaps.use_buffer(&source);
         let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {

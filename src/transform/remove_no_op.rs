@@ -189,7 +189,7 @@ impl NoOpRemover {
         }
         Ok(Let::from_complete_fields(
             value.span.clone(),
-            body.ty.clone().try_cast()?,
+            body.type_annotation(),
             value.var.clone(),
             bound_value,
             body,
@@ -305,7 +305,7 @@ impl NoOpRemover {
         }
         Ok(Select::from_complete_fields(
             value.span.clone(),
-            value.ty.clone().try_cast()?,
+            true_value.type_annotation(),
             condition,
             true_value,
             false_value,
@@ -382,7 +382,7 @@ impl NoOpRemover {
                     "",
                 ));
             }
-            let zero = zero_like(&inner.value)?;
+            let zero = zero_like(&inner.value);
             let negative: PrimExpr = crate::tirx::LT::new(inner.value.clone(), zero)?.into();
             if Analyzer::new()?.can_prove(&negative)? {
                 return mutator.mutate(&inner.body)?.try_into();
@@ -392,7 +392,7 @@ impl NoOpRemover {
         if matches!(value.attr_key.as_str(), THREAD_EXTENT | VIRTUAL_THREAD) {
             let iteration = IterVar::try_from(value.node.clone())?;
             let variable = iteration.var()?;
-            let domain = Range::from_min_extent(zero_like(&value.value)?, value.value.clone())?;
+            let domain = Range::from_min_extent(zero_like(&value.value), value.value.clone())?;
             mutator.state().analyzer.bind(variable.as_var(), &domain)?;
         }
 
@@ -471,16 +471,15 @@ impl NoOpRemover {
     }
 
     fn mutate_loop(&self, value: For, mutator: &mut Mutator<NoOpState>) -> Result<Stmt> {
-        let domains = Map::from_iter(
-            mutator
-                .state()
-                .variable_domains
-                .values()
-                .map(|(variable, domain)| (variable.clone(), domain.clone())),
-        );
+        let domains: Map<Var, IntSet> = mutator
+            .state()
+            .variable_domains
+            .values()
+            .map(|(variable, domain)| (variable.clone(), domain.clone()))
+            .collect();
         let extent_set = mutator.state().analyzer.int_set(&value.extent, &domains)?;
         let maximum = extent_set.maximum()?;
-        let non_positive: PrimExpr = LE::new(maximum.clone(), zero_like(&maximum)?)?.into();
+        let non_positive: PrimExpr = LE::new(maximum.clone(), zero_like(&maximum))?.into();
         if mutator.state().analyzer.can_prove(&non_positive)? {
             return evaluate_zero();
         }
@@ -491,7 +490,7 @@ impl NoOpRemover {
             .analyzer
             .bind(value.loop_var.as_var(), &domain)?;
 
-        let one = one_like(&value.extent)?;
+        let one = one_like(&value.extent);
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
         let maximum: PrimExpr = crate::tirx::Add::new(value.min.clone(), extent_minus_one)?.into();
         let integer_domain = IntSet::interval(value.min.clone(), maximum)?;
@@ -504,7 +503,7 @@ impl NoOpRemover {
             let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
             let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(&value.step)?.try_into()?;
-            let positive: PrimExpr = GT::new(extent.clone(), zero_like(&extent)?)?.into();
+            let positive: PrimExpr = GT::new(extent.clone(), zero_like(&extent))?.into();
             let body = mutate_under_constraint_with_facts(mutator, &value.body, &positive)?;
             if minimum.same_as(&value.min)
                 && extent.same_as(&value.extent)
@@ -567,14 +566,13 @@ impl NoOpRemover {
         )?;
         let difference: PrimExpr = Sub::new(value.value.clone(), load)?.into();
         let equal_to_zero: PrimExpr =
-            crate::tirx::EQ::new(difference.clone(), zero_like(&difference)?)?.into();
+            crate::tirx::EQ::new(difference.clone(), zero_like(&difference))?.into();
         if int_value(&mutator.state().analyzer.simplify(&equal_to_zero)?) == Some(1) {
             return mutator.state().store_side_effects(&value);
         }
 
         if let Ok(load) = value.value.clone().try_cast::<TensorLoad>() {
-            let source = load.source.clone().try_cast::<Var>()?;
-            let source = BufferVar::try_from(source)?;
+            let source: BufferVar = (&load.source).try_into()?;
             if source.same_as(&value.buffer)
                 && mutator
                     .state()
@@ -618,15 +616,15 @@ impl NoOpRemover {
         value: TensorLoad,
         mutator: &mut Mutator<NoOpState>,
     ) -> Result<TensorLoad> {
-        let old_source = value.source.clone().try_cast::<Var>()?;
+        let old_source: BufferVar = (&value.source).try_into()?;
         let source = mutator
             .state()
             .buffer_remaps
-            .use_buffer(&BufferVar::try_from(&old_source)?)
+            .use_buffer(&old_source)
             .as_var()
             .clone();
         let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
-        if source.same_as(&old_source) && array_same_as(&indices, &value.indices) {
+        if source.same_as(old_source.as_var()) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
         Ok(TensorLoad::from_complete_fields(
@@ -739,8 +737,8 @@ impl NoOpState {
     }
 
     fn buffer_geometry_equal(&self, lhs: &BufferVar, rhs: &BufferVar) -> Result<bool> {
-        let lhs_type = lhs.ty.clone().try_cast::<crate::tirx::BufferType>()?;
-        let rhs_type = rhs.ty.clone().try_cast::<crate::tirx::BufferType>()?;
+        let lhs_type = lhs.type_annotation();
+        let rhs_type = rhs.type_annotation();
         Ok(self
             .analyzer
             .can_prove_equal(&lhs_type.elem_offset, &rhs_type.elem_offset)?
@@ -877,7 +875,7 @@ fn collect_derived_constraint_facts(
         if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
             let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
             let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
-            if is_bool8(&lhs)? && is_bool8(&rhs)? {
+            if is_bool8(&lhs) && is_bool8(&rhs) {
                 collect_derived_constraint_facts(&lhs, bitwise_and_operator, output)?;
                 collect_derived_constraint_facts(&rhs, bitwise_and_operator, output)?;
                 return Ok(());
@@ -962,9 +960,9 @@ fn invert_compare(kind: CompareKind) -> CompareKind {
     }
 }
 
-fn is_bool8(value: &PrimExpr) -> Result<bool> {
-    let dtype = value.ty.clone().try_cast::<crate::ir::PrimType>()?.dtype;
-    Ok(dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8)
+fn is_bool8(value: &PrimExpr) -> bool {
+    let dtype = value.type_annotation().dtype;
+    dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8
 }
 
 fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
@@ -975,8 +973,7 @@ fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Res
         }
     }
     match (result, exit_error) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Some(error)) => Err(error),
+        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
         (Ok(value), None) => Ok(value),
     }
 }
@@ -1028,10 +1025,10 @@ fn int_value(value: &PrimExpr) -> Option<i64> {
         .map(|literal| literal.value)
 }
 
-fn zero_like(value: &PrimExpr) -> Result<PrimExpr> {
-    Ok(IntImm::from_complete_fields(None, value.ty.clone().try_cast()?, 0).into())
+fn zero_like(value: &PrimExpr) -> PrimExpr {
+    IntImm::from_complete_fields(None, value.type_annotation(), 0).into()
 }
 
-fn one_like(value: &PrimExpr) -> Result<PrimExpr> {
-    Ok(IntImm::from_complete_fields(None, value.ty.clone().try_cast()?, 1).into())
+fn one_like(value: &PrimExpr) -> PrimExpr {
+    IntImm::from_complete_fields(None, value.type_annotation(), 1).into()
 }
