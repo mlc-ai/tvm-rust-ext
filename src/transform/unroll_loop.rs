@@ -22,11 +22,11 @@ use std::collections::HashSet;
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     structural_mutate, structural_walk, Any, Array, DefRegionKind, Error, FieldGetter, Map,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String,
+    MapValue, ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String,
     StructuralMutator, WalkOrder, WalkResult, VALUE_ERROR,
 };
 
-use super::utils::with_prim_func_body;
+use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
 use super::{create_prim_func_pass, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -190,13 +190,13 @@ impl LoopUnroller {
                 body
             }
             _ => self
-                .default_mutate_value(&value, region)
-                .and_then(Stmt::try_from),
+                .rewrite_regular_attribute(value, region)
+                .map(Into::into),
         }
     }
 
     fn mutate_for(&mut self, value: For, region: DefRegionKind) -> Result<Stmt> {
-        let mutated: For = self.default_mutate_value(&value, region)?.try_into()?;
+        let mutated = self.rewrite_loop_children(value, region)?;
         let extent = self.constant_extent(&mutated)?;
         let mut automatic = mutated.kind == ForKind::kSerial
             && extent >= 0
@@ -260,7 +260,7 @@ impl LoopUnroller {
         Ok(mutated.into())
     }
 
-    fn mutate_load(&mut self, value: TensorLoad) -> Result<PrimExpr> {
+    fn mutate_load(&mut self, value: TensorLoad) -> Result<TensorLoad> {
         if self.options.unroll_local_access {
             let variable = value.source.clone().try_cast::<Var>()?;
             let buffer = BufferVar::try_from(variable)?;
@@ -268,25 +268,40 @@ impl LoopUnroller {
                 self.record_index_variables(&value.indices)?;
             }
         }
-        Ok(value.into())
+        Ok(value)
     }
 
-    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_store(&mut self, value: BufferStore, region: DefRegionKind) -> Result<BufferStore> {
         self.step_count += 1;
         if self.options.unroll_local_access && is_local_or_warp(&value.buffer)? {
             self.record_index_variables(&value.indices)?;
         }
-        self.default_mutate_value(&value, region)
-            .and_then(Stmt::try_from)
+        let stored_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
+            return Ok(value);
+        }
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            value.buffer.clone(),
+            stored_value,
+            indices,
+        ))
     }
 
-    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_evaluate(&mut self, value: Evaluate, region: DefRegionKind) -> Result<Evaluate> {
         self.step_count += 1;
-        self.default_mutate_value(&value, region)
-            .and_then(Stmt::try_from)
+        let expression: Expr = self.mutate(&value.value, region)?.try_into()?;
+        if expression.same_as(&value.value) {
+            return Ok(value);
+        }
+        Ok(Evaluate::from_complete_fields(
+            value.span.clone(),
+            expression,
+        ))
     }
 
-    fn mutate_sequence(&mut self, value: SeqStmt, region: DefRegionKind) -> Result<Stmt> {
+    fn mutate_sequence(&mut self, value: SeqStmt, region: DefRegionKind) -> Result<SeqStmt> {
         let mut changed = false;
         let mut sequence = Vec::with_capacity(value.seq.len());
         for statement in value.seq.iter() {
@@ -306,10 +321,63 @@ impl LoopUnroller {
             self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
         }
         if changed {
-            Ok(SeqStmt::from_complete_fields(value.span.clone(), Array::new(sequence)).into())
+            Ok(SeqStmt::from_complete_fields(
+                value.span.clone(),
+                Array::new(sequence),
+            ))
         } else {
-            Ok(value.into())
+            Ok(value)
         }
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
+    }
+}
+
+impl LoopUnroller {
+    fn rewrite_regular_attribute(
+        &mut self,
+        value: AttrStmt,
+        region: DefRegionKind,
+    ) -> Result<AttrStmt> {
+        let attr_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
+        if attr_value.same_as(&value.value) && body.same_as(&value.body) {
+            return Ok(value);
+        }
+        Ok(AttrStmt::from_complete_fields(
+            value.span.clone(),
+            value.node.clone(),
+            value.attr_key.clone(),
+            attr_value,
+            body,
+        ))
+    }
+
+    fn rewrite_loop_children(&mut self, value: For, region: DefRegionKind) -> Result<For> {
+        let minimum: PrimExpr = self.mutate(&value.min, region)?.try_into()?;
+        let extent: PrimExpr = self.mutate(&value.extent, region)?.try_into()?;
+        let step: Option<PrimExpr> = self.mutate(&value.step, region)?.try_into()?;
+        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
+        if minimum.same_as(&value.min)
+            && extent.same_as(&value.extent)
+            && option_same_as(&step, &value.step)
+            && body.same_as(&value.body)
+        {
+            return Ok(value);
+        }
+        Ok(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
+            minimum,
+            extent,
+            value.kind,
+            body,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
+            step,
+        ))
     }
 }
 

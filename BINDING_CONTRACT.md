@@ -245,8 +245,9 @@ a separately reviewed C++ ABI migration removes that blocker.
 - **ABI BLOCKER:** native vptrs, unreflected members, or non-ABI-shareable
   storage. They expose no Rust allocator until the shared ABI is made
   constructible.
-- **PROTOTYPE ONLY:** analyses and example transformations used to evaluate the
-  generated surface.
+- **HANDWRITTEN CONSUMERS:** analyses and complete TVM pass ports used to
+  evaluate the generated surface. Stubgen generates their bindings, not their
+  algorithms; every pass port is checked against the corresponding C++ pass.
 
 ## Golden-reference freeze gate
 

@@ -19,7 +19,7 @@
 
 use tvm::analysis::{
     contains_int, expression_trace, first_int, loop_nesting, memory_access_statistics,
-    node_statistics, side_effect, CallEffectKind, ExprTraceEvent,
+    node_statistics, CallEffectKind, ExprTraceEvent,
 };
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, GlobalVar, IRModule, IntImm, OpaqueExpr,
@@ -27,10 +27,10 @@ use tvm::ir::{
     Var,
 };
 use tvm::tirx::{
-    Add, AddObj, AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Axis, Bind, BufferRegion,
-    BufferStore, BufferType, DeclBuffer, Evaluate, EvaluateObj, For, ForKind, IfThenElse, Iter,
-    IterVar, IterVarType, Layout, MatchBufferRegion, Mul, Not, PrimFunc, SeqStmt, Stmt, Sub,
-    TileLayout, GE, GT, LE, LT, NE,
+    Add, AddObj, AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Axis, Bind, BindObj,
+    BufferRegion, BufferStore, BufferType, DeclBuffer, Evaluate, EvaluateObj, For, ForKind,
+    IfThenElse, Iter, IterVar, IterVarType, Layout, Let, MatchBufferRegion, Mul, Not, PrimFunc,
+    Select, SeqStmt, Stmt, TileLayout, While, GE, GT, LE, LT, NE,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -818,6 +818,51 @@ fn rust_skip_assert_rebuilds_conditional_branches_like_cpp() {
 }
 
 #[test]
+fn rust_skip_assert_does_not_rewrite_for_annotations() {
+    load_tvm_compiler();
+    let condition = typed_int_expression("bool", 1);
+    let hidden_assertion: Stmt = AssertStmt::new(&condition, "RuntimeError", "metadata")
+        .unwrap()
+        .into();
+    let annotation_key = tvm::tvm_ffi::String::from("test.metadata");
+    let annotations =
+        Map::from_iter([(annotation_key.clone(), Any::from(hidden_assertion.clone()))]);
+    let loop_var = Var::new("i", "int32").unwrap();
+    let loop_node = For::with_metadata(
+        loop_var,
+        int_expression(0),
+        int_expression(1),
+        ForKind::kSerial,
+        Evaluate::from_i64(1).unwrap().into(),
+        None,
+        annotations,
+        None,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::from_body(loop_node).unwrap()).unwrap();
+
+    let rust_result = transform::skip_assert()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.SkipAssert").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
+    let loop_node = function.body.clone().try_cast::<For>().unwrap();
+    let annotation = loop_node.annotations.get(&annotation_key).unwrap().unwrap();
+    assert!(AssertStmt::try_from(annotation).is_ok());
+}
+
+#[test]
 fn decorate_device_scope_matches_cpp() {
     load_tvm_compiler();
     let function = PrimFunc::from_body(Evaluate::from_i64(7).unwrap()).unwrap();
@@ -890,59 +935,6 @@ fn structural_map_reuses_a_uniquely_owned_array_container() {
             .collect::<Vec<_>>(),
         vec![2, 3]
     );
-}
-
-#[test]
-fn rust_add_zero_transformation_matches_cpp_stmt_simplify() {
-    load_tvm_compiler();
-    let one = int_expression(1);
-    let zero = int_expression(0);
-    let inner = add_expression(&zero, &one);
-    let expression = add_expression(&inner, int_expression(0));
-    let expected = int_expression(1);
-    assert_structural_equal(
-        &transform::examples::simplify_add_zero_expr(expression.clone()).unwrap(),
-        &expected,
-    );
-
-    let function = PrimFunc::from_body(Evaluate::new(&expression).unwrap()).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-    let rust_function = transform::examples::simplify_add_zero_prim_func(function).unwrap();
-    let rust_result = IRModule::from_expr(&rust_function).unwrap();
-    assert_eq!(node_statistics(&module).unwrap().additions, 2);
-    assert_eq!(node_statistics(&rust_result).unwrap().additions, 0);
-    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_module_transformation_maps_function_values_like_cpp() {
-    load_tvm_compiler();
-    let expression = add_expression(
-        add_expression(int_expression(0), int_expression(4)),
-        int_expression(0),
-    );
-    let function = PrimFunc::from_body(Evaluate::new(&expression).unwrap()).unwrap();
-    let main_module = IRModule::from_expr(&function).unwrap();
-    let helper_var = GlobalVar::new("helper");
-    let helper_function: tvm::ir::BaseFunc = PrimFunc::from_body(
-        Evaluate::new(add_expression(int_expression(0), int_expression(9))).unwrap(),
-    )
-    .unwrap()
-    .into();
-    let module = main_module
-        .with_updated_function(&helper_var, &helper_function)
-        .unwrap();
-    assert_eq!(main_module.functions.len(), 1);
-    assert_eq!(module.functions.len(), 2);
-
-    let rust_result = transform::examples::simplify_add_zero_module(module.clone()).unwrap();
-    assert_eq!(node_statistics(&module).unwrap().additions, 3);
-    assert_eq!(node_statistics(&rust_result).unwrap().additions, 0);
-    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
-
-    assert_eq!(rust_result.functions.len(), 2);
-    assert_structural_equal(&rust_result, &cpp_result);
 }
 
 #[derive(Default)]
@@ -1054,92 +1046,6 @@ fn walk_and_visit_handle_real_tir_loop_scopes() {
     let nesting = loop_nesting(&statement).unwrap();
     assert_eq!(nesting.loops, 2);
     assert_eq!(nesting.maximum_depth, 2);
-}
-
-#[test]
-fn neutral_element_map_matches_cpp_stmt_simplify() {
-    load_tvm_compiler();
-    let variable = Var::new("x", "int32").unwrap();
-    let add = Add::new(variable.clone(), int_expression(0)).unwrap();
-    let multiply = Mul::new(add, int_expression(1)).unwrap();
-    let expression: Expr = Sub::new(multiply, int_expression(0)).unwrap().into();
-
-    let mapped = transform::examples::simplify_neutral_elements_expr(expression.clone()).unwrap();
-    assert_structural_equal(&mapped, &Expr::from(variable.clone()));
-
-    let function = PrimFunc::new(vec![variable], Evaluate::new(&expression).unwrap()).unwrap();
-    let rust_function =
-        transform::examples::simplify_neutral_elements_prim_func(function.clone()).unwrap();
-    let cpp_module = cpp_pass("tirx.transform.StmtSimplify")
-        .run(IRModule::from_expr(&function).unwrap())
-        .unwrap();
-    let rust_module = IRModule::from_expr(&rust_function).unwrap();
-    assert_structural_equal(&rust_module, &cpp_module);
-}
-
-#[test]
-fn mutate_can_limit_a_rewrite_to_loop_bodies() {
-    load_tvm_compiler();
-    let outer_var = Var::new("i", "int32").unwrap();
-    let inner_var = Var::new("j", "int32").unwrap();
-    let sum: Expr = Add::new(outer_var.clone(), inner_var.clone())
-        .unwrap()
-        .into();
-    let inner_value: Expr = Sub::new(&sum, int_expression(0)).unwrap().into();
-    let inner_body: Stmt = Evaluate::new(&inner_value).unwrap().into();
-    let inner_loop: Stmt = For::serial(
-        &inner_var,
-        Sub::new(int_expression(1), int_expression(0)).unwrap(),
-        Mul::new(int_expression(3), int_expression(1)).unwrap(),
-        &inner_body,
-    )
-    .unwrap()
-    .into();
-    let statement: Stmt = For::serial(
-        &outer_var,
-        Add::new(int_expression(0), int_expression(0)).unwrap(),
-        Add::new(int_expression(4), int_expression(0)).unwrap(),
-        &inner_loop,
-    )
-    .unwrap()
-    .into();
-    let original = statement.clone();
-    let mapped = transform::examples::simplify_neutral_elements_in_loop_bodies(statement)
-        .unwrap()
-        .try_cast::<For>()
-        .unwrap();
-
-    assert!(mapped.min.clone().try_cast::<Add>().is_ok());
-    assert!(mapped.extent.clone().try_cast::<Add>().is_ok());
-    let inner = mapped.body.clone().try_cast::<For>().unwrap();
-    assert_eq!(inner.min.clone().try_cast::<IntImm>().unwrap().value, 1);
-    assert_eq!(inner.extent.clone().try_cast::<IntImm>().unwrap().value, 3);
-
-    let mapped_outer_var = mapped.loop_var.clone();
-    let mapped_inner_var = inner.loop_var.clone();
-    let inner_value = inner
-        .body
-        .clone()
-        .try_cast::<Evaluate>()
-        .unwrap()
-        .value
-        .clone()
-        .try_cast::<Add>()
-        .unwrap();
-    assert_eq!(
-        object_pointer(&inner_value.a),
-        object_pointer(&mapped_outer_var)
-    );
-    assert_eq!(
-        object_pointer(&inner_value.b),
-        object_pointer(&mapped_inner_var)
-    );
-
-    let original_outer = original.try_cast::<For>().unwrap();
-    assert!(original_outer.min.clone().try_cast::<Add>().is_ok());
-    let original_inner = original_outer.body.clone();
-    let original_inner = original_inner.try_cast::<For>().unwrap();
-    assert!(original_inner.min.clone().try_cast::<Sub>().is_ok());
 }
 
 #[test]
@@ -1445,163 +1351,12 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
 }
 
 #[test]
-fn integer_constant_folding_matches_cpp_on_fast_and_analyzer_paths() {
-    load_tvm_compiler();
-    let sum: Expr = Add::new(int_expression(2), int_expression(3))
-        .unwrap()
-        .into();
-    let product: Expr = Mul::new(&sum, int_expression(4)).unwrap().into();
-    let expression: Expr = Sub::new(&product, int_expression(1)).unwrap().into();
-
-    let folded = transform::examples::fold_integer_constants_expr(expression.clone()).unwrap();
-    assert_eq!(folded.clone().try_cast::<IntImm>().unwrap().value, 19);
-
-    let function = PrimFunc::from_body(Evaluate::new(&expression).unwrap()).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-    let rust_function = transform::examples::fold_integer_constants_prim_func(function).unwrap();
-    let rust_result = IRModule::from_expr(&rust_function).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
-    assert_structural_equal(&rust_result, &cpp_result);
-
-    let maximum = typed_int_expression("int8", 127);
-    let one = typed_int_expression("int8", 1);
-    let overflow: Expr = Add::new(&maximum, &one).unwrap().into();
-    let overflow_module =
-        IRModule::from_expr(PrimFunc::from_body(Evaluate::new(&overflow).unwrap()).unwrap())
-            .unwrap();
-    let overflow_function = overflow_module
-        .functions
-        .iter()
-        .next()
-        .unwrap()
-        .1
-        .try_cast::<PrimFunc>()
-        .unwrap();
-    let rust_overflow = IRModule::from_expr(
-        transform::examples::fold_integer_constants_prim_func(overflow_function).unwrap(),
-    )
-    .unwrap();
-    let cpp_overflow = cpp_pass("tirx.transform.StmtSimplify")
-        .run(overflow_module)
-        .unwrap();
-    assert_structural_equal(&rust_overflow, &cpp_overflow);
-}
-
-#[test]
 fn call_effect_kind_preserves_future_native_values() {
     let future_value = CallEffectKind::from_raw(17);
     assert_eq!(future_value.as_raw(), 17);
     assert!(future_value.may_update_state());
     assert_eq!(CallEffectKind::try_from(17).unwrap(), future_value);
     assert!(CallEffectKind::try_from(i64::MAX).is_err());
-}
-
-#[test]
-fn known_control_flow_simplification_matches_cpp_on_analyzed_constants() {
-    load_tvm_compiler();
-    let condition: Expr = Add::new(
-        typed_int_expression("bool", 1),
-        typed_int_expression("bool", 0),
-    )
-    .unwrap()
-    .into();
-    let then_case: Stmt = Evaluate::from_i64(7).unwrap().into();
-    let else_case: Stmt = Evaluate::from_i64(9).unwrap().into();
-    let conditional: Stmt = IfThenElse::new(&condition, &then_case, Some(else_case))
-        .unwrap()
-        .into();
-    let standalone = IRModule::from_expr(PrimFunc::from_body(&conditional).unwrap()).unwrap();
-    let standalone_function = standalone
-        .functions
-        .iter()
-        .next()
-        .unwrap()
-        .1
-        .try_cast::<PrimFunc>()
-        .unwrap();
-    let rust_standalone = IRModule::from_expr(
-        transform::examples::simplify_known_control_flow_prim_func(standalone_function).unwrap(),
-    )
-    .unwrap();
-    let cpp_standalone = cpp_pass("tirx.transform.RemoveNoOp")
-        .run(standalone)
-        .unwrap();
-    assert_structural_equal(&rust_standalone, &cpp_standalone);
-
-    let loop_var = Var::new("i", "int32").unwrap();
-    let zero_extent: Expr = Sub::new(int_expression(2), int_expression(2))
-        .unwrap()
-        .into();
-    let empty_loop: Stmt = For::serial(
-        &loop_var,
-        int_expression(0),
-        &zero_extent,
-        Evaluate::from_i64(11).unwrap(),
-    )
-    .unwrap()
-    .into();
-    let body = SeqStmt::new(vec![conditional, empty_loop]).unwrap();
-    let function = PrimFunc::from_body(&body).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result = IRModule::from_expr(
-        transform::examples::simplify_known_control_flow_prim_func(function).unwrap(),
-    )
-    .unwrap();
-    let cpp_result = cpp_pass("tirx.transform.RemoveNoOp").run(module).unwrap();
-    assert_structural_equal(&rust_result, &cpp_result);
-    assert_eq!(node_statistics(&rust_result).unwrap().conditionals, 0);
-    assert_eq!(node_statistics(&rust_result).unwrap().loops, 0);
-
-    let pure_expression: Expr = Add::new(int_expression(3), int_expression(4))
-        .unwrap()
-        .into();
-    assert_eq!(
-        side_effect(&PrimExpr::try_from(&pure_expression).unwrap()).unwrap(),
-        CallEffectKind::kPure
-    );
-    let read_buffer_type =
-        BufferType::new("global", "int32", vec![typed_int_expression("int64", 1)]).unwrap();
-    let read_buffer = read_buffer_type.new_var("read_buffer");
-    let read_expression: Expr =
-        TensorLoad::from_buffer(&read_buffer, vec![typed_int_expression("int64", 0)])
-            .unwrap()
-            .into();
-    assert_eq!(
-        side_effect(&PrimExpr::try_from(&read_expression).unwrap()).unwrap(),
-        CallEffectKind::kReadState
-    );
-    let opaque_operator: Expr = GlobalVar::new("opaque_function").into();
-    let opaque_call: Expr =
-        Call::new(PrimType::new("int32").unwrap(), opaque_operator, Vec::new()).into();
-    assert_eq!(
-        side_effect(&PrimExpr::try_from(&opaque_call).unwrap()).unwrap(),
-        CallEffectKind::kUpdateState
-    );
-    let evaluations = SeqStmt::new(vec![
-        Evaluate::new(&pure_expression).unwrap().into(),
-        Evaluate::new(&read_expression).unwrap().into(),
-        Evaluate::new(&opaque_call).unwrap().into(),
-    ])
-    .unwrap();
-    let effects_module = IRModule::from_expr(PrimFunc::from_body(&evaluations).unwrap()).unwrap();
-    let effects_function = effects_module
-        .functions
-        .iter()
-        .next()
-        .unwrap()
-        .1
-        .try_cast::<PrimFunc>()
-        .unwrap();
-    let rust_effects = IRModule::from_expr(
-        transform::examples::simplify_known_control_flow_prim_func(effects_function).unwrap(),
-    )
-    .unwrap();
-    let cpp_effects = cpp_pass("tirx.transform.RemoveNoOp")
-        .run(effects_module)
-        .unwrap();
-    assert_structural_equal(&rust_effects, &cpp_effects);
-    assert_eq!(node_statistics(&rust_effects).unwrap().evaluations, 1);
 }
 
 #[test]
@@ -1688,6 +1443,40 @@ fn rust_remove_no_op_matches_cpp_on_redundant_buffer_store() {
     let load = TensorLoad::from_buffer(&buffer, vec![index.clone().into()]).unwrap();
     let store = BufferStore::new(&buffer, load, vec![index.clone().into()]).unwrap();
     let function = PrimFunc::new(vec![buffer.as_var().clone(), index], store).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::remove_no_op_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.RemoveNoOp").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_remove_no_op_uses_branch_constraints_like_cpp() {
+    load_tvm_compiler();
+    let extent = Var::new("n", "int32").unwrap();
+    let loop_var = Var::new("i", "int32").unwrap();
+    let effect: Expr = Call::new(
+        PrimType::new("int32").unwrap(),
+        GlobalVar::new("effect"),
+        Vec::new(),
+    )
+    .into();
+    let loop_statement = For::serial(
+        loop_var,
+        int_expression(0),
+        extent.clone(),
+        Evaluate::new(effect).unwrap(),
+    )
+    .unwrap();
+    let body = IfThenElse::new(
+        LE::new(extent.clone(), int_expression(0)).unwrap(),
+        loop_statement,
+        Some(Evaluate::from_i64(0).unwrap().into()),
+    )
+    .unwrap();
+    let function = PrimFunc::new(vec![extent], body).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
 
     let rust_result =
@@ -1889,6 +1678,68 @@ fn rust_convert_ssa_matches_cpp_for_flat_redefinitions() {
 }
 
 #[test]
+fn rust_convert_ssa_matches_cpp_for_repeated_let_binders() {
+    load_tvm_compiler();
+    let variable = Var::new("value", "int32").unwrap();
+    let first = Let::new(variable.clone(), int_expression(1), variable.clone()).unwrap();
+    let second = Let::new(variable.clone(), int_expression(2), variable.clone()).unwrap();
+    let body = SeqStmt::new(vec![
+        Evaluate::new(first).unwrap().into(),
+        Evaluate::new(second).unwrap().into(),
+    ])
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::from_body(body).unwrap()).unwrap();
+
+    let rust_result = transform::convert_ssa()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let rust_function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
+    let valid_ssa: bool = Function::get_global("tirx.analysis.verify_ssa")
+        .unwrap()
+        .call_tuple((rust_function,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert!(valid_ssa);
+}
+
+#[test]
+fn rust_convert_ssa_keeps_while_bindings_scoped_like_cpp() {
+    load_tvm_compiler();
+    let condition = Var::new("condition", "bool").unwrap();
+    let variable = Var::new("value", "int32").unwrap();
+    let loop_body = Bind::new(variable.clone(), int_expression(1)).unwrap();
+    let body = SeqStmt::new(vec![
+        Bind::new(variable.clone(), int_expression(0))
+            .unwrap()
+            .into(),
+        While::new(condition.clone(), loop_body).unwrap().into(),
+        Evaluate::new(variable).unwrap().into(),
+    ])
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::new(vec![condition], body).unwrap()).unwrap();
+
+    let rust_result = transform::convert_ssa()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
 fn rust_convert_ssa_matches_cpp_for_reused_dynamic_buffer_parameters() {
     load_tvm_compiler();
     let shape = Var::new("n", "int64").unwrap();
@@ -1924,6 +1775,56 @@ fn rust_convert_ssa_matches_cpp_for_reused_dynamic_buffer_parameters() {
     let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_convert_ssa_keeps_for_annotations_outside_the_ssa_scope() {
+    load_tvm_compiler();
+    let variable = Var::new("i", "int32").unwrap();
+    let annotation_key = tvm::tvm_ffi::String::from("test.metadata");
+    let annotations = Map::from_iter([(annotation_key.clone(), Any::from(variable.clone()))]);
+    let loop_node = For::with_metadata(
+        variable.clone(),
+        int_expression(0),
+        int_expression(1),
+        ForKind::kSerial,
+        Evaluate::new(variable.clone()).unwrap().into(),
+        None,
+        annotations,
+        None,
+        None,
+    )
+    .unwrap();
+    let body = SeqStmt::new(vec![
+        Bind::new(variable.clone(), int_expression(0))
+            .unwrap()
+            .into(),
+        loop_node.into(),
+    ])
+    .unwrap();
+    let module = IRModule::from_expr(PrimFunc::from_body(body).unwrap()).unwrap();
+
+    let rust_result = transform::convert_ssa()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ConvertSSA").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
+    let sequence = function.body.clone().try_cast::<SeqStmt>().unwrap();
+    let loop_node = sequence.seq.get(1).unwrap().try_cast::<For>().unwrap();
+    let annotation =
+        Var::try_from(loop_node.annotations.get(&annotation_key).unwrap().unwrap()).unwrap();
+    assert!(annotation.same_as(&variable));
+    assert!(!loop_node.loop_var.as_var().same_as(&variable));
 }
 
 #[test]
@@ -1972,7 +1873,47 @@ fn new_non_sblock_bindings_match_native_constructors() {
         .unwrap()
         .try_into()
         .unwrap();
-    assert_structural_equal(&Expr::from(Not::new(condition).unwrap()), &native_not);
+    assert_structural_equal(
+        &Expr::from(Not::new(condition.clone()).unwrap()),
+        &native_not,
+    );
+
+    let rust_select = Select::new(condition.clone(), lhs.clone(), rhs.clone()).unwrap();
+    let native_select: Expr = Function::get_global("tirx.Select")
+        .unwrap()
+        .call_tuple((
+            condition.clone(),
+            lhs.clone(),
+            rhs.clone(),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Expr::from(rust_select), &native_select);
+
+    let let_variable = Var::new("let_bound", "int32").unwrap();
+    let rust_let = Let::new(let_variable.clone(), lhs.clone(), rhs.clone()).unwrap();
+    let native_let: Expr = Function::get_global("tirx.Let")
+        .unwrap()
+        .call_tuple((let_variable, lhs.clone(), rhs.clone(), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Expr::from(rust_let), &native_let);
+
+    let rust_while = While::new(condition.clone(), Evaluate::from_i64(0).unwrap()).unwrap();
+    let native_while: Stmt = Function::get_global("tirx.While")
+        .unwrap()
+        .call_tuple((
+            condition,
+            Stmt::from(Evaluate::from_i64(0).unwrap()),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Stmt::from(rust_while), &native_while);
 
     let variable = Var::new("bound", "int32").unwrap();
     let rust_bind = Bind::new(variable.clone(), int_expression(1)).unwrap();
@@ -2276,79 +2217,6 @@ fn filter_matches_cpp_and_removes_rejected_prim_funcs() {
 }
 
 #[test]
-fn module_reachability_pruning_keeps_callees_and_external_roots() {
-    load_tvm_compiler();
-    let result_type: Type = PrimType::new("int32").unwrap().into();
-    let main_global = GlobalVar::new("main");
-    let helper_global = GlobalVar::new("helper");
-    let exported_global = GlobalVar::new("exported");
-    let dead_global = GlobalVar::new("dead");
-    let helper_call: Expr = Call::new(&result_type, helper_global.clone(), Vec::new()).into();
-
-    let main_function: tvm::ir::BaseFunc =
-        PrimFunc::from_body(Evaluate::new(&helper_call).unwrap())
-            .unwrap()
-            .into();
-    let helper_function: tvm::ir::BaseFunc = PrimFunc::from_body(Evaluate::from_i64(42).unwrap())
-        .unwrap()
-        .into();
-    let exported_attributes = DictAttrs::from_dictionary(
-        [(
-            tvm::tvm_ffi::String::from("global_symbol"),
-            Any::from(tvm::tvm_ffi::String::from("exported_symbol")),
-        )]
-        .into_iter()
-        .collect(),
-    );
-    let exported_function: tvm::ir::BaseFunc = PrimFunc::with_metadata(
-        Vec::new(),
-        Evaluate::from_i64(7).unwrap(),
-        Type::missing(),
-        exported_attributes,
-        None,
-    )
-    .unwrap()
-    .into();
-    let dead_function: tvm::ir::BaseFunc = PrimFunc::from_body(Evaluate::from_i64(99).unwrap())
-        .unwrap()
-        .into();
-    let module = IRModule::with_metadata(
-        [
-            (main_global, main_function),
-            (helper_global, helper_function),
-            (exported_global, exported_function),
-            (dead_global, dead_function),
-        ]
-        .into_iter()
-        .collect(),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
-    )
-    .unwrap();
-
-    let direct =
-        transform::examples::prune_unreachable_functions_from_main(module.clone()).unwrap();
-    assert_eq!(direct.functions.len(), 3);
-    let mut retained_names = direct
-        .functions
-        .iter()
-        .map(|(global, _)| global.name_hint.as_str().to_owned())
-        .collect::<Vec<_>>();
-    retained_names.sort();
-    assert_eq!(retained_names, vec!["exported", "helper", "main"]);
-
-    let external_only = transform::examples::prune_unreachable_functions(module, &[]).unwrap();
-    let external_names = external_only
-        .functions
-        .iter()
-        .map(|(global, _)| global.name_hint.as_str().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(external_names, vec!["exported"]);
-    assert!(transform::examples::prune_unreachable_functions(direct, &["missing"]).is_err());
-}
-
-#[test]
 fn unit_loop_elimination_preserves_annotated_loops() {
     load_tvm_compiler();
     let loop_var = Var::new("i", "int64").unwrap();
@@ -2407,6 +2275,42 @@ fn rust_lower_tirx_opaque_matches_cpp_for_a_unit_loop() {
         .unwrap();
 
     assert!(rust_function.body.clone().try_cast::<For>().is_err());
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tirx_opaque_remaps_buffer_definitions_and_uses_together() {
+    load_tvm_compiler();
+    let loop_var = Var::new("i", "int64").unwrap();
+    let buffer_type = BufferType::new("local", "int32", vec![loop_var.clone().into()]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        BufferStore::new(
+            &buffer,
+            int_expression(1),
+            vec![typed_int_expression("int64", 0)],
+        )
+        .unwrap()
+        .into(),
+    ])
+    .unwrap();
+    let loop_node = For::serial(
+        loop_var,
+        typed_int_expression("int64", 4),
+        typed_int_expression("int64", 1),
+        body,
+    )
+    .unwrap();
+    let function = PrimFunc::from_body(loop_node).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_function = transform::lower_tirx_opaque_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTIRxOpaque")
+        .run(module)
+        .unwrap();
+
     assert_structural_equal(&rust_result, &cpp_result);
 }
 
@@ -2539,6 +2443,73 @@ fn rust_remap_thread_axis_matches_cpp() {
 }
 
 #[test]
+fn rust_remap_thread_axis_does_not_rewrite_loop_annotations() {
+    load_tvm_compiler();
+    let extent = typed_int_expression("int64", 8);
+    let old_var = Var::new("tx", "int64").unwrap();
+    let old_axis = IterVar::with_metadata(
+        Some(Range::from_min_extent(typed_int_expression("int64", 0), extent.clone()).unwrap()),
+        old_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let new_var = Var::new("ty", "int64").unwrap();
+    let new_axis = IterVar::with_metadata(
+        Some(Range::from_min_extent(typed_int_expression("int64", 0), extent.clone()).unwrap()),
+        new_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.y",
+        None,
+    )
+    .unwrap();
+    let annotation_key = tvm::tvm_ffi::String::from("test.metadata");
+    let loop_var = Var::new("i", "int64").unwrap();
+    let annotations = Map::from_iter([(annotation_key.clone(), Any::from(old_var.clone()))]);
+    let loop_node = For::with_metadata(
+        loop_var,
+        typed_int_expression("int64", 0),
+        typed_int_expression("int64", 1),
+        ForKind::kSerial,
+        Evaluate::new(old_var.clone()).unwrap().into(),
+        None,
+        annotations,
+        None,
+        None,
+    )
+    .unwrap();
+    let body = AttrStmt::new(old_axis, "thread_extent", extent, loop_node).unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+    let thread_map = Map::from_iter([(tvm::tvm_ffi::String::from("threadIdx.x"), new_axis)]);
+
+    let rust_function = transform::remap_thread_axis_prim_func(function, &thread_map).unwrap();
+    let rust_result = IRModule::from_expr(rust_function.clone()).unwrap();
+    let cpp_pass: transform::Pass = Function::get_global("tirx.transform.RemapThreadAxis")
+        .unwrap()
+        .call_tuple((thread_map,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = cpp_pass.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let attribute = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let loop_node = attribute.body.clone().try_cast::<For>().unwrap();
+    let annotation =
+        Var::try_from(loop_node.annotations.get(&annotation_key).unwrap().unwrap()).unwrap();
+    assert!(annotation.same_as(&old_var));
+    let evaluated = loop_node.body.clone().try_cast::<Evaluate>().unwrap();
+    assert!(evaluated
+        .value
+        .clone()
+        .try_cast::<Var>()
+        .unwrap()
+        .same_as(&new_var));
+}
+
+#[test]
 fn rust_remove_assume_matches_cpp_for_a_root_assume() {
     load_tvm_compiler();
     let assume_op: Expr = Function::get_global("ir.GetOp")
@@ -2572,4 +2543,244 @@ fn rust_remove_assume_matches_cpp_for_a_root_assume() {
         evaluate.value.clone().try_cast::<IntImm>().unwrap().value,
         0
     );
+}
+
+#[test]
+fn common_subexpr_elim_matches_cpp_for_repeated_arithmetic() {
+    load_tvm_compiler();
+    let variable = Var::new("x", "int32").unwrap();
+    let lhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let rhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let body = Evaluate::new(Mul::new(lhs, rhs).unwrap()).unwrap();
+    let function = PrimFunc::new(vec![variable], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::common_subexpr_elim_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let sequence = rust_function.body.clone().try_cast::<SeqStmt>().unwrap();
+    assert_eq!(sequence.seq.len(), 2);
+    let binding = sequence.seq.get(0).unwrap().try_cast::<Bind>().unwrap();
+    assert_eq!(binding.var.name.as_str(), "cse_v1");
+}
+
+#[test]
+fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
+    load_tvm_compiler();
+    let variable = Var::new("x", "int32").unwrap();
+    let condition = Var::new("condition", "bool").unwrap();
+    let then_value = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let else_value = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let conditional: Stmt = IfThenElse::new(
+        condition.clone(),
+        Evaluate::new(then_value).unwrap(),
+        Some(Evaluate::new(else_value).unwrap().into()),
+    )
+    .unwrap()
+    .into();
+
+    let callee = GlobalVar::new("callee");
+    let call_type = PrimType::new("int32").unwrap();
+    let call_lhs = Call::new(call_type.clone(), callee.clone(), Vec::new());
+    let call_rhs = Call::new(call_type, callee, Vec::new());
+    let effectful_lhs = Add::new(call_lhs, int_expression(1)).unwrap();
+    let effectful_rhs = Add::new(call_rhs, int_expression(1)).unwrap();
+    let effectful: Stmt = Evaluate::new(Mul::new(effectful_lhs, effectful_rhs).unwrap())
+        .unwrap()
+        .into();
+
+    let let_variable = Var::new("let_value", "int32").unwrap();
+    let let_lhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
+    let let_rhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
+    let let_body = Add::new(let_lhs, let_rhs).unwrap();
+    let let_expression: Expr = Function::get_global("tirx.Let")
+        .unwrap()
+        .call_tuple((
+            let_variable,
+            prim_int_expression(0),
+            PrimExpr::try_from(Expr::from(let_body)).unwrap(),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let let_statement: Stmt = Evaluate::new(let_expression).unwrap().into();
+
+    let first_predicate = LT::new(variable.clone(), int_expression(10)).unwrap();
+    let second_predicate = LT::new(variable.clone(), int_expression(10)).unwrap();
+    let first_bool_use: Stmt =
+        IfThenElse::new(first_predicate, Evaluate::from_i64(1).unwrap(), None)
+            .unwrap()
+            .into();
+    let second_bool_use: Stmt =
+        IfThenElse::new(second_predicate, Evaluate::from_i64(2).unwrap(), None)
+            .unwrap()
+            .into();
+
+    let loop_variable = Var::new("i", "int32").unwrap();
+    let loop_lhs = Add::new(loop_variable.clone(), variable.clone()).unwrap();
+    let loop_rhs = Add::new(loop_variable.clone(), variable.clone()).unwrap();
+    let loop_body = SeqStmt::new(vec![
+        Evaluate::new(loop_lhs).unwrap().into(),
+        Evaluate::new(loop_rhs).unwrap().into(),
+    ])
+    .unwrap();
+    let loop_statement: Stmt = For::serial(
+        loop_variable,
+        int_expression(0),
+        int_expression(4),
+        loop_body,
+    )
+    .unwrap()
+    .into();
+
+    let while_lhs = Add::new(variable.clone(), int_expression(2)).unwrap();
+    let while_rhs = Add::new(variable.clone(), int_expression(2)).unwrap();
+    let while_body = SeqStmt::new(vec![
+        Evaluate::new(while_lhs).unwrap().into(),
+        Evaluate::new(while_rhs).unwrap().into(),
+    ])
+    .unwrap();
+    let while_statement: Stmt = Function::get_global("tirx.While")
+        .unwrap()
+        .call_tuple((
+            PrimExpr::try_from(Expr::from(condition.clone())).unwrap(),
+            Stmt::from(while_body),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = SeqStmt::new(vec![
+        conditional,
+        effectful,
+        let_statement,
+        first_bool_use,
+        second_bool_use,
+        loop_statement,
+        while_statement,
+    ])
+    .unwrap();
+    let function = PrimFunc::new(vec![variable, condition], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::common_subexpr_elim_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let mut bindings = 0;
+    structural_walk(
+        &rust_function,
+        |_: &BindObj| {
+            bindings += 1;
+            WalkResult::Advance
+        },
+        WalkOrder::PreOrder,
+    )
+    .unwrap();
+    assert_eq!(bindings, 3);
+}
+
+#[test]
+fn common_subexpr_elim_matches_cpp_for_shared_statement_identity() {
+    load_tvm_compiler();
+    let variable = Var::new("x", "int32").unwrap();
+    let lhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let rhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let shared: Stmt = Evaluate::new(Mul::new(lhs, rhs).unwrap()).unwrap().into();
+    let body = SeqStmt::new(vec![shared.clone(), shared]).unwrap();
+    let function = PrimFunc::new(vec![variable], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result = transform::common_subexpr_elim()
+        .unwrap()
+        .run(module.clone())
+        .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+    let rust_function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
+    let valid_ssa: bool = Function::get_global("tirx.analysis.verify_ssa")
+        .unwrap()
+        .call_tuple((rust_function,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert!(valid_ssa);
+}
+
+#[test]
+fn common_subexpr_elim_matches_cpp_for_decl_buffer_data() {
+    load_tvm_compiler();
+    let variable = Var::new("x", "int32").unwrap();
+    let lhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let rhs = Add::new(variable.clone(), int_expression(1)).unwrap();
+    let data = Mul::new(lhs, rhs).unwrap();
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int64", 1)]).unwrap();
+    let declaration = DeclBuffer::new(buffer_type.new_var("buffer"), data).unwrap();
+    let function = PrimFunc::new(vec![variable], declaration).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::common_subexpr_elim_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn common_subexpr_elim_remaps_buffer_definitions_and_uses_together() {
+    load_tvm_compiler();
+    let variable = Var::new("n", "int64").unwrap();
+    let first: Expr = Add::new(variable.clone(), typed_int_expression("int64", 1))
+        .unwrap()
+        .into();
+    let second: Expr = Add::new(variable.clone(), typed_int_expression("int64", 1))
+        .unwrap()
+        .into();
+    let buffer_type = BufferType::new("local", "int32", vec![first, second]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        BufferStore::new(
+            &buffer,
+            int_expression(1),
+            vec![
+                typed_int_expression("int64", 0),
+                typed_int_expression("int64", 0),
+            ],
+        )
+        .unwrap()
+        .into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::new(vec![variable], body).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::common_subexpr_elim_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
 }

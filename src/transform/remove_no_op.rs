@@ -21,22 +21,28 @@ use std::collections::HashMap;
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, DefRegionKind, FieldGetter, Map, ObjectArc, ObjectCore, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String as FfiString, StructuralMutator,
+    structural_mutate, Any, Array, DefRegionKind, FieldGetter, Function, Map, MapValue, ObjectArc,
+    ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    StructuralMutator, RUNTIME_ERROR,
 };
 
-use super::utils::with_prim_func_body;
+use super::utils::{
+    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
+};
 use super::{create_prim_func_pass, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
+use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
 use crate::tirx::{
-    AttrStmt, BufferStore, BufferVar, Evaluate, For, IfThenElse, Not, PrimFunc, SeqStmt, Stmt, Sub,
-    LE,
+    Add, AllocBuffer, And, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
+    Evaluate, FloorDiv, For, IfThenElse, IterVar, Let, Mul, Not, PrimFunc, Reduce, Select, SeqStmt,
+    Stmt, Sub, EQ, GE, GT, LE, LT,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
 const ASYNC_WAIT_QUEUE_SCOPE: &str = "async_wait_queue_scope";
 const ASYNC_WAIT_INFLIGHT_COUNT: &str = "async_wait_inflight_count";
+const THREAD_EXTENT: &str = "thread_extent";
+const VIRTUAL_THREAD: &str = "virtual_thread";
 
 /// Opaque read-only view of TVM's `tirx.transform.RemoveNoOpConfig`.
 #[repr(C)]
@@ -109,6 +115,10 @@ fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> 
         analyzer,
         ignore_profiler_call: options.ignore_profiler_call,
         variable_domains: HashMap::new(),
+        buffer_remaps: BufferRemaps::default(),
+        likely_operator: get_operator("tirx.likely")?,
+        if_then_else_operator: get_operator("tirx.if_then_else")?,
+        bitwise_and_operator: get_operator("tirx.bitwise_and")?,
     };
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
@@ -132,54 +142,297 @@ struct NoOpRemover {
     analyzer: Analyzer,
     ignore_profiler_call: bool,
     variable_domains: HashMap<ObjectIdentity, (Var, IntSet)>,
+    buffer_remaps: BufferRemaps,
+    likely_operator: Expr,
+    if_then_else_operator: Expr,
+    bitwise_and_operator: Expr,
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl NoOpRemover {
+    fn mutate_bind(&mut self, value: Bind, region: DefRegionKind) -> Result<Bind> {
+        // Bind.var is a definition, not a recursive use.
+        let bound_value: Expr = self.mutate(&value.value, region)?.try_into()?;
+        if let Ok(bound_value) = PrimExpr::try_from(&bound_value) {
+            if side_effect(&bound_value)? <= CallEffectKind::kPure {
+                self.analyzer.bind_expression(&value.var, &bound_value)?;
+            }
+        }
+        if bound_value.same_as(&value.value) {
+            return Ok(value);
+        }
+        Ok(Bind::from_complete_fields(
+            value.span.clone(),
+            value.var.clone(),
+            bound_value,
+        ))
+    }
+
+    fn mutate_let(&mut self, value: Let, region: DefRegionKind) -> Result<Let> {
+        let bound_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        if side_effect(&bound_value)? <= CallEffectKind::kPure {
+            self.analyzer.bind_expression(&value.var, &bound_value)?;
+        }
+        let body: PrimExpr = self.mutate(&value.body, region)?.try_into()?;
+        if bound_value.same_as(&value.value) && body.same_as(&value.body) {
+            return Ok(value);
+        }
+        Ok(Let::from_complete_fields(
+            value.span.clone(),
+            body.ty.clone().try_cast()?,
+            value.var.clone(),
+            bound_value,
+            body,
+        ))
+    }
+
+    fn mutate_reduce(&mut self, value: Reduce, region: DefRegionKind) -> Result<Reduce> {
+        // IRMutatorWithAnalyzer binds every reduction axis before visiting any
+        // reduction child.
+        for axis in value.axis.iter() {
+            if let Some(domain) = axis.dom()? {
+                self.analyzer.bind(axis.var()?.as_var(), &domain)?;
+            }
+        }
+
+        let mut axes = Vec::with_capacity(value.axis.len());
+        for axis in value.axis.iter() {
+            let original_domain = axis.dom()?;
+            let domain = original_domain
+                .as_ref()
+                .map(|domain| -> Result<Range> {
+                    let minimum: PrimExpr = self.mutate(&domain.min, region)?.try_into()?;
+                    let extent: PrimExpr = self.mutate(&domain.extent, region)?.try_into()?;
+                    if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
+                        Ok(domain.clone())
+                    } else {
+                        Ok(Range::from_complete_fields(
+                            minimum,
+                            extent,
+                            domain.span.clone(),
+                        ))
+                    }
+                })
+                .transpose()?;
+            if option_same_as(&domain, &original_domain) {
+                axes.push(axis);
+            } else {
+                axes.push(IterVar::with_metadata(
+                    domain,
+                    axis.var()?.as_var().clone(),
+                    axis.iter_type()?,
+                    axis.thread_tag()?.as_str(),
+                    axis.span()?.as_ref(),
+                )?);
+            }
+        }
+
+        let source: Array<PrimExpr> = self.mutate(&value.source, region)?.try_into()?;
+        let init: Array<PrimExpr> = self.mutate(&value.init, region)?.try_into()?;
+        let condition: PrimExpr = self.mutate(&value.condition, region)?.try_into()?;
+        let axes = Array::new(axes);
+        if array_same_as(&source, &value.source)
+            && array_same_as(&init, &value.init)
+            && array_same_as(&axes, &value.axis)
+            && condition.same_as(&value.condition)
+        {
+            return Ok(value);
+        }
+        Ok(Reduce::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            value.combiner.clone(),
+            source,
+            init,
+            axes,
+            condition,
+            value.value_index,
+        ))
+    }
+
+    fn mutate_assertion(&mut self, value: AssertStmt, region: DefRegionKind) -> Result<AssertStmt> {
+        let condition: PrimExpr = self.mutate(&value.condition, region)?.try_into()?;
+        if condition.same_as(&value.condition) {
+            return Ok(value);
+        }
+        Ok(AssertStmt::from_complete_fields(
+            value.span.clone(),
+            condition,
+            value.error_kind.clone(),
+            value.message_parts.clone(),
+        ))
+    }
+
+    fn mutate_select(&mut self, value: Select, region: DefRegionKind) -> Result<PrimExpr> {
+        let condition: PrimExpr = self.mutate(&value.condition, region)?.try_into()?;
+        let true_value = self.mutate_primitive_under_constraint_with_facts(
+            &value.true_value,
+            &condition,
+            region,
+        )?;
+        let negative = self
+            .analyzer
+            .simplify(&PrimExpr::from(Not::new(condition.clone())?))?;
+        let false_value =
+            self.mutate_primitive_under_constraint(&value.false_value, &negative, region)?;
+        if let Some(condition) = int_value(&condition) {
+            return if condition != 0 {
+                Ok(true_value)
+            } else {
+                Ok(false_value)
+            };
+        }
+        if condition.same_as(&value.condition)
+            && true_value.same_as(&value.true_value)
+            && false_value.same_as(&value.false_value)
+        {
+            return Ok(value.into());
+        }
+        Ok(Select::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            condition,
+            true_value,
+            false_value,
+        )
+        .into())
+    }
+
+    fn mutate_call(&mut self, value: Call, region: DefRegionKind) -> Result<Expr> {
+        if !value.op.same_as(&self.if_then_else_operator) || value.args.len() != 3 {
+            let args: Array<Expr> = self.mutate(&value.args, region)?.try_into()?;
+            if array_same_as(&args, &value.args) {
+                return Ok(value.into());
+            }
+            return Ok(Call::from_complete_fields(
+                value.span.clone(),
+                value.ty.clone(),
+                value.op.clone(),
+                args,
+                value.attrs.clone(),
+                value.ty_args.clone(),
+            )
+            .into());
+        }
+
+        let original_condition = value.args.get(0).expect("condition argument is present");
+        let original_true = value.args.get(1).expect("true argument is present");
+        let original_false = value.args.get(2).expect("false argument is present");
+        let condition: PrimExpr = self.mutate(&original_condition, region)?.try_into()?;
+        let true_value =
+            self.mutate_expression_under_constraint_with_facts(&original_true, &condition, region)?;
+        let negative: PrimExpr = Not::new(condition.clone())?.into();
+        let false_value =
+            self.mutate_expression_under_constraint(&original_false, &negative, region)?;
+        if let Some(condition) = int_value(&condition) {
+            return if condition != 0 {
+                Ok(true_value)
+            } else {
+                Ok(false_value)
+            };
+        }
+        if condition.same_as(&PrimExpr::try_from(original_condition)?)
+            && true_value.same_as(&original_true)
+            && false_value.same_as(&original_false)
+        {
+            return Ok(value.into());
+        }
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone(),
+            value.op.clone(),
+            tvm_ffi::Array::new(vec![condition.into(), true_value, false_value]),
+            value.attrs.clone(),
+            value.ty_args.clone(),
+        )
+        .into())
+    }
+
     fn mutate_attribute(&mut self, value: AttrStmt, region: DefRegionKind) -> Result<Stmt> {
         if value.attr_key.as_str() == DEBUG_SKIP_REGION {
             return evaluate_zero();
         }
 
         if value.attr_key.as_str() == ASYNC_WAIT_QUEUE_SCOPE {
-            if let Ok(inner) = value.body.clone().try_cast::<AttrStmt>() {
-                if inner.attr_key.as_str() == ASYNC_WAIT_INFLIGHT_COUNT {
-                    let zero = zero_like(&inner.value)?;
-                    let negative: PrimExpr =
-                        crate::tirx::LT::new(inner.value.clone(), zero)?.into();
-                    if self.analyzer.can_prove(&negative)? {
-                        return self.mutate(&inner.body, region)?.try_into();
-                    }
-                }
+            let inner = value.body.clone().try_cast::<AttrStmt>().map_err(|_| {
+                tvm_ffi::Error::new(
+                    RUNTIME_ERROR,
+                    "async_wait_queue_scope must contain async_wait_inflight_count",
+                    "",
+                )
+            })?;
+            if inner.attr_key.as_str() != ASYNC_WAIT_INFLIGHT_COUNT {
+                return Err(tvm_ffi::Error::new(
+                    RUNTIME_ERROR,
+                    "async_wait_queue_scope must contain async_wait_inflight_count",
+                    "",
+                ));
+            }
+            let zero = zero_like(&inner.value)?;
+            let negative: PrimExpr = crate::tirx::LT::new(inner.value.clone(), zero)?.into();
+            if Analyzer::new()?.can_prove(&negative)? {
+                return self.mutate(&inner.body, region)?.try_into();
             }
         }
 
-        let mutated: AttrStmt = self.default_mutate_value(&value, region)?.try_into()?;
+        if matches!(value.attr_key.as_str(), THREAD_EXTENT | VIRTUAL_THREAD) {
+            let iteration = IterVar::try_from(value.node.clone())?;
+            let variable = iteration.var()?;
+            let domain = Range::from_min_extent(zero_like(&value.value)?, value.value.clone())?;
+            self.analyzer.bind(variable.as_var(), &domain)?;
+        }
+
+        // Match StmtExprMutator: AttrStmt.node is metadata and must not be
+        // recursively rewritten.
+        let attr_value: PrimExpr = self.mutate(&value.value, region)?.try_into()?;
+        let body: Stmt = self.mutate(&value.body, region)?.try_into()?;
+        let mutated = if attr_value.same_as(&value.value) && body.same_as(&value.body) {
+            value
+        } else {
+            AttrStmt::from_complete_fields(
+                value.span.clone(),
+                value.node.clone(),
+                value.attr_key.clone(),
+                attr_value,
+                body,
+            )
+        };
         if is_no_op(&mutated.body) {
-            self.make_evaluate(mutated.value.clone().into())
+            self.make_evaluate(mutated.value.clone())
         } else {
             Ok(mutated.into())
         }
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, region: DefRegionKind) -> Result<Stmt> {
-        let mutated: Stmt = self.default_mutate_value(&value, region)?.try_into()?;
-        let Ok(conditional) = mutated.clone().try_cast::<IfThenElse>() else {
-            return Ok(mutated);
-        };
+        let condition: PrimExpr = self.mutate(&value.condition, region)?.try_into()?;
+        let real_condition = self.unwrap_likely(&condition)?;
+        let then_case =
+            self.mutate_under_constraint_with_facts(&value.then_case, &real_condition, region)?;
+        let negative = self
+            .analyzer
+            .simplify(&PrimExpr::from(Not::new(real_condition.clone())?))?;
+        let else_case = value
+            .else_case
+            .as_ref()
+            .map(|branch| self.mutate_under_constraint(branch, &negative, region))
+            .transpose()?;
 
-        if let Some(condition) = int_value(&self.analyzer.simplify(&conditional.condition)?) {
+        if let Some(condition) = int_value(&self.analyzer.simplify(&real_condition)?) {
             return if condition != 0 {
-                Ok(conditional.then_case.clone())
+                Ok(then_case)
             } else {
-                conditional.else_case.clone().map_or_else(evaluate_zero, Ok)
+                else_case.map_or_else(evaluate_zero, Ok)
             };
         }
+
+        let conditional =
+            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case);
 
         let then_is_no_op = is_no_op(&conditional.then_case);
         match conditional.else_case.clone() {
             Some(else_case) if then_is_no_op && is_no_op(&else_case) => {
-                self.make_evaluate(conditional.condition.clone().into())
+                self.make_evaluate(conditional.condition.clone())
             }
             Some(else_case) if is_no_op(&else_case) => Ok(IfThenElse::new(
                 conditional.condition.clone(),
@@ -193,8 +446,8 @@ impl NoOpRemover {
                         .into(),
                 )
             }
-            None if then_is_no_op => self.make_evaluate(conditional.condition.clone().into()),
-            _ => Ok(mutated),
+            None if then_is_no_op => self.make_evaluate(conditional.condition.clone()),
+            _ => Ok(conditional.into()),
         }
     }
 
@@ -211,15 +464,43 @@ impl NoOpRemover {
             return evaluate_zero();
         }
 
+        let domain = Range::from_min_extent(value.min.clone(), value.extent.clone())?;
+        self.analyzer.bind(value.loop_var.as_var(), &domain)?;
+
         let one = one_like(&value.extent)?;
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
         let maximum: PrimExpr = crate::tirx::Add::new(value.min.clone(), extent_minus_one)?.into();
-        let domain = IntSet::interval(value.min.clone(), maximum)?;
+        let integer_domain = IntSet::interval(value.min.clone(), maximum)?;
         let identity = ObjectIdentity::of(&value.loop_var);
-        let previous = self
-            .variable_domains
-            .insert(identity.clone(), (value.loop_var.as_var().clone(), domain));
-        let mutated = self.default_mutate_value(&value, region);
+        let previous = self.variable_domains.insert(
+            identity.clone(),
+            (value.loop_var.as_var().clone(), integer_domain),
+        );
+        let mutated = (|| -> Result<For> {
+            let minimum: PrimExpr = self.mutate(&value.min, region)?.try_into()?;
+            let extent: PrimExpr = self.mutate(&value.extent, region)?.try_into()?;
+            let step: Option<PrimExpr> = self.mutate(&value.step, region)?.try_into()?;
+            let positive: PrimExpr = GT::new(extent.clone(), zero_like(&extent)?)?.into();
+            let body = self.mutate_under_constraint_with_facts(&value.body, &positive, region)?;
+            if minimum.same_as(&value.min)
+                && extent.same_as(&value.extent)
+                && option_same_as(&step, &value.step)
+                && body.same_as(&value.body)
+            {
+                return Ok(value.clone());
+            }
+            Ok(For::from_complete_fields(
+                value.span.clone(),
+                value.loop_var.clone(),
+                minimum,
+                extent,
+                value.kind,
+                body,
+                value.thread_binding.clone(),
+                value.annotations.clone(),
+                step,
+            ))
+        })();
         match previous {
             Some(previous) => {
                 self.variable_domains.insert(identity, previous);
@@ -228,7 +509,7 @@ impl NoOpRemover {
                 self.variable_domains.remove(&identity);
             }
         }
-        let mutated: For = mutated?.try_into()?;
+        let mutated = mutated?;
         if int_value(&mutated.extent) == Some(0) {
             return evaluate_zero();
         }
@@ -238,11 +519,11 @@ impl NoOpRemover {
         Ok(mutated.into())
     }
 
-    fn mutate_evaluate(&mut self, value: Evaluate) -> Result<Stmt> {
+    fn mutate_evaluate(&mut self, value: Evaluate) -> Result<Evaluate> {
         if self.has_side_effect(&value.value)? {
-            Ok(value.into())
+            Ok(value)
         } else {
-            evaluate_zero()
+            Evaluate::from_i64(0)
         }
     }
 
@@ -273,12 +554,106 @@ impl NoOpRemover {
     }
 
     fn mutate_sequence(&mut self, value: SeqStmt, region: DefRegionKind) -> Result<Stmt> {
-        let mutated: SeqStmt = self.default_mutate_value(&value, region)?.try_into()?;
-        mutated.flatten()
+        let mut exits = Vec::<Function>::new();
+        let result = (|| -> Result<Stmt> {
+            let mut statements = Vec::with_capacity(value.seq.len());
+            for statement in value.seq.iter() {
+                let mutated: Stmt = self.mutate(&statement, region)?.try_into()?;
+                if let Ok(assertion) = mutated.clone().try_cast::<AssertStmt>() {
+                    exits.push(self.analyzer.enter_constraint(&assertion.condition)?);
+                }
+                statements.push(mutated);
+            }
+            Stmt::sequence(statements)
+        })();
+        finish_constraint_contexts(result, exits)
+    }
+
+    fn mutate_variable(&mut self, value: Var) -> Var {
+        self.buffer_remaps.use_variable(&value)
+    }
+
+    fn mutate_load(&mut self, value: TensorLoad, region: DefRegionKind) -> Result<TensorLoad> {
+        let old_source = value.source.clone().try_cast::<Var>()?;
+        let source = self
+            .buffer_remaps
+            .use_buffer(&BufferVar::try_from(&old_source)?)
+            .as_var()
+            .clone();
+        let indices: Array<PrimExpr> = self.mutate(&value.indices, region)?.try_into()?;
+        if source.same_as(&old_source) && array_same_as(&indices, &value.indices) {
+            return Ok(value);
+        }
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
+    }
+
+    fn mutate_alloc_buffer(
+        &mut self,
+        value: AllocBuffer,
+        region: DefRegionKind,
+    ) -> Result<AllocBuffer> {
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
+    }
+
+    fn mutate_decl_buffer(
+        &mut self,
+        value: DeclBuffer,
+        region: DefRegionKind,
+    ) -> Result<DeclBuffer> {
+        let data: Expr = self.mutate(&value.data, region)?.try_into()?;
+        let buffer = self.mutate_buffer_definition(&value.buffer, region)?;
+        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
+            return Ok(value);
+        }
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
+    }
+
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, region: DefRegionKind) -> Result<Any> {
+        mutate_stmt_expr_default(self, value, region)
     }
 }
 
 impl NoOpRemover {
+    fn mutate_buffer_definition(
+        &mut self,
+        buffer: &BufferVar,
+        region: DefRegionKind,
+    ) -> Result<BufferVar> {
+        let mut remaps = std::mem::take(&mut self.buffer_remaps);
+        let result = remaps.mutate_definition(buffer, |expression| {
+            self.mutate(expression, region)?.try_into()
+        });
+        self.buffer_remaps = remaps;
+        result
+    }
+
+    fn unwrap_likely(&self, condition: &PrimExpr) -> Result<PrimExpr> {
+        let Ok(call) = condition.clone().try_cast::<Call>() else {
+            return Ok(condition.clone());
+        };
+        if !call.op.same_as(&self.likely_operator) || call.args.len() != 1 {
+            return Ok(condition.clone());
+        }
+        PrimExpr::try_from(call.args.get(0).expect("one likely argument is present"))
+    }
+
     fn has_side_effect(&self, value: &Expr) -> Result<bool> {
         if let Ok(primitive) = PrimExpr::try_from(value) {
             if self.ignore_profiler_call && is_profiler_call(&primitive)? {
@@ -289,8 +664,8 @@ impl NoOpRemover {
         Ok(value.clone().try_cast::<Call>().is_ok())
     }
 
-    fn make_evaluate(&self, value: Expr) -> Result<Stmt> {
-        if self.has_side_effect(&value)? {
+    fn make_evaluate(&self, value: PrimExpr) -> Result<Stmt> {
+        if side_effect(&value)? > CallEffectKind::kReadState {
             Ok(Evaluate::new(value)?.into())
         } else {
             evaluate_zero()
@@ -303,7 +678,7 @@ impl NoOpRemover {
     {
         let mut statements = Vec::new();
         for value in values {
-            if self.has_side_effect(&value.clone().into())? {
+            if side_effect(&value)? > CallEffectKind::kReadState {
                 statements.push(Evaluate::new(value)?.into());
             }
         }
@@ -312,6 +687,90 @@ impl NoOpRemover {
 
     fn store_side_effects(&self, store: &BufferStore) -> Result<Stmt> {
         self.make_evaluate_values(std::iter::once(store.value.clone()).chain(store.indices.iter()))
+    }
+
+    fn mutate_under_constraint(
+        &mut self,
+        statement: &Stmt,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<Stmt> {
+        let analyzer = self.analyzer.clone();
+        analyzer.with_constraint(constraint, || self.mutate(statement, region)?.try_into())
+    }
+
+    fn mutate_under_constraint_with_facts(
+        &mut self,
+        statement: &Stmt,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<Stmt> {
+        self.with_constraint_facts(constraint, |this| {
+            this.mutate(statement, region)?.try_into()
+        })
+    }
+
+    fn mutate_expression_under_constraint(
+        &mut self,
+        expression: &Expr,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<Expr> {
+        let analyzer = self.analyzer.clone();
+        analyzer.with_constraint(constraint, || self.mutate(expression, region)?.try_into())
+    }
+
+    fn mutate_expression_under_constraint_with_facts(
+        &mut self,
+        expression: &Expr,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<Expr> {
+        self.with_constraint_facts(constraint, |this| {
+            this.mutate(expression, region)?.try_into()
+        })
+    }
+
+    fn mutate_primitive_under_constraint(
+        &mut self,
+        expression: &PrimExpr,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<PrimExpr> {
+        let analyzer = self.analyzer.clone();
+        analyzer.with_constraint(constraint, || self.mutate(expression, region)?.try_into())
+    }
+
+    fn mutate_primitive_under_constraint_with_facts(
+        &mut self,
+        expression: &PrimExpr,
+        constraint: &PrimExpr,
+        region: DefRegionKind,
+    ) -> Result<PrimExpr> {
+        self.with_constraint_facts(constraint, |this| {
+            this.mutate(expression, region)?.try_into()
+        })
+    }
+
+    fn with_constraint_facts<T, F>(&mut self, constraint: &PrimExpr, operation: F) -> Result<T>
+    where
+        F: FnOnce(&mut Self) -> Result<T>,
+    {
+        let exits = self.enter_constraint_facts(constraint)?;
+        finish_constraint_contexts(operation(self), exits)
+    }
+
+    fn enter_constraint_facts(&self, constraint: &PrimExpr) -> Result<Vec<Function>> {
+        let mut constraints = vec![constraint.clone()];
+        collect_derived_constraint_facts(constraint, &self.bitwise_and_operator, &mut constraints)?;
+        let mut exits = Vec::with_capacity(constraints.len());
+        for constraint in constraints {
+            match self.analyzer.enter_constraint(&constraint) {
+                Ok(exit) => exits.push(exit),
+                Err(error) => return finish_constraint_contexts(Err(error), exits),
+            }
+        }
+        Ok(exits)
     }
 
     fn buffer_geometry_equal(&self, lhs: &BufferVar, rhs: &BufferVar) -> Result<bool> {
@@ -339,6 +798,139 @@ impl NoOpRemover {
         }
         Ok(true)
     }
+}
+
+#[derive(Clone, Copy)]
+enum CompareKind {
+    Equal,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+}
+
+fn collect_derived_constraint_facts(
+    condition: &PrimExpr,
+    bitwise_and_operator: &Expr,
+    output: &mut Vec<PrimExpr>,
+) -> Result<()> {
+    if let Ok(and) = condition.clone().try_cast::<And>() {
+        collect_derived_constraint_facts(&and.a, bitwise_and_operator, output)?;
+        collect_derived_constraint_facts(&and.b, bitwise_and_operator, output)?;
+        return Ok(());
+    }
+    if let Ok(call) = condition.clone().try_cast::<Call>() {
+        if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
+            let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
+            let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
+            if is_bool8(&lhs)? && is_bool8(&rhs)? {
+                collect_derived_constraint_facts(&lhs, bitwise_and_operator, output)?;
+                collect_derived_constraint_facts(&rhs, bitwise_and_operator, output)?;
+                return Ok(());
+            }
+        }
+    }
+
+    if let Ok(compare) = condition.clone().try_cast::<EQ>() {
+        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::Equal, output)?;
+    } else if let Ok(compare) = condition.clone().try_cast::<LT>() {
+        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessThan, output)?;
+    } else if let Ok(compare) = condition.clone().try_cast::<LE>() {
+        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessEqual, output)?;
+    } else if let Ok(compare) = condition.clone().try_cast::<GT>() {
+        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterThan, output)?;
+    } else if let Ok(compare) = condition.clone().try_cast::<GE>() {
+        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterEqual, output)?;
+    }
+    Ok(())
+}
+
+fn collect_floor_div_constraints(
+    lhs: &PrimExpr,
+    rhs: &PrimExpr,
+    kind: CompareKind,
+    output: &mut Vec<PrimExpr>,
+) -> Result<()> {
+    if let (Ok(div), Some(value)) = (lhs.clone().try_cast::<FloorDiv>(), int_value(rhs)) {
+        append_floor_div_constraints(&div, value, kind, output)?;
+    }
+    if let (Ok(div), Some(value)) = (rhs.clone().try_cast::<FloorDiv>(), int_value(lhs)) {
+        append_floor_div_constraints(&div, value, invert_compare(kind), output)?;
+    }
+    Ok(())
+}
+
+fn append_floor_div_constraints(
+    division: &FloorDiv,
+    value: i64,
+    kind: CompareKind,
+    output: &mut Vec<PrimExpr>,
+) -> Result<()> {
+    let Some(divisor_value) = int_value(&division.b) else {
+        return Ok(());
+    };
+    if divisor_value <= 0 {
+        return Ok(());
+    }
+    let dtype = division
+        .a
+        .ty
+        .clone()
+        .try_cast::<crate::ir::PrimType>()?
+        .dtype;
+    let divisor: PrimExpr = IntImm::from_dtype(dtype, divisor_value)?.into();
+    let k: PrimExpr = IntImm::from_dtype(dtype, value)?.into();
+    let one: PrimExpr = IntImm::from_dtype(dtype, 1)?.into();
+    let lower: PrimExpr = Mul::new(k.clone(), divisor.clone())?.into();
+    let next: PrimExpr = Add::new(k, one)?.into();
+    let upper: PrimExpr = Mul::new(next, divisor)?.into();
+
+    match kind {
+        CompareKind::Equal => {
+            output.push(GE::new(division.a.clone(), lower)?.into());
+            output.push(LT::new(division.a.clone(), upper)?.into());
+        }
+        CompareKind::LessThan => output.push(LT::new(division.a.clone(), lower)?.into()),
+        CompareKind::LessEqual => output.push(LT::new(division.a.clone(), upper)?.into()),
+        CompareKind::GreaterThan => output.push(GE::new(division.a.clone(), upper)?.into()),
+        CompareKind::GreaterEqual => output.push(GE::new(division.a.clone(), lower)?.into()),
+    }
+    Ok(())
+}
+
+fn invert_compare(kind: CompareKind) -> CompareKind {
+    match kind {
+        CompareKind::Equal => CompareKind::Equal,
+        CompareKind::LessThan => CompareKind::GreaterThan,
+        CompareKind::LessEqual => CompareKind::GreaterEqual,
+        CompareKind::GreaterThan => CompareKind::LessThan,
+        CompareKind::GreaterEqual => CompareKind::LessEqual,
+    }
+}
+
+fn is_bool8(value: &PrimExpr) -> Result<bool> {
+    let dtype = value.ty.clone().try_cast::<crate::ir::PrimType>()?.dtype;
+    Ok(dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8)
+}
+
+fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
+    let mut exit_error = None;
+    for exit in exits.into_iter().rev() {
+        if let Err(error) = exit.call_tuple(()) {
+            exit_error.get_or_insert(error);
+        }
+    }
+    match (result, exit_error) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Some(error)) => Err(error),
+        (Ok(value), None) => Ok(value),
+    }
+}
+
+fn get_operator(name: &str) -> Result<Expr> {
+    tvm_ffi::cached_global_func!("ir.GetOp")
+        .call_tuple((FfiString::from(name),))?
+        .try_into()
 }
 
 fn is_profiler_call(value: &PrimExpr) -> Result<bool> {

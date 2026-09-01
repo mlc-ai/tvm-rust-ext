@@ -58,23 +58,11 @@ def find_library() -> Path:
     )
 
 
-# TVMScript folds `x + 0` and `1 + 2` while parsing, so build those nodes
-# explicitly to leave the Rust passes something to simplify.
-def add(lhs, rhs):
-    return tvm.tirx.Add(lhs, rhs)
-
-
-ZERO = tvm.tirx.IntImm("int32", 0)
-ONE = tvm.tirx.IntImm("int32", 1)
-TWO = tvm.tirx.IntImm("int32", 2)
-
-
 @T.prim_func
 def before(A: T.Buffer((16,), "int32"), B: T.Buffer((16,), "int32")):
     for i in T.serial(16):
         with T.Assert(i < 16, "index in range"):
-            for j in T.serial(1):
-                B[i] = add(add(add(A[i], ZERO), add(ONE, TWO)), j)
+            B[i] = A[i]
 
 
 @T.prim_func
@@ -95,9 +83,6 @@ def main() -> None:
     # PrimFunc -> PrimFunc passes, applied one after another.
     func = before
     for name in (
-        "eliminate_unit_loops",  # for j in range(1): body  ->  body[j := 0]
-        "simplify_add_zero",  # A[i] + 0  ->  A[i]
-        "fold_integer_constants",  # 1 + 2  ->  3
         "skip_assert",  # drop the assert, keep its body
     ):
         func = lib[name](func)
@@ -112,8 +97,7 @@ def main() -> None:
     print(f"pass object: {skip_assert}")
     mod = tvm.IRModule({"main": before})
     mod = skip_assert(mod)
-    mod = lib["simplify_add_zero_module"](mod)
-    print("module after skip_assert_pass + simplify_add_zero_module:")
+    print("module after skip_assert_pass:")
     print(mod.script())
 
     print("OK")

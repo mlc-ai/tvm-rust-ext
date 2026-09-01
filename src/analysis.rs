@@ -19,7 +19,7 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_visit, structural_walk, AnyView, DefRegionKind, Error, Map, ObjectArc,
+    structural_visit, structural_walk, AnyView, DefRegionKind, Error, Function, Map, ObjectArc,
     ObjectRefCast, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult,
     VALUE_ERROR,
 };
@@ -126,6 +126,37 @@ impl Analyzer {
     pub fn bind(&self, variable: &Var, range: &Range) -> Result<()> {
         tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, range))?;
         Ok(())
+    }
+
+    /// Bind a variable to a pure primitive expression in this analyzer context.
+    pub fn bind_expression(&self, variable: &Var, value: &PrimExpr) -> Result<()> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, value))?;
+        Ok(())
+    }
+
+    /// Run an operation while `constraint` is known to be true.
+    ///
+    /// The native analyzer returns an exit callback for this context.  Always
+    /// invoking it here keeps the constraint stack balanced when `operation`
+    /// returns an error.
+    pub fn with_constraint<T, F>(&self, constraint: &PrimExpr, operation: F) -> Result<T>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        let exit = self.enter_constraint(constraint)?;
+        let result = operation();
+        let exit_result = exit.call_tuple(());
+        match (result, exit_result) {
+            (Ok(value), Ok(_)) => Ok(value),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
+    }
+
+    pub(crate) fn enter_constraint(&self, constraint: &PrimExpr) -> Result<Function> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerEnterConstraintContext")
+            .call_tuple((self, constraint))?
+            .try_into()
     }
 
     /// Limit the rewrite simplifier for deterministic debug/test behavior.

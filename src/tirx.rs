@@ -241,6 +241,12 @@ macro_rules! define_binary_expression {
 
 define_binary_expression!(SubObj, Sub, "tirx.Sub", "a subtraction expression");
 define_binary_expression!(MulObj, Mul, "tirx.Mul", "a multiplication expression");
+define_binary_expression!(
+    FloorDivObj,
+    FloorDiv,
+    "tirx.FloorDiv",
+    "a floor-division expression"
+);
 
 /// ABI-complete Rust representation of TVM's `tirx.EQ` node.
 #[repr(C)]
@@ -577,6 +583,300 @@ impl Not {
             data: ObjectArc::new(NotObj {
                 base: ExprObj::new(span, ty.into()),
                 a,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `SelectNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Select"]
+#[type_final]
+pub struct SelectObj {
+    base: ExprObj,
+    pub condition: PrimExpr,
+    pub true_value: PrimExpr,
+    pub false_value: PrimExpr,
+}
+
+/// Reference-counted handle to a conditional primitive expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Select {
+    data: ObjectArc<SelectObj>,
+}
+
+impl std::ops::Deref for Select {
+    type Target = SelectObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for SelectObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Select {
+    /// Choose between two primitive values using a boolean condition.
+    pub fn new<C, T, F>(condition: C, true_value: T, false_value: F) -> Result<Self>
+    where
+        C: Into<Expr>,
+        T: Into<Expr>,
+        F: Into<Expr>,
+    {
+        Self::with_span(condition, true_value, false_value, None)
+    }
+
+    /// Construct a select expression with optional source metadata.
+    pub fn with_span<C, T, F>(
+        condition: C,
+        true_value: T,
+        false_value: F,
+        span: Option<&Span>,
+    ) -> Result<Self>
+    where
+        C: Into<Expr>,
+        T: Into<Expr>,
+        F: Into<Expr>,
+    {
+        let condition = condition.into();
+        let true_value = true_value.into();
+        let false_value = false_value.into();
+        let condition_type = primitive_type(&condition, "Select condition")?;
+        if condition_type.dtype.code != DLDataTypeCode::kDLBool as u8 {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Select condition must have bool type",
+                "",
+            ));
+        }
+        let result_type = matching_binary_type(&true_value, &false_value)?;
+        if condition_type.dtype.lanes != 1 && condition_type.dtype.lanes != result_type.dtype.lanes
+        {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Select condition lanes must match the selected values",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            result_type,
+            PrimExpr::try_from(condition)?,
+            PrimExpr::try_from(true_value)?,
+            PrimExpr::try_from(false_value)?,
+        ))
+    }
+
+    /// Construct a select expression from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        condition: PrimExpr,
+        true_value: PrimExpr,
+        false_value: PrimExpr,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(SelectObj {
+                base: ExprObj::new(span, ty.into()),
+                condition,
+                true_value,
+                false_value,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `LetNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Let"]
+#[type_final]
+pub struct LetObj {
+    base: ExprObj,
+    pub var: Var,
+    pub value: PrimExpr,
+    pub body: PrimExpr,
+}
+
+/// Reference-counted handle to a let expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Let {
+    data: ObjectArc<LetObj>,
+}
+
+impl std::ops::Deref for Let {
+    type Target = LetObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for LetObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Let {
+    /// Bind `var` to `value`, then evaluate `body`.
+    pub fn new<V, B>(var: Var, value: V, body: B) -> Result<Self>
+    where
+        V: Into<Expr>,
+        B: Into<Expr>,
+    {
+        Self::with_span(var, value, body, None)
+    }
+
+    /// Construct a let expression with optional source metadata.
+    pub fn with_span<V, B>(var: Var, value: V, body: B, span: Option<&Span>) -> Result<Self>
+    where
+        V: Into<Expr>,
+        B: Into<Expr>,
+    {
+        let value = value.into();
+        let body = body.into();
+        var.ty.clone().try_cast::<PrimType>()?;
+        let value = PrimExpr::try_from(value)?;
+        let body = PrimExpr::try_from(body)?;
+        let same_type: bool = tvm_ffi::cached_global_func!("ffi.StructuralEqual")
+            .call_tuple((&var.ty, &value.ty, false, false))?
+            .try_into()?;
+        if !same_type {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Let value type must match the bound variable type",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            body.ty.clone().try_cast::<PrimType>()?,
+            var,
+            value,
+            body,
+        ))
+    }
+
+    /// Construct a let expression from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        var: Var,
+        value: PrimExpr,
+        body: PrimExpr,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(LetObj {
+                base: ExprObj::new(span, ty.into()),
+                var,
+                value,
+                body,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `CommReducerNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.CommReducer"]
+#[type_final]
+pub struct CommReducerObj {
+    base: tvm_ffi::Object,
+    pub lhs: Array<PrimVar>,
+    pub rhs: Array<PrimVar>,
+    pub result: Array<PrimExpr>,
+    pub identity_element: Array<PrimExpr>,
+    pub span: Option<Span>,
+}
+
+/// Reference-counted handle to a commutative reducer definition.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct CommReducer {
+    data: ObjectArc<CommReducerObj>,
+}
+
+impl std::ops::Deref for CommReducer {
+    type Target = CommReducerObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `ReduceNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Reduce"]
+#[type_final]
+pub struct ReduceObj {
+    base: ExprObj,
+    pub combiner: CommReducer,
+    pub source: Array<PrimExpr>,
+    pub init: Array<PrimExpr>,
+    pub axis: Array<IterVar>,
+    pub condition: PrimExpr,
+    pub value_index: i32,
+}
+
+/// Reference-counted handle to a reduction expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Reduce {
+    data: ObjectArc<ReduceObj>,
+}
+
+impl std::ops::Deref for Reduce {
+    type Target = ReduceObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for ReduceObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Reduce {
+    /// Construct a reduction from all physical fields after semantic validation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        combiner: CommReducer,
+        source: Array<PrimExpr>,
+        init: Array<PrimExpr>,
+        axis: Array<IterVar>,
+        condition: PrimExpr,
+        value_index: i32,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(ReduceObj {
+                base: ExprObj::new(span, ty.into()),
+                combiner,
+                source,
+                init,
+                axis,
+                condition,
+                value_index,
             }),
         }
     }
@@ -1289,6 +1589,84 @@ impl For {
     }
 }
 
+/// ABI-complete Rust representation of TVM's `WhileNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.While"]
+#[type_final]
+pub struct WhileObj {
+    base: StmtObj,
+    pub condition: PrimExpr,
+    pub body: Stmt,
+}
+
+/// Reference-counted handle to a while loop.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct While {
+    data: ObjectArc<WhileObj>,
+}
+
+impl std::ops::Deref for While {
+    type Target = WhileObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for WhileObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl While {
+    /// Construct a while loop directly in Rust.
+    pub fn new<C, B>(condition: C, body: B) -> Result<Self>
+    where
+        C: Into<Expr>,
+        B: Into<Stmt>,
+    {
+        Self::with_span(condition, body, None)
+    }
+
+    /// Construct a while loop with optional source metadata.
+    pub fn with_span<C, B>(condition: C, body: B, span: Option<&Span>) -> Result<Self>
+    where
+        C: Into<Expr>,
+        B: Into<Stmt>,
+    {
+        let condition = condition.into();
+        let dtype = primitive_type(&condition, "While condition")?.dtype;
+        if dtype.lanes != 1 {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "While condition must be a scalar primitive expression",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            PrimExpr::try_from(condition)?,
+            body.into(),
+        ))
+    }
+
+    /// Construct a while loop from every physical field after external validation.
+    pub fn from_complete_fields(span: Option<Span>, condition: PrimExpr, body: Stmt) -> Self {
+        Self {
+            data: ObjectArc::new(WhileObj {
+                base: StmtObj::new(span),
+                condition,
+                body,
+            }),
+        }
+    }
+}
+
 fn require_scalar_integer(value: &Expr, field: &str) -> Result<DLDataType> {
     let dtype = primitive_type(value, field)?.dtype;
     let is_integer =
@@ -1639,6 +2017,8 @@ tvm_ffi::impl_object_upcast!(
     Sub => PrimExpr,
     Mul => Expr,
     Mul => PrimExpr,
+    FloorDiv => Expr,
+    FloorDiv => PrimExpr,
     EQ => Expr,
     EQ => PrimExpr,
     NE => Expr,
@@ -1655,11 +2035,18 @@ tvm_ffi::impl_object_upcast!(
     And => PrimExpr,
     Not => Expr,
     Not => PrimExpr,
+    Select => Expr,
+    Select => PrimExpr,
+    Let => Expr,
+    Let => PrimExpr,
+    Reduce => Expr,
+    Reduce => PrimExpr,
     StringImm => Expr,
     StringImm => PrimExpr,
     Bind => Stmt,
     AttrStmt => Stmt,
     For => Stmt,
+    While => Stmt,
     AssertStmt => Stmt,
     Evaluate => Stmt,
     SeqStmt => Stmt,
