@@ -32,8 +32,7 @@ use super::utils::{
 use super::{create_module_pass, Pass};
 use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, OpaqueExpr, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, For, PrimFunc,
-    Stmt,
+    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, Evaluate, For, PrimFunc, Stmt,
 };
 
 type FunctionTable = HashMap<ObjectIdentity, (GlobalVar, PrimFunc)>;
@@ -224,7 +223,7 @@ fn is_inlinable(
         return Ok(false);
     }
     for parameter in function.params.iter() {
-        if parameter.ty.clone().try_cast::<BufferType>().is_ok() {
+        if BufferVar::try_from(&parameter).is_ok() {
             return Ok(false);
         }
     }
@@ -263,7 +262,7 @@ impl PrimFuncInliner {
         value: TensorLoad,
         mutator: &mut Mutator<PrimFuncInlineState>,
     ) -> Result<TensorLoad> {
-        let source = BufferVar::try_from(value.source.clone().try_cast::<Var>()?)?;
+        let source: BufferVar = (&value.source).try_into()?;
         let source = mutator.state().buffer_remaps.use_buffer(&source);
         let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
@@ -354,13 +353,12 @@ impl PrimFuncInliner {
                                 "",
                             ));
                         }
-                        let parameters = Map::<Var, Any>::from_iter(
-                            callee
-                                .params
-                                .iter()
-                                .zip(call.args.iter())
-                                .map(|(parameter, argument)| (parameter, Any::from(argument))),
-                        );
+                        let parameters: Map<Var, Any> = callee
+                            .params
+                            .iter()
+                            .zip(call.args.iter())
+                            .map(|(parameter, argument)| (parameter, argument.into()))
+                            .collect();
                         let specialized: PrimFunc = tvm_ffi::cached_global_func!("tirx.Specialize")
                             .call_tuple((callee, parameters))?
                             .try_into()?;

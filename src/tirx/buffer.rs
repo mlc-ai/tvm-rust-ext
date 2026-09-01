@@ -23,7 +23,7 @@ use tvm_ffi::{
     ObjectRefCast, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
-use super::{primitive_type, Stmt, StmtObj};
+use super::{primitive_type, PrimVar, Stmt, StmtObj};
 use crate::analysis::Analyzer;
 use crate::ir::{
     Expr, IntImm, PrimExpr, PrimExprConvertible, PrimExprConvertibleObj, PrimType, Range, Span,
@@ -482,16 +482,15 @@ impl BufferType {
         } else {
             storage_scope
         });
-        let element_offset = match element_offset {
-            Some(value) => value,
-            None => {
-                let index_type = if let Some(first) = shape.first() {
-                    primitive_type(first, "buffer shape extent")?
-                } else {
-                    PrimType::new(DEFAULT_INDEX_DTYPE)?
-                };
-                IntImm::from_complete_fields(None, index_type, 0).into()
-            }
+        let element_offset = if let Some(value) = element_offset {
+            value
+        } else {
+            let index_type = if let Some(first) = shape.first() {
+                primitive_type(first, "buffer shape extent")?
+            } else {
+                PrimType::new(DEFAULT_INDEX_DTYPE)?
+            };
+            IntImm::from_complete_fields(None, index_type, 0).into()
         };
         let data_alignment = if data_alignment <= 0 {
             DEFAULT_ALLOC_ALIGNMENT
@@ -592,7 +591,7 @@ impl TensorLoad {
             let index_type = primitive_type(index, "buffer load index")?;
             vectorized_buffer_type(&buffer_dtype, &index_type)?
         } else {
-            buffer_dtype.clone()
+            buffer_dtype
         };
         let indices = indices
             .into_iter()
@@ -672,7 +671,7 @@ impl BufferStore {
             .transpose()?;
         let expected_dtype = match &index_dtype {
             Some(index_dtype) => vectorized_buffer_type(&buffer_dtype, index_dtype)?,
-            None => buffer_dtype.clone(),
+            None => buffer_dtype,
         };
         if expected_dtype.dtype != value_dtype.dtype {
             return Err(Error::new(
@@ -1149,8 +1148,7 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
         }
     }
     for (range, expected) in region.iter().skip(offset).zip(target.shape.iter()) {
-        let is_primitive_variable = expected.clone().try_cast::<Var>().is_ok()
-            && primitive_type(&expected, "match-buffer shape").is_ok();
+        let is_primitive_variable = PrimVar::try_from(expected.as_expr()).is_ok();
         if !is_primitive_variable && !analyzer.can_prove_equal(&range.extent, &expected)? {
             return Err(Error::new(
                 VALUE_ERROR,

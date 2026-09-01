@@ -113,7 +113,7 @@ impl BufferRemaps {
         if let Some(mapped) = self.0.get(&identity) {
             return Ok(mapped.clone());
         }
-        let old_type = buffer.ty.clone().try_cast::<BufferType>()?;
+        let old_type = buffer.type_annotation();
         let shape = old_type
             .shape
             .iter()
@@ -380,7 +380,7 @@ fn visit_buffer_definition<State>(
     visitor: &mut VisitContext<'_, State>,
     buffer: &crate::tirx::BufferVar,
 ) -> Result<Option<VisitInterrupt>> {
-    let buffer_type = buffer.ty.clone().try_cast::<crate::tirx::BufferType>()?;
+    let buffer_type = buffer.type_annotation();
     for expression in buffer_type.shape.iter().chain(buffer_type.strides.iter()) {
         if let Some(interrupt) = visitor.visit(&expression)? {
             return Ok(Some(interrupt));
@@ -483,7 +483,7 @@ where
         }
         return Ok(Let::from_complete_fields(
             let_expr.span.clone(),
-            body.ty.clone().try_cast()?,
+            body.type_annotation(),
             let_expr.var.clone(),
             bound_value,
             body,
@@ -502,7 +502,7 @@ where
         }
         return Ok(Select::from_complete_fields(
             select.span.clone(),
-            select.ty.clone().try_cast()?,
+            true_value.type_annotation(),
             condition,
             true_value,
             false_value,

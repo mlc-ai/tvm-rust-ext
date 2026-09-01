@@ -33,8 +33,8 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
-    Let, PrimFunc, Reduce, SeqStmt, Stmt, TileLayout, While,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, Let,
+    PrimFunc, Reduce, SeqStmt, Stmt, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -412,7 +412,7 @@ impl CsePlanner {
         if frame.class == ExprClass::Recordable
             && !frame.contains_forbidden
             && visitor.state().let_depth == 0
-            && !is_bool(&frame.expression)?
+            && !is_bool(&frame.expression)
         {
             visitor
                 .state_mut()
@@ -605,7 +605,7 @@ fn visit_cse_buffer_definition(
     visitor: &mut VisitContext<'_, CsePlanner>,
     buffer: &BufferVar,
 ) -> Result<()> {
-    let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
+    let buffer_type = buffer.type_annotation();
     for expression in buffer_type.shape.iter() {
         visit_cse_child(visitor, &expression)?;
     }
@@ -627,9 +627,9 @@ fn visit_cse_buffer_definition(
     Ok(())
 }
 
-fn is_bool(expression: &PrimExpr) -> Result<bool> {
-    let primitive_type = expression.ty.clone().try_cast::<crate::ir::PrimType>()?;
-    Ok(primitive_type.dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8)
+fn is_bool(expression: &PrimExpr) -> bool {
+    let primitive_type = expression.type_annotation();
+    primitive_type.dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8
 }
 
 struct StructuralExprReplaceState {
@@ -702,7 +702,7 @@ impl CseRewriteState {
             let mut remap_entries = Vec::<(Var, Expr)>::new();
             for statement in planned {
                 let binding = statement.try_cast::<Bind>()?;
-                let remap = Map::from_iter(remap_entries.iter().cloned());
+                let remap: Map<Var, Expr> = remap_entries.iter().cloned().collect();
                 let value: Expr = substitute(&binding.value, &remap)?;
                 let fresh = Var::with_type(binding.var.name.as_str(), binding.var.ty.clone());
                 remap_entries.push((binding.var.clone(), Expr::from(fresh.clone())));
@@ -731,7 +731,7 @@ where
         return Ok(mutator.state().buffer_remaps.use_variable(&variable).into());
     }
     if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
-        let source = BufferVar::try_from(load.source.clone().try_cast::<Var>()?)?;
+        let source: BufferVar = (&load.source).try_into()?;
         let source = mutator.state().buffer_remaps.use_buffer(&source);
         let indices = mutator.mutate(&load.indices)?.try_into()?;
         if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {

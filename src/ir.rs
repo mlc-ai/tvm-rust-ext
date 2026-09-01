@@ -106,6 +106,21 @@ impl<T> TypedExpr<T> {
     }
 }
 
+impl<T> TypedExpr<T>
+where
+    T: ObjectRefCore + AnyCompatible + 'static,
+{
+    /// Return the type guaranteed by this checked expression view.
+    #[inline]
+    pub fn type_annotation(&self) -> T {
+        self.expr
+            .ty
+            .clone()
+            .try_cast()
+            .expect("TypedExpr type invariant was violated")
+    }
+}
+
 impl<T> Clone for TypedExpr<T> {
     #[inline]
     fn clone(&self) -> Self {
@@ -389,6 +404,21 @@ impl<T> TypedVar<T> {
     }
 }
 
+impl<T> TypedVar<T>
+where
+    T: ObjectRefCore + AnyCompatible + 'static,
+{
+    /// Return the type guaranteed by this checked variable view.
+    #[inline]
+    pub fn type_annotation(&self) -> T {
+        self.var
+            .ty
+            .clone()
+            .try_cast()
+            .expect("TypedVar type invariant was violated")
+    }
+}
+
 impl<T> Clone for TypedVar<T> {
     #[inline]
     fn clone(&self) -> Self {
@@ -547,6 +577,30 @@ where
 
     #[inline]
     fn try_from(value: &Var) -> Result<Self> {
+        value.clone().try_cast()
+    }
+}
+
+impl<T> TryFrom<Expr> for TypedVar<T>
+where
+    T: ObjectRefCore + AnyCompatible + 'static,
+{
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: Expr) -> Result<Self> {
+        value.try_cast()
+    }
+}
+
+impl<T> TryFrom<&Expr> for TypedVar<T>
+where
+    T: ObjectRefCore + AnyCompatible + 'static,
+{
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: &Expr) -> Result<Self> {
         value.clone().try_cast()
     }
 }

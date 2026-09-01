@@ -572,6 +572,7 @@ fn typed_expression_views_check_types_and_preserve_identity() {
     let integer: Expr = IntImm::new("int32", 1).unwrap().into();
     let primitive = PrimExpr::try_from(&integer).unwrap();
     assert!(primitive.same_as(&integer));
+    assert!(primitive.type_annotation().same_as(&integer.ty));
 
     let tuple_typed: Expr = Var::with_type("tuple", TupleType::empty()).into();
     assert!(PrimExpr::try_from(&tuple_typed).is_err());
@@ -584,5 +585,11 @@ fn typed_expression_views_check_types_and_preserve_identity() {
     let buffer_type = BufferType::new("global", "float32", Vec::new()).unwrap();
     let buffer_var = buffer_type.new_var("buffer");
     assert!(buffer_var.same_as(buffer_var.as_var()));
+    assert!(buffer_var.type_annotation().same_as(&buffer_type));
     assert!(PrimVar::try_from(buffer_var.as_var()).is_err());
+
+    let buffer_expr: Expr = buffer_var.clone().into();
+    let recovered_buffer: BufferVar = (&buffer_expr).try_into().unwrap();
+    assert!(recovered_buffer.same_as(&buffer_var));
+    assert!(BufferVar::try_from(&integer).is_err());
 }

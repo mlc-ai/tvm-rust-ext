@@ -22,10 +22,9 @@ use std::collections::HashSet;
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
-use crate::ir::{Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    Add, AttrStmt, BufferStore, BufferType, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt,
-    Stmt,
+    Add, AttrStmt, BufferStore, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt, Stmt,
 };
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::extra::structural_mutate::MutateContextDriver;
@@ -276,9 +275,8 @@ impl LoopUnroller {
         mutator: &mut Mutator<LoopUnrollState>,
     ) -> Result<TensorLoad> {
         if mutator.state().options.unroll_local_access {
-            let variable = value.source.clone().try_cast::<Var>()?;
-            let buffer = BufferVar::try_from(variable)?;
-            if is_local_or_warp(&buffer)? {
+            let buffer: BufferVar = (&value.source).try_into()?;
+            if is_local_or_warp(&buffer) {
                 mutator.state_mut().record_index_variables(&value.indices)?;
             }
         }
@@ -291,7 +289,7 @@ impl LoopUnroller {
         mutator: &mut Mutator<LoopUnrollState>,
     ) -> Result<BufferStore> {
         mutator.state_mut().step_count += 1;
-        if mutator.state().options.unroll_local_access && is_local_or_warp(&value.buffer)? {
+        if mutator.state().options.unroll_local_access && is_local_or_warp(&value.buffer) {
             mutator.state_mut().record_index_variables(&value.indices)?;
         }
         let stored_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
@@ -437,7 +435,7 @@ impl LoopUnrollState {
         if extent == 0 {
             return Ok(Evaluate::from_i64(0)?.into());
         }
-        let loop_type = loop_node.loop_var.ty.clone().try_cast::<PrimType>()?;
+        let loop_type = loop_node.loop_var.type_annotation();
         let mut unrolled = Vec::with_capacity(extent as usize);
         for offset in 0..extent {
             let offset =
@@ -499,7 +497,7 @@ fn add_with_constant_folding(lhs: &PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> 
         return Ok(rhs);
     }
     if let (Some(lhs_value), Some(rhs_value)) = (lhs_value, rhs_value) {
-        let result_type = lhs.ty.clone().try_cast::<PrimType>()?;
+        let result_type = lhs.type_annotation();
         let dtype = result_type.dtype;
         let mut result = lhs_value.wrapping_add(rhs_value);
         if dtype.bits < 64 {
@@ -514,8 +512,8 @@ fn add_with_constant_folding(lhs: &PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> 
     Ok(Add::new(lhs.clone(), rhs)?.into())
 }
 
-fn is_local_or_warp(buffer: &BufferVar) -> Result<bool> {
-    let buffer_type = buffer.ty.clone().try_cast::<BufferType>()?;
+fn is_local_or_warp(buffer: &BufferVar) -> bool {
+    let buffer_type = buffer.type_annotation();
     let scope = buffer_type.storage_scope.as_str();
-    Ok(scope.starts_with("local") || scope.starts_with("warp"))
+    scope.starts_with("local") || scope.starts_with("warp")
 }

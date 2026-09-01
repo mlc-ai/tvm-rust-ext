@@ -148,8 +148,7 @@ impl Analyzer {
         let exit_result = exit.call_tuple(());
         match (result, exit_result) {
             (Ok(value), Ok(_)) => Ok(value),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error),
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
         }
     }
 
@@ -460,16 +459,16 @@ pub struct MemoryAccessStatistics {
 
 #[tvm_ffi::dispatch(walk)]
 impl MemoryAccessStatistics {
-    fn walk_load(&mut self, node: &TensorLoadObj) -> Result<WalkResult> {
+    fn walk_load(&mut self, node: &TensorLoadObj) -> WalkResult {
         self.loads += 1;
         self.maximum_load_rank = self.maximum_load_rank.max(node.indices.len());
-        Ok(WalkResult::Advance)
+        WalkResult::Advance
     }
 
-    fn walk_store(&mut self, node: &BufferStoreObj) -> Result<WalkResult> {
+    fn walk_store(&mut self, node: &BufferStoreObj) -> WalkResult {
         self.stores += 1;
         self.maximum_store_rank = self.maximum_store_rank.max(node.indices.len());
-        Ok(WalkResult::Advance)
+        WalkResult::Advance
     }
 }
 
@@ -565,9 +564,9 @@ impl ExprTrace {
         WalkResult::Advance
     }
 
-    fn walk_integer(&mut self, node: &IntImmObj) -> Result<WalkResult> {
+    fn walk_integer(&mut self, node: &IntImmObj) -> WalkResult {
         self.events.push(ExprTraceEvent::Int(node.value));
-        Ok(WalkResult::Advance)
+        WalkResult::Advance
     }
 }
 
