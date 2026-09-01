@@ -19,15 +19,15 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, FieldGetter, Map, ObjectArc,
-    ObjectCore, ObjectRefCast, Result, String, TYPE_ERROR, VALUE_ERROR,
+    Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectArc, ObjectCore,
+    ObjectRefCast, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
 use super::{primitive_type, Stmt, StmtObj};
 use crate::analysis::Analyzer;
 use crate::ir::{
-    Expr, ExprObj, IntImm, PrimExpr, PrimExprConvertible, PrimExprConvertibleObj, PrimType, Range,
-    Span, Type, TypeObj, TypedVar, Var,
+    Expr, IntImm, PrimExpr, PrimExprConvertible, PrimExprConvertibleObj, PrimType, Range, Span,
+    TensorLoad, Type, TypeObj, TypedVar, Var,
 };
 
 /// Opaque Rust representation of TVM's polymorphic layout base class.
@@ -568,55 +568,19 @@ impl BufferType {
     }
 }
 
-/// ABI-complete Rust representation of a buffer read.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.BufferLoad"]
-#[type_final]
-pub struct BufferLoadObj {
-    base: ExprObj,
-    pub buffer: BufferVar,
-    pub indices: Array<PrimExpr>,
-    pub predicate: Option<PrimExpr>,
-}
-
-/// Reference-counted handle to a TIR buffer read.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct BufferLoad {
-    data: ObjectArc<BufferLoadObj>,
-}
-
-impl std::ops::Deref for BufferLoad {
-    type Target = BufferLoadObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for BufferLoadObj {
-    type Target = ExprObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
-impl BufferLoad {
-    /// Construct a buffer read directly in Rust after validating its access types.
-    pub fn new<B>(buffer: B, indices: Vec<Expr>, predicate: Option<Expr>) -> Result<Self>
+impl TensorLoad {
+    /// Construct TVM's buffer-specific `TensorLoad` after validating its access types.
+    pub fn from_buffer<B>(buffer: B, indices: Vec<Expr>) -> Result<Self>
     where
         B: Into<Var>,
     {
-        Self::with_span(buffer.into(), indices, predicate, None)
+        Self::from_buffer_with_span(buffer.into(), indices, None)
     }
 
-    /// Construct a validated buffer read with optional source metadata.
-    pub fn with_span(
+    /// Construct a buffer-specific `TensorLoad` with optional source metadata.
+    pub fn from_buffer_with_span(
         buffer: Var,
         indices: Vec<Expr>,
-        predicate: Option<Expr>,
         span: Option<&Span>,
     ) -> Result<Self> {
         let buffer_type = buffer_type(&buffer)?;
@@ -630,42 +594,17 @@ impl BufferLoad {
         } else {
             buffer_dtype.clone()
         };
-        if let Some(predicate) = predicate.as_ref() {
-            validate_load_predicate(&buffer_dtype, indices.last(), predicate)?;
-        }
-
-        let buffer = BufferVar::try_from(buffer)?;
         let indices = indices
             .into_iter()
             .map(PrimExpr::try_from)
             .collect::<Result<Vec<_>>>()?;
-        let predicate = predicate.map(PrimExpr::try_from).transpose()?;
 
         Ok(Self::from_complete_fields(
             span.cloned(),
             result_type,
-            buffer,
+            buffer.into(),
             Array::new(indices),
-            predicate,
         ))
-    }
-
-    /// Construct a buffer load from every physical field without re-deriving its result type.
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        ty: PrimType,
-        buffer: BufferVar,
-        indices: Array<PrimExpr>,
-        predicate: Option<PrimExpr>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(BufferLoadObj {
-                base: ExprObj::new(span, ty.into()),
-                buffer,
-                indices,
-                predicate,
-            }),
-        }
     }
 }
 
@@ -679,7 +618,6 @@ pub struct BufferStoreObj {
     pub buffer: BufferVar,
     pub value: PrimExpr,
     pub indices: Array<PrimExpr>,
-    pub predicate: Option<PrimExpr>,
 }
 
 /// Reference-counted handle to a TIR buffer write.
@@ -707,17 +645,12 @@ impl std::ops::Deref for BufferStoreObj {
 
 impl BufferStore {
     /// Construct a buffer write directly in Rust after validating its access types.
-    pub fn new<B, V>(
-        buffer: B,
-        value: V,
-        indices: Vec<Expr>,
-        predicate: Option<Expr>,
-    ) -> Result<Self>
+    pub fn new<B, V>(buffer: B, value: V, indices: Vec<Expr>) -> Result<Self>
     where
         B: Into<Var>,
         V: Into<Expr>,
     {
-        Self::with_span(buffer.into(), value.into(), indices, predicate, None)
+        Self::with_span(buffer.into(), value.into(), indices, None)
     }
 
     /// Construct a validated buffer write with optional source metadata.
@@ -725,7 +658,6 @@ impl BufferStore {
         buffer: Var,
         value: Expr,
         indices: Vec<Expr>,
-        predicate: Option<Expr>,
         span: Option<&Span>,
     ) -> Result<Self> {
         let buffer_type = buffer_type(&buffer)?;
@@ -753,24 +685,18 @@ impl BufferStore {
                 "",
             ));
         }
-        if let Some(predicate) = predicate.as_ref() {
-            validate_store_predicate(&value_dtype, predicate)?;
-        }
-
         let buffer = BufferVar::try_from(buffer)?;
         let value = PrimExpr::try_from(value)?;
         let indices = indices
             .into_iter()
             .map(PrimExpr::try_from)
             .collect::<Result<Vec<_>>>()?;
-        let predicate = predicate.map(PrimExpr::try_from).transpose()?;
 
         Ok(Self::from_complete_fields(
             span.cloned(),
             buffer,
             value,
             Array::new(indices),
-            predicate,
         ))
     }
 
@@ -780,7 +706,6 @@ impl BufferStore {
         buffer: BufferVar,
         value: PrimExpr,
         indices: Array<PrimExpr>,
-        predicate: Option<PrimExpr>,
     ) -> Self {
         Self {
             data: ObjectArc::new(BufferStoreObj {
@@ -788,7 +713,6 @@ impl BufferStore {
                 buffer,
                 value,
                 indices,
-                predicate,
             }),
         }
     }
@@ -855,78 +779,6 @@ fn vectorized_buffer_type(buffer: &PrimType, index: &PrimType) -> Result<PrimTyp
         .checked_mul(lane_factor(index.dtype)?)
         .ok_or_else(|| Error::new(VALUE_ERROR, "buffer access lane count overflow", ""))?;
     vector_type_like(buffer.dtype, lanes, buffer_scalable || index_scalable)
-}
-
-fn validate_load_predicate(
-    buffer: &PrimType,
-    index: Option<&Expr>,
-    predicate: &Expr,
-) -> Result<()> {
-    let index = index
-        .map(|index| primitive_type(index, "buffer load index"))
-        .transpose()?;
-    let predicate = primitive_type(predicate, "buffer load predicate")?;
-    let index_scalable = index
-        .as_ref()
-        .is_some_and(|index| encoded_lanes(index.dtype) < -1);
-    let predicate_scalable = encoded_lanes(predicate.dtype) < -1;
-    if index_scalable != predicate_scalable {
-        return Err(Error::new(
-            TYPE_ERROR,
-            "predicate mask dtype and load indices must both be scalable",
-            "",
-        ));
-    }
-    let index_lanes = index
-        .as_ref()
-        .map(|index| lane_factor(index.dtype))
-        .transpose()?
-        .unwrap_or(1);
-    let expected_lanes = index_lanes
-        .checked_mul(lane_factor(buffer.dtype)?)
-        .ok_or_else(|| Error::new(VALUE_ERROR, "buffer load lane count overflow", ""))?;
-    if lane_factor(predicate.dtype)? != expected_lanes {
-        return Err(Error::new(
-            TYPE_ERROR,
-            "predicate mask lanes must match the loaded value lanes",
-            "",
-        ));
-    }
-    validate_predicate_element_type(&predicate)
-}
-
-fn validate_store_predicate(value: &PrimType, predicate: &Expr) -> Result<()> {
-    let predicate = primitive_type(predicate, "buffer store predicate")?;
-    if (encoded_lanes(value.dtype) < -1) != (encoded_lanes(predicate.dtype) < -1) {
-        return Err(Error::new(
-            TYPE_ERROR,
-            "predicate mask dtype and value dtype must both be scalable",
-            "",
-        ));
-    }
-    if lane_factor(value.dtype)? != lane_factor(predicate.dtype)? {
-        return Err(Error::new(
-            TYPE_ERROR,
-            "predicate mask lanes must match the stored value lanes",
-            "",
-        ));
-    }
-    validate_predicate_element_type(&predicate)
-}
-
-fn validate_predicate_element_type(predicate: &PrimType) -> Result<()> {
-    let dtype = predicate.dtype;
-    let is_boolean = dtype.code == DLDataTypeCode::kDLBool as u8;
-    let is_uint1 = dtype.code == DLDataTypeCode::kDLUInt as u8 && dtype.bits == 1;
-    if is_boolean || is_uint1 {
-        Ok(())
-    } else {
-        Err(Error::new(
-            TYPE_ERROR,
-            "predicate mask elements must be boolean values",
-            "",
-        ))
-    }
 }
 
 fn vector_type_like(element: DLDataType, lanes: i32, scalable: bool) -> Result<PrimType> {
@@ -1156,8 +1008,6 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
 tvm_ffi::impl_object_upcast!(
     TileLayout => Layout,
     BufferType => Type,
-    BufferLoad => Expr,
-    BufferLoad => PrimExpr,
     BufferStore => Stmt,
     BufferRegion => PrimExprConvertible,
 );

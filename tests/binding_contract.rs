@@ -24,16 +24,16 @@ use tvm::ir::{
     DummyGlobalInfo, DummyGlobalInfoObj, Expr, ExprObj, GlobalInfo, GlobalInfoObj, GlobalVar,
     GlobalVarObj, IRModule, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj, OpaqueTypeObj, PrimExpr,
     PrimExprConvertibleObj, PrimType, PrimTypeObj, Range, RangeObj, Source, SourceMap,
-    SourceMapObj, SourceName, SourceNameObj, SourceObj, Span, SpanObj, TupleType, TupleTypeObj,
-    Type, TypeObj, Var, VarObj,
+    SourceMapObj, SourceName, SourceNameObj, SourceObj, Span, SpanObj, TensorLoad, TensorLoadObj,
+    TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
 use tvm::tirx::{
-    Add, AddObj, AndObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, BufferLoad,
-    BufferLoadObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
-    BufferTypeObj, BufferVar, EQObj, Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse,
-    IfThenElseObj, Iter, IterObj, IterVar, IterVarObj, IterVarType, Layout, LayoutObj,
-    MatchBufferRegion, MatchBufferRegionObj, Mul, MulObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt,
-    SeqStmtObj, Stmt, StmtObj, StringImm, StringImmObj, Sub, SubObj, TileLayoutObj,
+    Add, AddObj, AndObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, BufferRegion,
+    BufferRegionObj, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar, EQObj,
+    Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar,
+    IterVarObj, IterVarType, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, Mul,
+    MulObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj, StringImm,
+    StringImmObj, Sub, SubObj, TileLayoutObj,
 };
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{Any, Array, DLDataType, Map, Object, ObjectCore, ObjectRefCore, String};
@@ -408,13 +408,12 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("allocated_addr", 0, SCHEMA_ARRAY_EXPR),
         ],
     );
-    assert_contract::<BufferLoadObj, ExprObj>(
+    assert_contract::<TensorLoadObj, ExprObj>(
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("source", DEF_RECURSIVE, SCHEMA_EXPR),
             ("indices", 0, SCHEMA_ARRAY_EXPR),
-            ("predicate", 0, SCHEMA_OPTIONAL_EXPR),
         ],
     );
     assert_contract::<BufferStoreObj, StmtObj>(
@@ -424,7 +423,6 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
             ("value", 0, SCHEMA_EXPR),
             ("indices", 0, SCHEMA_ARRAY_EXPR),
-            ("predicate", 0, SCHEMA_OPTIONAL_EXPR),
         ],
     );
     assert_contract::<BufferRegionObj, PrimExprConvertibleObj>(
@@ -502,8 +500,8 @@ fn complete_field_allocators_follow_owned_native_field_order() {
 
     assert_complete_allocator!(Iter::from_complete_fields: fn(PrimExpr, PrimExpr, Axis) -> Iter);
     assert_complete_allocator!(BufferType::from_complete_fields: fn(Option<Span>, PrimType, String, Array<PrimExpr>, Array<PrimExpr>, PrimExpr, i32, i32, Option<Layout>, Array<PrimExpr>) -> BufferType);
-    assert_complete_allocator!(BufferLoad::from_complete_fields: fn(Option<Span>, PrimType, BufferVar, Array<PrimExpr>, Option<PrimExpr>) -> BufferLoad);
-    assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>, Option<PrimExpr>) -> BufferStore);
+    assert_complete_allocator!(TensorLoad::from_complete_fields: fn(Option<Span>, PrimType, Expr, Array<PrimExpr>) -> TensorLoad);
+    assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>) -> BufferStore);
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
 }
 

@@ -32,9 +32,9 @@ mod buffer;
 mod iter_var;
 
 pub use buffer::{
-    Axis, AxisObj, BufferLoad, BufferLoadObj, BufferRegion, BufferRegionObj, BufferStore,
-    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, Iter, IterObj, Layout, LayoutObj,
-    MatchBufferRegion, MatchBufferRegionObj, TileLayout, TileLayoutObj,
+    Axis, AxisObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
+    BufferTypeObj, BufferVar, Iter, IterObj, Layout, LayoutObj, MatchBufferRegion,
+    MatchBufferRegionObj, TileLayout, TileLayoutObj,
 };
 pub use iter_var::{IterVar, IterVarObj, IterVarType};
 
