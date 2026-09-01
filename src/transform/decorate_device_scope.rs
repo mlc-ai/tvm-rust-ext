@@ -44,6 +44,6 @@ pub fn decorate_device_scope() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |function, _module, _context| decorate_device_scope_prim_func(function),
+        decorate_device_scope_prim_func,
     )
 }

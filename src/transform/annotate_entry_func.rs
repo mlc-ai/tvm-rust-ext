@@ -79,7 +79,7 @@ pub fn annotate_entry_func() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |module, _context| annotate_entry_func_module(module),
+        annotate_entry_func_module,
     )
 }
 

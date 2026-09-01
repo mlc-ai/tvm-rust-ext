@@ -61,7 +61,7 @@ pub fn remap_thread_axis(thread_map: Map<FfiString, IterVar>) -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        move |function, _module, _context| remap_thread_axis_prim_func(function, &thread_map),
+        move |function| remap_thread_axis_prim_func(function, &thread_map),
     )
 }
 

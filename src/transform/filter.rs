@@ -30,17 +30,11 @@ pub fn filter<F>(condition: F) -> Result<Pass>
 where
     F: Fn(PrimFunc) -> Result<bool> + 'static,
 {
-    create_optional_prim_func_pass(
-        "tirx.Filter",
-        0,
-        Vec::new(),
-        false,
-        move |function, _module, _context| {
-            if condition(function.clone())? {
-                Ok(Some(function))
-            } else {
-                Ok(None)
-            }
-        },
-    )
+    create_optional_prim_func_pass("tirx.Filter", 0, Vec::new(), false, move |function| {
+        if condition(function.clone())? {
+            Ok(Some(function))
+        } else {
+            Ok(None)
+        }
+    })
 }
