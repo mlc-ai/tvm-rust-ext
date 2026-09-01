@@ -55,7 +55,7 @@ pub fn lower_tirx_opaque() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |function, _module, _context| lower_tirx_opaque_prim_func(function),
+        lower_tirx_opaque_prim_func,
     )
 }
 

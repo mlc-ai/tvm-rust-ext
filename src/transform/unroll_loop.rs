@@ -27,7 +27,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
-use super::{create_prim_func_pass, Pass, PassContext};
+use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
@@ -136,12 +136,12 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
 
 /// Build TVM's `tirx.UnrollLoop` PrimFunc pass in Rust.
 pub fn unroll_loop() -> Result<Pass> {
-    create_prim_func_pass(
+    create_prim_func_pass_with_context(
         "tirx.UnrollLoop",
         0,
         Vec::new(),
         false,
-        |function, _module, context| {
+        |function, context| {
             unroll_loop_with_options(function, UnrollOptions::from_context(&context)?)
         },
     )

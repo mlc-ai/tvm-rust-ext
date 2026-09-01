@@ -91,7 +91,7 @@ pub fn inline_private_functions() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |module, _context| inline_private_functions_module(module),
+        inline_private_functions_module,
     )
 }
 

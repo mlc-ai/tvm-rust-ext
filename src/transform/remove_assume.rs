@@ -51,7 +51,7 @@ pub fn remove_assume_internal() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |function, _module, _context| remove_assume_nodes(function),
+        remove_assume_nodes,
     )
 }
 

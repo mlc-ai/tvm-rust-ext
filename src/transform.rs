@@ -127,11 +127,51 @@ pub fn sequential(passes: Vec<Pass>, name: &str) -> Result<Pass> {
         .try_into()
 }
 
-/// Construct a TVM PrimFunc pass backed by a Rust callback.
-///
-/// The callback signature mirrors C++ `CreatePrimFuncPass`: the function is
-/// passed as an ABI rvalue reference, followed by the module and pass context.
+/// Construct a TVM PrimFunc pass backed by a function-only Rust callback.
 pub fn create_prim_func_pass<F>(
+    name: &str,
+    opt_level: i64,
+    required: Vec<&str>,
+    traceable: bool,
+    pass_func: F,
+) -> Result<Pass>
+where
+    F: Fn(PrimFunc) -> Result<PrimFunc> + 'static,
+{
+    create_prim_func_pass_with_context(
+        name,
+        opt_level,
+        required,
+        traceable,
+        move |function, _context| pass_func(function),
+    )
+}
+
+/// Construct a TVM PrimFunc pass whose callback reads the active pass context.
+pub fn create_prim_func_pass_with_context<F>(
+    name: &str,
+    opt_level: i64,
+    required: Vec<&str>,
+    traceable: bool,
+    pass_func: F,
+) -> Result<Pass>
+where
+    F: Fn(PrimFunc, PassContext) -> Result<PrimFunc> + 'static,
+{
+    create_prim_func_pass_with_module_context(
+        name,
+        opt_level,
+        required,
+        traceable,
+        move |function, _module, context| pass_func(function, context),
+    )
+}
+
+/// Construct a TVM PrimFunc pass with the complete native callback context.
+///
+/// This is the direct Rust form of C++ `CreatePrimFuncPass`: the function is
+/// followed by its containing module and the active pass context.
+pub fn create_prim_func_pass_with_module_context<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -166,11 +206,11 @@ pub(super) fn create_optional_prim_func_pass<F>(
     pass_func: F,
 ) -> Result<Pass>
 where
-    F: Fn(PrimFunc, IRModule, PassContext) -> Result<Option<PrimFunc>> + 'static,
+    F: Fn(PrimFunc) -> Result<Option<PrimFunc>> + 'static,
 {
     let pass_func = Function::from_typed(
-        move |func: RValueRef<PrimFunc>, module: IRModule, context: PassContext| {
-            pass_func(func.into_inner(), module, context)
+        move |func: RValueRef<PrimFunc>, _module: IRModule, _context: PassContext| {
+            pass_func(func.into_inner())
         },
     );
     let pass_info = create_pass_info(name, opt_level, required, traceable)?;
@@ -180,8 +220,28 @@ where
         .try_into()
 }
 
-/// Construct a TVM module pass backed by a Rust callback.
+/// Construct a TVM module pass backed by a module-only Rust callback.
 pub fn create_module_pass<F>(
+    name: &str,
+    opt_level: i64,
+    required: Vec<&str>,
+    traceable: bool,
+    pass_func: F,
+) -> Result<Pass>
+where
+    F: Fn(IRModule) -> Result<IRModule> + 'static,
+{
+    create_module_pass_with_context(
+        name,
+        opt_level,
+        required,
+        traceable,
+        move |module, _context| pass_func(module),
+    )
+}
+
+/// Construct a TVM module pass whose callback reads the active pass context.
+pub fn create_module_pass_with_context<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,

@@ -29,7 +29,7 @@ use tvm_ffi::{
 use super::utils::{
     array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
 };
-use super::{create_prim_func_pass, Pass, PassContext};
+use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
 use crate::tirx::{
@@ -126,12 +126,12 @@ fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> 
 
 /// Build TVM's `tirx.RemoveNoOp` PrimFunc pass in Rust.
 pub fn remove_no_op() -> Result<Pass> {
-    create_prim_func_pass(
+    create_prim_func_pass_with_context(
         "tirx.RemoveNoOp",
         0,
         Vec::new(),
         false,
-        |function, _module, context| {
+        |function, context| {
             let options = RemoveNoOpOptions::from_context(&context)?;
             remove_no_op_with_options(function, options)
         },

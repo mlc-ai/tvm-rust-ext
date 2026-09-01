@@ -50,6 +50,6 @@ pub fn skip_assert() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |func, _module, _context| skip_assert_prim_func(func),
+        skip_assert_prim_func,
     )
 }

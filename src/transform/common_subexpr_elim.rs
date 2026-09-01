@@ -56,7 +56,7 @@ pub fn common_subexpr_elim() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |function, _module, _context| common_subexpr_elim_prim_func(function),
+        common_subexpr_elim_prim_func,
     )
 }
 
