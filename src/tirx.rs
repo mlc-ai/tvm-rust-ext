@@ -719,6 +719,11 @@ impl std::ops::Deref for SeqStmtObj {
 }
 
 impl SeqStmt {
+    /// Consume this sequence and return TVM's canonical flattened statement.
+    pub fn flatten(self) -> Result<Stmt> {
+        Stmt::sequence_with_span(self.seq.iter().collect(), self.span.as_ref())
+    }
+
     /// Construct and recursively flatten a sequence directly in Rust.
     pub fn new(statements: Vec<Stmt>) -> Result<Self> {
         Self::with_span(statements, None)
