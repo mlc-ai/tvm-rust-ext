@@ -23,12 +23,16 @@ use tvm_ffi::{
 };
 
 use super::utils::with_prim_func_body;
-use super::{create_prim_func_pass, Pass};
+use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
 use crate::ir::{Call, Expr};
 use crate::tirx::{Evaluate, PrimFunc, Stmt};
 
 /// Remove `Evaluate(tirx.assume(...))` using TVM's operator-identity rule.
 pub fn remove_assume_prim_func(function: PrimFunc) -> Result<PrimFunc> {
+    remove_no_op_prim_func(remove_assume_nodes(function)?)
+}
+
+fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
     let assume_op: Expr = tvm_ffi::cached_global_func!("ir.GetOp")
         .call_tuple((String::from("tirx.assume"),))?
         .try_into()?;
@@ -47,7 +51,15 @@ pub fn remove_assume_internal() -> Result<Pass> {
         0,
         Vec::new(),
         false,
-        |function, _module, _context| remove_assume_prim_func(function),
+        |function, _module, _context| remove_assume_nodes(function),
+    )
+}
+
+/// Build TVM's full `tirx.RemoveAssume` sequence in Rust.
+pub fn remove_assume() -> Result<Pass> {
+    sequential(
+        vec![remove_assume_internal()?, remove_no_op()?],
+        "tirx.RemoveAssume",
     )
 }
 

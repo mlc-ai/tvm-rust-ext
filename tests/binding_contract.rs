@@ -28,12 +28,13 @@ use tvm::ir::{
     TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
 use tvm::tirx::{
-    Add, AddObj, AndObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, BufferRegion,
-    BufferRegionObj, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar, EQObj,
-    Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar,
-    IterVarObj, IterVarType, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, Mul,
-    MulObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj, StringImm,
-    StringImmObj, Sub, SubObj, TileLayoutObj,
+    Add, AddObj, AllocBuffer, AllocBufferObj, AndObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis,
+    AxisObj, Bind, BindObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
+    BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, EQObj, Evaluate, EvaluateObj, For,
+    ForKind, ForObj, GEObj, GTObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar, IterVarObj,
+    IterVarType, LEObj, LTObj, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, Mul,
+    MulObj, NEObj, Not, NotObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj,
+    StringImm, StringImmObj, Sub, SubObj, TileLayoutObj, GE, GT, LE, LT, NE,
 };
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{Any, Array, DLDataType, Map, Object, ObjectCore, ObjectRefCore, String};
@@ -313,6 +314,32 @@ fn all_handwritten_objects_match_runtime_metadata() {
         Some(Tree),
         &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
     );
+    assert_contract::<NEObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<LTObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<LEObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<GTObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<GEObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<NotObj, ExprObj>(true, Some(Tree), &[("a", 0, SCHEMA_EXPR)]);
     assert_contract::<AndObj, ExprObj>(
         true,
         Some(Tree),
@@ -320,6 +347,14 @@ fn all_handwritten_objects_match_runtime_metadata() {
     );
     assert_contract::<StringImmObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_STRING)]);
     assert_contract::<StmtObj, Object>(false, Some(Tree), &[("span", IGNORE, SCHEMA_SPAN)]);
+    assert_contract::<BindObj, StmtObj>(
+        true,
+        Some(Tree),
+        &[
+            ("var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("value", 0, SCHEMA_EXPR),
+        ],
+    );
     assert_contract::<AttrStmtObj, StmtObj>(
         true,
         Some(Tree),
@@ -425,6 +460,22 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("indices", 0, SCHEMA_ARRAY_EXPR),
         ],
     );
+    assert_contract::<DeclBufferObj, StmtObj>(
+        true,
+        Some(Tree),
+        &[
+            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("data", 0, SCHEMA_EXPR),
+        ],
+    );
+    assert_contract::<AllocBufferObj, StmtObj>(
+        true,
+        Some(Tree),
+        &[
+            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("annotations", 0, SCHEMA_ANY_MAP),
+        ],
+    );
     assert_contract::<BufferRegionObj, PrimExprConvertibleObj>(
         true,
         Some(Tree),
@@ -490,8 +541,15 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(Add::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Add);
     assert_complete_allocator!(Sub::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Sub);
     assert_complete_allocator!(Mul::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Mul);
+    assert_complete_allocator!(NE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> NE);
+    assert_complete_allocator!(LT::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> LT);
+    assert_complete_allocator!(LE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> LE);
+    assert_complete_allocator!(GT::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> GT);
+    assert_complete_allocator!(GE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> GE);
+    assert_complete_allocator!(Not::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr) -> Not);
     assert_complete_allocator!(StringImm::from_complete_fields: fn(Option<Span>, PrimType, String) -> StringImm);
     assert_complete_allocator!(AssertStmt::from_complete_fields: fn(Option<Span>, PrimExpr, StringImm, Array<StringImm>) -> AssertStmt);
+    assert_complete_allocator!(Bind::from_complete_fields: fn(Option<Span>, Var, Expr) -> Bind);
     assert_complete_allocator!(Evaluate::from_complete_fields: fn(Option<Span>, Expr) -> Evaluate);
     assert_complete_allocator!(SeqStmt::from_complete_fields: fn(Option<Span>, Array<Stmt>) -> SeqStmt);
     assert_complete_allocator!(IfThenElse::from_complete_fields: fn(Option<Span>, PrimExpr, Stmt, Option<Stmt>) -> IfThenElse);
@@ -502,6 +560,8 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(BufferType::from_complete_fields: fn(Option<Span>, PrimType, String, Array<PrimExpr>, Array<PrimExpr>, PrimExpr, i32, i32, Option<Layout>, Array<PrimExpr>) -> BufferType);
     assert_complete_allocator!(TensorLoad::from_complete_fields: fn(Option<Span>, PrimType, Expr, Array<PrimExpr>) -> TensorLoad);
     assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>) -> BufferStore);
+    assert_complete_allocator!(DeclBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Expr) -> DeclBuffer);
+    assert_complete_allocator!(AllocBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Map<String, Any>) -> AllocBuffer);
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
 }
 
