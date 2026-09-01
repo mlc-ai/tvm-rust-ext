@@ -18,7 +18,9 @@
  */
 
 use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{Any, Array, Function, ObjectArc, RValueRef, Result, String};
+use tvm_ffi::{
+    Any, Array, FieldGetter, Function, Map, ObjectArc, ObjectCore, RValueRef, Result, String,
+};
 
 use crate::ir::IRModule;
 use crate::tirx::PrimFunc;
@@ -28,23 +30,29 @@ mod decorate_device_scope;
 mod eliminate_unit_loops;
 mod filter;
 mod fold_integer_constants;
+mod inline_private_functions;
 mod lower_tirx_opaque;
 mod prune_unreachable_functions;
 mod remap_thread_axis;
 mod remove_assume;
+mod remove_no_op;
 mod simplify_add_zero;
 mod simplify_known_control_flow;
 mod simplify_neutral_elements;
 mod skip_assert;
+mod unroll_loop;
 mod utils;
 
 pub use annotate_entry_func::annotate_entry_func;
 pub use decorate_device_scope::{decorate_device_scope, decorate_device_scope_prim_func};
 pub use filter::filter;
+pub use inline_private_functions::{inline_private_functions, inline_private_functions_module};
 pub use lower_tirx_opaque::{lower_tirx_opaque, lower_tirx_opaque_prim_func};
 pub use remap_thread_axis::{remap_thread_axis, remap_thread_axis_prim_func};
-pub use remove_assume::{remove_assume_internal, remove_assume_prim_func};
+pub use remove_assume::{remove_assume, remove_assume_internal, remove_assume_prim_func};
+pub use remove_no_op::{remove_no_op, remove_no_op_prim_func};
 pub use skip_assert::{skip_assert, skip_assert_prim_func};
+pub use unroll_loop::{unroll_loop, unroll_loop_prim_func};
 
 /// Partial transformations used to exercise structural walk/map/mutate.
 ///
@@ -115,6 +123,13 @@ impl std::ops::Deref for PassContext {
     }
 }
 
+impl PassContext {
+    /// Return the language-independent pass-configuration map.
+    pub fn config(&self) -> Result<Map<String, Any>> {
+        FieldGetter::new(PassContextObj::type_index(), "config")?.get(&**self)
+    }
+}
+
 impl Pass {
     /// Run this pass on an IRModule using TVM's current PassContext.
     ///
@@ -125,6 +140,15 @@ impl Pass {
             .call_tuple((self, RValueRef::new(module)))?
             .try_into()
     }
+}
+
+/// Compose passes in order using TVM's language-independent pass container.
+pub fn sequential(passes: Vec<Pass>, name: &str) -> Result<Pass> {
+    let passes = Array::new(passes);
+    let required = Array::<String>::new(Vec::new());
+    tvm_ffi::cached_global_func!("transform.Sequential")
+        .call_tuple((passes, 0_i64, String::from(name), required, false))?
+        .try_into()
 }
 
 /// Construct a TVM PrimFunc pass backed by a Rust callback.

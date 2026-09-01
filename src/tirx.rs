@@ -32,9 +32,9 @@ mod buffer;
 mod iter_var;
 
 pub use buffer::{
-    Axis, AxisObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
-    BufferTypeObj, BufferVar, Iter, IterObj, Layout, LayoutObj, MatchBufferRegion,
-    MatchBufferRegionObj, TileLayout, TileLayoutObj,
+    AllocBuffer, AllocBufferObj, Axis, AxisObj, BufferRegion, BufferRegionObj, BufferStore,
+    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Iter, IterObj,
+    Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, TileLayout, TileLayoutObj,
 };
 pub use iter_var::{IterVar, IterVarObj, IterVarType};
 
@@ -325,6 +325,99 @@ impl EQ {
     }
 }
 
+macro_rules! define_comparison_expression {
+    ($object:ident, $reference:ident, $type_key:literal, $description:literal) => {
+        #[doc = concat!("ABI-complete Rust representation of TVM's `", $type_key, "` node.")]
+        #[repr(C)]
+        #[derive(Object)]
+        #[type_key = $type_key]
+        #[type_final]
+        pub struct $object {
+            base: ExprObj,
+            pub a: PrimExpr,
+            pub b: PrimExpr,
+        }
+
+        #[doc = concat!("Reference-counted handle to ", $description, ".")]
+        #[repr(C)]
+        #[derive(ObjectRef, Clone)]
+        pub struct $reference {
+            data: ObjectArc<$object>,
+        }
+
+        impl std::ops::Deref for $reference {
+            type Target = $object;
+
+            fn deref(&self) -> &Self::Target {
+                &self.data
+            }
+        }
+
+        impl std::ops::Deref for $object {
+            type Target = ExprObj;
+
+            fn deref(&self) -> &Self::Target {
+                &self.base
+            }
+        }
+
+        impl $reference {
+            /// Construct the comparison directly in Rust.
+            pub fn new<L, R>(lhs: L, rhs: R) -> Result<Self>
+            where
+                L: Into<Expr>,
+                R: Into<Expr>,
+            {
+                Self::with_span(lhs, rhs, None)
+            }
+
+            /// Construct the comparison with optional source metadata.
+            pub fn with_span<L, R>(lhs: L, rhs: R, span: Option<&Span>) -> Result<Self>
+            where
+                L: Into<Expr>,
+                R: Into<Expr>,
+            {
+                let lhs = lhs.into();
+                let rhs = rhs.into();
+                let operand_type = matching_binary_type(&lhs, &rhs)?;
+                let result_type = PrimType::from_dtype(DLDataType {
+                    code: DLDataTypeCode::kDLBool as u8,
+                    bits: 8,
+                    lanes: operand_type.dtype.lanes,
+                })?;
+                Ok(Self::from_complete_fields(
+                    span.cloned(),
+                    result_type,
+                    PrimExpr::try_from(lhs)?,
+                    PrimExpr::try_from(rhs)?,
+                ))
+            }
+
+            /// Construct the comparison from every physical field.
+            pub fn from_complete_fields(
+                span: Option<Span>,
+                ty: PrimType,
+                a: PrimExpr,
+                b: PrimExpr,
+            ) -> Self {
+                Self {
+                    data: ObjectArc::new($object {
+                        base: ExprObj::new(span, ty.into()),
+                        a,
+                        b,
+                    }),
+                }
+            }
+        }
+    };
+}
+
+define_comparison_expression!(NEObj, NE, "tirx.NE", "an inequality comparison");
+define_comparison_expression!(LTObj, LT, "tirx.LT", "a less-than comparison");
+define_comparison_expression!(LEObj, LE, "tirx.LE", "a less-than-or-equal comparison");
+define_comparison_expression!(GTObj, GT, "tirx.GT", "a greater-than comparison");
+define_comparison_expression!(GEObj, GE, "tirx.GE", "a greater-than-or-equal comparison");
+
 /// ABI-complete Rust representation of TVM's `tirx.And` node.
 #[repr(C)]
 #[derive(Object)]
@@ -415,6 +508,80 @@ impl And {
     }
 }
 
+/// ABI-complete Rust representation of TVM's `tirx.Not` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Not"]
+#[type_final]
+pub struct NotObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+}
+
+/// Reference-counted handle to a logical negation.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Not {
+    data: ObjectArc<NotObj>,
+}
+
+impl std::ops::Deref for Not {
+    type Target = NotObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for NotObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Not {
+    /// Construct a logical negation directly in Rust.
+    pub fn new<A>(value: A) -> Result<Self>
+    where
+        A: Into<Expr>,
+    {
+        Self::with_span(value, None)
+    }
+
+    /// Construct a logical negation with optional source metadata.
+    pub fn with_span<A>(value: A, span: Option<&Span>) -> Result<Self>
+    where
+        A: Into<Expr>,
+    {
+        let value = value.into();
+        let value_type = primitive_type(&value, "logical negation operand")?;
+        if value_type.dtype.code != DLDataTypeCode::kDLBool as u8 {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "logical negation operand must have bool type",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            value_type,
+            PrimExpr::try_from(value)?,
+        ))
+    }
+
+    /// Construct a negation from every physical field after external validation.
+    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, a: PrimExpr) -> Self {
+        Self {
+            data: ObjectArc::new(NotObj {
+                base: ExprObj::new(span, ty.into()),
+                a,
+            }),
+        }
+    }
+}
+
 /// ABI-complete Rust representation of TVM's `StringImmNode`.
 #[repr(C)]
 #[derive(Object)]
@@ -485,6 +652,80 @@ pub struct StmtObj {
 #[derive(ObjectRef, Clone)]
 pub struct Stmt {
     data: ObjectArc<StmtObj>,
+}
+
+/// ABI-complete Rust representation of TVM's `BindNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Bind"]
+#[type_final]
+pub struct BindObj {
+    base: StmtObj,
+    pub var: Var,
+    pub value: Expr,
+}
+
+/// Reference-counted handle to a flat variable binding.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Bind {
+    data: ObjectArc<BindObj>,
+}
+
+impl std::ops::Deref for Bind {
+    type Target = BindObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for BindObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Bind {
+    /// Construct a flat variable binding after checking the value type.
+    pub fn new<V>(var: Var, value: V) -> Result<Self>
+    where
+        V: Into<Expr>,
+    {
+        Self::with_span(var, value, None)
+    }
+
+    /// Construct a flat variable binding with optional source metadata.
+    pub fn with_span<V>(var: Var, value: V, span: Option<&Span>) -> Result<Self>
+    where
+        V: Into<Expr>,
+    {
+        let value = value.into();
+        let same_type: bool = tvm_ffi::cached_global_func!("ffi.StructuralEqual")
+            .call_tuple((&var.ty, &value.ty))?
+            .try_into()?;
+        if !same_type {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Bind value type must match the bound variable type",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(span.cloned(), var, value))
+    }
+
+    /// Construct a binding from every physical field after external validation.
+    pub fn from_complete_fields(span: Option<Span>, var: Var, value: Expr) -> Self {
+        Self {
+            data: ObjectArc::new(BindObj {
+                base: StmtObj::new(span),
+                var,
+                value,
+            }),
+        }
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `AttrStmtNode`.
@@ -1400,10 +1641,23 @@ tvm_ffi::impl_object_upcast!(
     Mul => PrimExpr,
     EQ => Expr,
     EQ => PrimExpr,
+    NE => Expr,
+    NE => PrimExpr,
+    LT => Expr,
+    LT => PrimExpr,
+    LE => Expr,
+    LE => PrimExpr,
+    GT => Expr,
+    GT => PrimExpr,
+    GE => Expr,
+    GE => PrimExpr,
     And => Expr,
     And => PrimExpr,
+    Not => Expr,
+    Not => PrimExpr,
     StringImm => Expr,
     StringImm => PrimExpr,
+    Bind => Stmt,
     AttrStmt => Stmt,
     For => Stmt,
     AssertStmt => Stmt,

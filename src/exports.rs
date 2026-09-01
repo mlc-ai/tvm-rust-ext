@@ -67,7 +67,9 @@ tvm_ffi_dll_export_typed_func!(
 );
 tvm_ffi_dll_export_typed_func!(skip_assert, transform::skip_assert_prim_func);
 tvm_ffi_dll_export_typed_func!(lower_tirx_opaque, transform::lower_tirx_opaque_prim_func);
-tvm_ffi_dll_export_typed_func!(remove_assume_internal, transform::remove_assume_prim_func);
+tvm_ffi_dll_export_typed_func!(remove_no_op, transform::remove_no_op_prim_func);
+tvm_ffi_dll_export_typed_func!(remove_assume, transform::remove_assume_prim_func);
+tvm_ffi_dll_export_typed_func!(unroll_loop, transform::unroll_loop_prim_func);
 tvm_ffi_dll_export_typed_func!(
     decorate_device_scope,
     transform::decorate_device_scope_prim_func
@@ -79,6 +81,10 @@ tvm_ffi_dll_export_typed_func!(
     prune_unreachable_functions_from_main,
     examples::prune_unreachable_functions_from_main
 );
+tvm_ffi_dll_export_typed_func!(
+    inline_private_functions,
+    transform::inline_private_functions_module
+);
 
 // Pass factories: each returns a `transform.Pass` object that composes with
 // TVM's pass infrastructure (`tvm.transform.Sequential`, `PassContext`, ...).
@@ -87,9 +93,12 @@ tvm_ffi_dll_export_typed_func!(annotate_entry_func_pass, transform::annotate_ent
 tvm_ffi_dll_export_typed_func!(decorate_device_scope_pass, transform::decorate_device_scope);
 tvm_ffi_dll_export_typed_func!(lower_tirx_opaque_pass, transform::lower_tirx_opaque);
 tvm_ffi_dll_export_typed_func!(remap_thread_axis_pass, transform::remap_thread_axis);
+tvm_ffi_dll_export_typed_func!(remove_no_op_pass, transform::remove_no_op);
+tvm_ffi_dll_export_typed_func!(remove_assume_pass, transform::remove_assume);
+tvm_ffi_dll_export_typed_func!(unroll_loop_pass, transform::unroll_loop);
 tvm_ffi_dll_export_typed_func!(
-    remove_assume_internal_pass,
-    transform::remove_assume_internal
+    inline_private_functions_pass,
+    transform::inline_private_functions
 );
 
 // Analyses.

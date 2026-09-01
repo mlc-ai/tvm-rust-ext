@@ -19,11 +19,12 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_visit, structural_walk, AnyView, DefRegionKind, Error, ObjectArc, ObjectRefCast,
-    Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult, VALUE_ERROR,
+    structural_visit, structural_walk, AnyView, DefRegionKind, Error, Map, ObjectArc,
+    ObjectRefCast, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult,
+    VALUE_ERROR,
 };
 
-use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, TensorLoadObj, VarObj};
+use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
 use crate::tirx::{
     AddObj, AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, MulObj, SeqStmtObj,
     StmtObj, SubObj,
@@ -47,6 +48,29 @@ pub struct AnalyzerObj {
 #[derive(ObjectRef, Clone)]
 pub struct Analyzer {
     data: ObjectArc<AnalyzerObj>,
+}
+
+/// Opaque Rust view of TVM's arithmetic integer-set abstraction.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.IntSet"]
+pub struct IntSetObj {
+    base: tvm_ffi::Object,
+}
+
+/// Shared handle to a native integer set.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct IntSet {
+    data: ObjectArc<IntSetObj>,
+}
+
+impl std::ops::Deref for IntSet {
+    type Target = IntSetObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
 }
 
 impl std::ops::Deref for Analyzer {
@@ -81,6 +105,49 @@ impl Analyzer {
     pub fn can_prove_equal(&self, lhs: &PrimExpr, rhs: &PrimExpr) -> Result<bool> {
         tvm_ffi::cached_global_func!("arith.AnalyzerCanProveEqual")
             .call_tuple((self, lhs, rhs))?
+            .try_into()
+    }
+
+    /// Prove a boolean primitive expression using TVM's default proof strength.
+    pub fn can_prove(&self, condition: &PrimExpr) -> Result<bool> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerCanProve")
+            .call_tuple((self, condition, 0_i32))?
+            .try_into()
+    }
+
+    /// Evaluate the integer set of an expression under explicit variable domains.
+    pub fn int_set(&self, expression: &PrimExpr, domains: &Map<Var, IntSet>) -> Result<IntSet> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerIntSet")
+            .call_tuple((self, expression, domains.clone()))?
+            .try_into()
+    }
+
+    /// Bind a variable to a range in this analyzer context.
+    pub fn bind(&self, variable: &Var, range: &Range) -> Result<()> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, range))?;
+        Ok(())
+    }
+
+    /// Limit the rewrite simplifier for deterministic debug/test behavior.
+    pub fn set_maximum_rewrite_steps(&self, maximum: i64) -> Result<()> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerSetMaximumRewriteSteps")
+            .call_tuple((self, maximum))?;
+        Ok(())
+    }
+}
+
+impl IntSet {
+    /// Construct a closed integer interval.
+    pub fn interval(minimum: PrimExpr, maximum: PrimExpr) -> Result<Self> {
+        tvm_ffi::cached_global_func!("arith.intset_interval")
+            .call_tuple((minimum, maximum))?
+            .try_into()
+    }
+
+    /// Return the set's upper-bound expression.
+    pub fn maximum(&self) -> Result<PrimExpr> {
+        tvm_ffi::cached_global_func!("arith.IntervalSetGetMax")
+            .call_tuple((self,))?
             .try_into()
     }
 }

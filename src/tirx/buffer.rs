@@ -718,6 +718,163 @@ impl BufferStore {
     }
 }
 
+/// ABI-complete Rust representation of TVM's `DeclBufferNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.DeclBuffer"]
+#[type_final]
+pub struct DeclBufferObj {
+    base: StmtObj,
+    pub buffer: BufferVar,
+    pub data: Expr,
+}
+
+/// Reference-counted handle to a buffer declaration.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct DeclBuffer {
+    data: ObjectArc<DeclBufferObj>,
+}
+
+impl std::ops::Deref for DeclBuffer {
+    type Target = DeclBufferObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for DeclBufferObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl DeclBuffer {
+    /// Construct a buffer declaration after checking its storage-scope rules.
+    pub fn new<B, D>(buffer: B, data: D) -> Result<Self>
+    where
+        B: Into<Var>,
+        D: Into<Expr>,
+    {
+        Self::with_span(buffer.into(), data.into(), None)
+    }
+
+    /// Construct a validated buffer declaration with optional source metadata.
+    pub fn with_span(buffer: Var, data: Expr, span: Option<&Span>) -> Result<Self> {
+        let buffer_type = buffer_type(&buffer)?;
+        let scope = match buffer_type.storage_scope.as_str() {
+            "" => "global",
+            value => value,
+        };
+        let allocated = buffer_type.allocated_addr.len();
+        if scope == "tmem" && allocated != 1 {
+            return Err(Error::new(
+                VALUE_ERROR,
+                "a tmem DeclBuffer requires exactly one allocated address",
+                "",
+            ));
+        }
+        if matches!(scope, "global" | "shared" | "shared.dyn" | "local") && allocated != 0 {
+            return Err(Error::new(
+                VALUE_ERROR,
+                &format!("a {scope} DeclBuffer does not accept allocated addresses"),
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            BufferVar::try_from(buffer)?,
+            data,
+        ))
+    }
+
+    /// Construct a declaration from every physical field after external validation.
+    pub fn from_complete_fields(span: Option<Span>, buffer: BufferVar, data: Expr) -> Self {
+        Self {
+            data: ObjectArc::new(DeclBufferObj {
+                base: StmtObj::new(span),
+                buffer,
+                data,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `AllocBufferNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.AllocBuffer"]
+#[type_final]
+pub struct AllocBufferObj {
+    base: StmtObj,
+    pub buffer: BufferVar,
+    pub annotations: Map<String, Any>,
+}
+
+/// Reference-counted handle to a buffer allocation declaration.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct AllocBuffer {
+    data: ObjectArc<AllocBufferObj>,
+}
+
+impl std::ops::Deref for AllocBuffer {
+    type Target = AllocBufferObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for AllocBufferObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl AllocBuffer {
+    /// Construct a buffer allocation with no annotations.
+    pub fn new<B>(buffer: B) -> Result<Self>
+    where
+        B: Into<Var>,
+    {
+        Self::with_metadata(buffer.into(), Map::new(), None)
+    }
+
+    /// Construct a buffer allocation with annotations and optional source metadata.
+    pub fn with_metadata(
+        buffer: Var,
+        annotations: Map<String, Any>,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            BufferVar::try_from(buffer)?,
+            annotations,
+        ))
+    }
+
+    /// Construct an allocation from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        buffer: BufferVar,
+        annotations: Map<String, Any>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(AllocBufferObj {
+                base: StmtObj::new(span),
+                buffer,
+                annotations,
+            }),
+        }
+    }
+}
+
 fn buffer_type(buffer: &Var) -> Result<BufferType> {
     buffer.ty.clone().try_cast::<BufferType>().map_err(|_| {
         Error::new(
@@ -1008,6 +1165,8 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
 tvm_ffi::impl_object_upcast!(
     TileLayout => Layout,
     BufferType => Type,
+    DeclBuffer => Stmt,
+    AllocBuffer => Stmt,
     BufferStore => Stmt,
     BufferRegion => PrimExprConvertible,
 );
