@@ -117,14 +117,11 @@ fn has_nonzero_function_attr(function: &BaseFunc, key: &str) -> bool {
 }
 
 fn module_from_named_prim_funcs(functions: Vec<(&str, PrimFunc)>) -> IRModule {
-    IRModule::with_metadata(
+    IRModule::new(
         functions
             .into_iter()
             .map(|(name, function)| (GlobalVar::new(name), BaseFunc::from(function)))
             .collect(),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
     )
     .unwrap()
 }
@@ -243,7 +240,6 @@ fn direct_fields_borrow_rust_allocated_nodes() {
     let leaf_conditional = IfThenElse::new(
         typed_int_expression("bool", 1),
         Evaluate::from_i64(1).unwrap(),
-        None,
     )
     .unwrap();
 
@@ -801,7 +797,7 @@ fn rust_skip_assert_rebuilds_conditional_branches_like_cpp() {
     ])
     .unwrap()
     .into();
-    let conditional = IfThenElse::new(&condition, &then_case, Some(else_case)).unwrap();
+    let conditional = IfThenElse::with_span(&condition, &then_case, Some(else_case), None).unwrap();
     assert!(conditional.else_case.is_some());
 
     let function = PrimFunc::from_body(&conditional).unwrap();
@@ -1019,10 +1015,10 @@ fn nested_loop_statement() -> Stmt {
     let inner = Var::new("j", "int32").unwrap();
     let sum = Add::new(outer.clone(), inner.clone()).unwrap();
     let inner_body: Stmt = Evaluate::new(Expr::from(sum)).unwrap().into();
-    let inner_loop: Stmt = For::serial(&inner, int_expression(1), int_expression(3), &inner_body)
+    let inner_loop: Stmt = For::new(&inner, int_expression(1), int_expression(3), &inner_body)
         .unwrap()
         .into();
-    For::serial(&outer, int_expression(0), int_expression(4), &inner_loop)
+    For::new(&outer, int_expression(0), int_expression(4), &inner_loop)
         .unwrap()
         .into()
 }
@@ -1137,7 +1133,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
         typed_int_expression("int64", 8),
     )
     .unwrap();
-    let iter_var = IterVar::new(&axis_domain, &axis, IterVarType::kDataPar).unwrap();
+    let iter_var = IterVar::new(&axis_domain, &axis).unwrap();
     let converted_axis = PrimExprConvertible::from(iter_var.clone())
         .to_prim_expr()
         .unwrap();
@@ -1300,7 +1296,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     let store: Stmt = BufferStore::new(&buffer, &load, vec![index])
         .unwrap()
         .into();
-    let unit_loop: Stmt = For::serial(
+    let unit_loop: Stmt = For::new(
         &unit_var,
         typed_int_expression("int64", 2),
         typed_int_expression("int64", 1),
@@ -1308,7 +1304,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     )
     .unwrap()
     .into();
-    let outer_loop = For::serial(
+    let outer_loop = For::new(
         &outer_var,
         typed_int_expression("int64", 0),
         typed_int_expression("int64", 4),
@@ -1368,15 +1364,16 @@ fn rust_remove_no_op_matches_cpp_on_non_sblock_control_and_effects() {
     let effect_operator: Expr = GlobalVar::new("effect").into();
     let effect: Expr =
         Call::new(PrimType::new("int32").unwrap(), effect_operator, Vec::new()).into();
-    let conditional: Stmt = IfThenElse::new(
+    let conditional: Stmt = IfThenElse::with_span(
         condition.clone(),
         Evaluate::from_i64(0).unwrap(),
         Some(Evaluate::new(effect.clone()).unwrap().into()),
+        None,
     )
     .unwrap()
     .into();
     let loop_var = Var::new("i", "int32").unwrap();
-    let empty_loop: Stmt = For::serial(
+    let empty_loop: Stmt = For::new(
         loop_var,
         int_expression(0),
         int_expression(0),
@@ -1415,10 +1412,11 @@ fn rust_remove_no_op_selects_constant_branches_and_preserves_effect_spans() {
     .into();
     let effect_statement = Evaluate::with_span(effect, Some(&span)).unwrap();
     let effect_pointer = object_pointer(&effect_statement);
-    let conditional = IfThenElse::new(
+    let conditional = IfThenElse::with_span(
         typed_int_expression("bool", 1),
         effect_statement,
         Some(Evaluate::from_i64(0).unwrap().into()),
+        None,
     )
     .unwrap();
     let function = PrimFunc::from_body(conditional).unwrap();
@@ -1463,10 +1461,11 @@ fn rust_stmt_simplify_matches_cpp_for_flat_bind_conditions() {
         Bind::new(variable.clone(), int_expression(1))
             .unwrap()
             .into(),
-        IfThenElse::new(
+        IfThenElse::with_span(
             condition,
             Evaluate::from_i64(2).unwrap(),
             Some(Evaluate::from_i64(3).unwrap().into()),
+            None,
         )
         .unwrap()
         .into(),
@@ -1491,13 +1490,14 @@ fn rust_stmt_simplify_matches_cpp_for_loop_constraints_and_redundant_store() {
     let index = Var::new("index", "int32").unwrap();
     let load = TensorLoad::from_buffer(&buffer, vec![index.clone().into()]).unwrap();
     let redundant_store = BufferStore::new(&buffer, load, vec![index.clone().into()]).unwrap();
-    let conditional = IfThenElse::new(
+    let conditional = IfThenElse::with_span(
         LT::new(index.clone(), int_expression(4)).unwrap(),
         redundant_store,
         Some(Evaluate::from_i64(7).unwrap().into()),
+        None,
     )
     .unwrap();
-    let body = For::serial(index, int_expression(0), int_expression(4), conditional).unwrap();
+    let body = For::new(index, int_expression(0), int_expression(4), conditional).unwrap();
     let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
 
@@ -1529,11 +1529,11 @@ fn rust_flatten_buffer_matches_cpp_for_parameter_buffer_and_nested_loops() {
         vec![row.clone().into(), column.clone().into()],
     )
     .unwrap();
-    let body = For::serial(
+    let body = For::new(
         row,
         typed_int_expression("int64", 0),
         typed_int_expression("int64", 4),
-        For::serial(
+        For::new(
             column,
             typed_int_expression("int64", 0),
             typed_int_expression("int64", 8),
@@ -1605,7 +1605,7 @@ fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
             .into()],
     )
     .unwrap();
-    let body = For::serial(
+    let body = For::new(
         index,
         typed_int_expression("int64", 0),
         typed_int_expression("int64", 15),
@@ -1637,7 +1637,7 @@ fn rust_narrow_data_type_matches_cpp_for_proven_and_unproven_ranges() {
         .unwrap();
         let buffer = buffer_type.new_var(name);
         let index = Var::new(&format!("{name}_index"), "int64").unwrap();
-        let body = For::serial(
+        let body = For::new(
             index.clone(),
             typed_int_expression("int64", 0),
             typed_int_expression("int64", extent),
@@ -1715,15 +1715,10 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
         None,
     )
     .unwrap();
-    let module = IRModule::with_metadata(
-        Map::from_iter([
-            (callee_global, BaseFunc::from(callee)),
-            (GlobalVar::new("main"), BaseFunc::from(caller)),
-        ]),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
-    )
+    let module = IRModule::new(Map::from_iter([
+        (callee_global, BaseFunc::from(callee)),
+        (GlobalVar::new("main"), BaseFunc::from(caller)),
+    ]))
     .unwrap();
 
     let rust_result = transform::bind_target_module(module.clone(), target.clone()).unwrap();
@@ -1938,17 +1933,18 @@ fn rust_remove_no_op_uses_branch_constraints_like_cpp() {
         Vec::new(),
     )
     .into();
-    let loop_statement = For::serial(
+    let loop_statement = For::new(
         loop_var,
         int_expression(0),
         extent.clone(),
         Evaluate::new(effect).unwrap(),
     )
     .unwrap();
-    let body = IfThenElse::new(
+    let body = IfThenElse::with_span(
         LE::new(extent.clone(), int_expression(0)).unwrap(),
         loop_statement,
         Some(Evaluate::from_i64(0).unwrap().into()),
+        None,
     )
     .unwrap();
     let function = PrimFunc::new(vec![extent], body).unwrap();
@@ -2000,7 +1996,7 @@ fn rust_unroll_loop_matches_cpp_for_explicit_loop() {
 fn rust_unroll_loop_matches_cpp_for_scoped_auto_unroll_pragma() {
     load_tvm_compiler();
     let loop_var = Var::new("i", "int32").unwrap();
-    let loop_node = For::serial(
+    let loop_node = For::new(
         loop_var.clone(),
         int_expression(0),
         int_expression(3),
@@ -2029,7 +2025,7 @@ fn rust_unroll_loop_matches_cpp_for_scoped_auto_unroll_pragma() {
 fn rust_unroll_loop_matches_cpp_when_explicit_expansion_is_disabled() {
     load_tvm_compiler();
     let loop_var = Var::new("i", "int32").unwrap();
-    let loop_node = For::serial(
+    let loop_node = For::new(
         loop_var.clone(),
         int_expression(0),
         int_expression(3),
@@ -2082,7 +2078,7 @@ fn rust_unroll_loop_matches_cpp_for_local_buffer_indices() {
     let loop_var = Var::new("i", "int32").unwrap();
     let store =
         BufferStore::new(&buffer, int_expression(1), vec![loop_var.clone().into()]).unwrap();
-    let loop_node = For::serial(loop_var, int_expression(0), int_expression(4), store).unwrap();
+    let loop_node = For::new(loop_var, int_expression(0), int_expression(4), store).unwrap();
     let function = PrimFunc::new(vec![buffer.as_var().clone()], loop_node).unwrap();
     let module = IRModule::from_expr(function).unwrap();
 
@@ -2232,15 +2228,10 @@ fn rust_convert_ssa_matches_cpp_for_reused_dynamic_buffer_parameters() {
         )
         .unwrap()
     };
-    let module = IRModule::with_metadata(
-        Map::from_iter([
-            (GlobalVar::new("first"), BaseFunc::from(make_function())),
-            (GlobalVar::new("second"), BaseFunc::from(make_function())),
-        ]),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
-    )
+    let module = IRModule::new(Map::from_iter([
+        (GlobalVar::new("first"), BaseFunc::from(make_function())),
+        (GlobalVar::new("second"), BaseFunc::from(make_function())),
+    ]))
     .unwrap();
 
     let rust_result = transform::convert_ssa()
@@ -2463,16 +2454,11 @@ fn rust_inline_private_functions_matches_cpp() {
         .unwrap(),
     )
     .unwrap();
-    let module = IRModule::with_metadata(
-        Map::from_iter([
-            (callee_global, BaseFunc::from(callee)),
-            (recursive_global, BaseFunc::from(recursive)),
-            (GlobalVar::new("main"), BaseFunc::from(caller)),
-        ]),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
-    )
+    let module = IRModule::new(Map::from_iter([
+        (callee_global, BaseFunc::from(callee)),
+        (recursive_global, BaseFunc::from(recursive)),
+        (GlobalVar::new("main"), BaseFunc::from(caller)),
+    ]))
     .unwrap();
 
     let rust_result = transform::inline_private_functions()
@@ -2549,16 +2535,11 @@ fn rust_inline_private_functions_matches_cpp_for_targets_and_expression_calls() 
         None,
     )
     .unwrap();
-    let module = IRModule::with_metadata(
-        Map::from_iter([
-            (target_global, BaseFunc::from(target_callee)),
-            (expression_global, BaseFunc::from(expression_callee)),
-            (GlobalVar::new("main"), BaseFunc::from(caller)),
-        ]),
-        SourceMap::new(),
-        DictAttrs::empty(),
-        Map::new(),
-    )
+    let module = IRModule::new(Map::from_iter([
+        (target_global, BaseFunc::from(target_callee)),
+        (expression_global, BaseFunc::from(expression_callee)),
+        (GlobalVar::new("main"), BaseFunc::from(caller)),
+    ]))
     .unwrap();
 
     let rust_result = transform::inline_private_functions()
@@ -2733,7 +2714,7 @@ fn rust_lower_tirx_opaque_matches_cpp_for_a_unit_loop() {
     let loop_var = Var::new("i", "int64").unwrap();
     let value = Add::new(loop_var.clone(), typed_int_expression("int64", 1)).unwrap();
     let body = Evaluate::new(value).unwrap();
-    let loop_statement = For::serial(
+    let loop_statement = For::new(
         loop_var,
         typed_int_expression("int64", 2),
         typed_int_expression("int64", 1),
@@ -2770,7 +2751,7 @@ fn rust_lower_tirx_opaque_remaps_buffer_definitions_and_uses_together() {
         .into(),
     ])
     .unwrap();
-    let loop_node = For::serial(
+    let loop_node = For::new(
         loop_var,
         typed_int_expression("int64", 4),
         typed_int_expression("int64", 1),
@@ -3050,10 +3031,11 @@ fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
     let condition = Var::new("condition", "bool").unwrap();
     let then_value = Add::new(variable.clone(), int_expression(1)).unwrap();
     let else_value = Add::new(variable.clone(), int_expression(1)).unwrap();
-    let conditional: Stmt = IfThenElse::new(
+    let conditional: Stmt = IfThenElse::with_span(
         condition.clone(),
         Evaluate::new(then_value).unwrap(),
         Some(Evaluate::new(else_value).unwrap().into()),
+        None,
     )
     .unwrap()
     .into();
@@ -3087,14 +3069,12 @@ fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
 
     let first_predicate = LT::new(variable.clone(), int_expression(10)).unwrap();
     let second_predicate = LT::new(variable.clone(), int_expression(10)).unwrap();
-    let first_bool_use: Stmt =
-        IfThenElse::new(first_predicate, Evaluate::from_i64(1).unwrap(), None)
-            .unwrap()
-            .into();
-    let second_bool_use: Stmt =
-        IfThenElse::new(second_predicate, Evaluate::from_i64(2).unwrap(), None)
-            .unwrap()
-            .into();
+    let first_bool_use: Stmt = IfThenElse::new(first_predicate, Evaluate::from_i64(1).unwrap())
+        .unwrap()
+        .into();
+    let second_bool_use: Stmt = IfThenElse::new(second_predicate, Evaluate::from_i64(2).unwrap())
+        .unwrap()
+        .into();
 
     let loop_variable = Var::new("i", "int32").unwrap();
     let loop_lhs = Add::new(loop_variable.clone(), variable.clone()).unwrap();
@@ -3104,7 +3084,7 @@ fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
         Evaluate::new(loop_rhs).unwrap().into(),
     ])
     .unwrap();
-    let loop_statement: Stmt = For::serial(
+    let loop_statement: Stmt = For::new(
         loop_variable,
         int_expression(0),
         int_expression(4),
@@ -3919,8 +3899,8 @@ fn rust_storage_rewrite_matches_cpp_for_sequential_tagged_allocations() {
         vec![Expr::from(lane_b.clone())],
     )
     .unwrap();
-    let loop_a = For::serial(lane_a, int_expression(0), int_expression(10), store_a).unwrap();
-    let loop_b = For::serial(lane_b, int_expression(0), int_expression(10), store_b).unwrap();
+    let loop_a = For::new(lane_a, int_expression(0), int_expression(10), store_a).unwrap();
+    let loop_b = For::new(lane_b, int_expression(0), int_expression(10), store_b).unwrap();
     let body = Stmt::sequence(vec![
         AllocBuffer::new(buffer_a).unwrap().into(),
         loop_a.into(),
@@ -4251,7 +4231,7 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
     )
     .unwrap();
     let filtered_call =
-        IfThenElse::new(EQ::new(lane, prim_int_expression(3)).unwrap(), call, None).unwrap();
+        IfThenElse::new(EQ::new(lane, prim_int_expression(3)).unwrap(), call).unwrap();
     let body = Stmt::sequence(vec![
         ScopeIdDefStmt::new(blocks, None).unwrap().into(),
         ScopeIdDefStmt::new(threads, None).unwrap().into(),

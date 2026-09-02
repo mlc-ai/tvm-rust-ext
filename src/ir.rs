@@ -921,6 +921,15 @@ impl Range {
             }),
         }
     }
+
+    /// Copy this node with new `min`, `extent`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Range::from_min_extent`] and, like
+    /// [`Range::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, min: PrimExpr, extent: PrimExpr) -> Self {
+        Self::from_complete_fields(min, extent, self.span.clone())
+    }
 }
 
 fn require_primitive_expr(value: Expr, context: &str) -> Result<PrimExpr> {
@@ -982,6 +991,21 @@ impl TensorLoad {
                 indices,
             }),
         }
+    }
+
+    /// Copy this node with new `source`, `indices`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`TensorLoad::from_buffer`] and, like
+    /// [`TensorLoad::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, source: Expr, indices: Array<PrimExpr>) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            PrimExpr::from(self).type_annotation(),
+            source,
+            indices,
+        )
     }
 }
 
@@ -1728,6 +1752,15 @@ impl Var {
             }),
         }
     }
+
+    /// Copy this node with new `name`, `ty`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Var::with_type`] and, like
+    /// [`Var::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, name: String, ty: Type) -> Self {
+        Self::from_complete_fields(self.span.clone(), ty, name)
+    }
 }
 
 impl GlobalVar {
@@ -1804,6 +1837,22 @@ impl Call {
             }),
         }
     }
+
+    /// Copy this node with new `ty`, `op`, `args`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Call::new`] and, like
+    /// [`Call::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, ty: Type, op: Expr, args: Array<Expr>) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            ty,
+            op,
+            args,
+            self.attrs.clone(),
+            self.ty_args.clone(),
+        )
+    }
 }
 
 tvm_ffi::impl_object_upcast!(
@@ -1843,13 +1892,18 @@ impl IRModule {
             .filter(|name| !name.is_empty())
             .unwrap_or("main");
         let global_var = GlobalVar::new(global_name);
-        Self::with_metadata(
-            [(global_var, function)].into_iter().collect(),
-            SourceMap::new(),
-            DictAttrs::empty(),
-            Map::new(),
-        )
+        Self::new([(global_var, function)].into_iter().collect())
     }
+
+    // customized_new(IRModule) begin
+    /// Construct a module that holds only `functions`.
+    ///
+    /// The source map, attributes, and global infos take the C++ constructor
+    /// defaults (all empty); use [`IRModule::with_metadata`] to supply them.
+    pub fn new(functions: Map<GlobalVar, BaseFunc>) -> Result<Self> {
+        Self::with_metadata(functions, SourceMap::new(), DictAttrs::empty(), Map::new())
+    }
+    // customized_new(IRModule) end
 
     /// Construct a module directly in Rust from all of its stored state.
     ///

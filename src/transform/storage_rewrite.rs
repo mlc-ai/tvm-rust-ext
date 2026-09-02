@@ -26,7 +26,9 @@ use tvm_ffi::{
 };
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
-use super::utils::{array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default};
+use super::utils::{
+    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
@@ -62,7 +64,7 @@ pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         statements.push(rewritten);
         Stmt::sequence(statements)?
     };
-    let function = function.with_body(body);
+    let function = with_prim_func_body(function, body);
 
     // Match the native pass's final storage-type normalization.  Parameters
     // stay unchanged; only internal allocation/view element types and indices
@@ -560,12 +562,12 @@ impl StoragePlanRewriter {
             if data.same_as(&value.data) {
                 return Ok(value.into());
             }
-            return Ok(value.with_children(value.buffer.clone(), data).into());
+            return Ok(value.copy_with(value.buffer.clone(), data).into());
         };
         let (_, remap) = self.plan.remap(&value.buffer).expect("remapped buffer");
         let storage = &self.plan.storage[remap.storage];
         Ok(value
-            .with_children(buffer, buffer_data(&storage.backing)?)
+            .copy_with(buffer, buffer_data(&storage.backing)?)
             .into())
     }
 
@@ -594,11 +596,11 @@ impl StoragePlanRewriter {
                 return Ok(value.into());
             }
             return Ok(value
-                .with_children(value.buffer.clone(), stored_value, indices)
+                .copy_with(value.buffer.clone(), stored_value, indices)
                 .into());
         };
         let indices = self.remap_indices(&value.buffer, indices, bit_offset)?;
-        Ok(value.with_children(buffer, stored_value, indices).into())
+        Ok(value.copy_with(buffer, stored_value, indices).into())
     }
 
     fn mutate_variable(&mut self, value: Var) -> Result<Expr> {
@@ -695,11 +697,7 @@ fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType, name: &str) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        FfiString::from(name),
-    ))
+    BufferVar::try_from(buffer.copy_with(FfiString::from(name), ty.into()))
 }
 
 fn buffer_data(buffer: &BufferVar) -> Result<Expr> {

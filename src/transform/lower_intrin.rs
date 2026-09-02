@@ -22,7 +22,7 @@ use tvm_ffi::{
     ObjectRefCore, Result, String,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_default};
+use super::utils::{mutate_expr_default, mutate_stmt_default, with_prim_func_body};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -70,7 +70,7 @@ fn lower_intrin_prim_func_with_config(
     let mut injecter = IntrinInjecter::new(&target, enable_fast_math)?;
     let body: Stmt =
         tvm_ffi::structural_mutate(function.body.clone(), &mut injecter)?.try_into()?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 struct AccessPtrAlias {
@@ -653,10 +653,9 @@ fn swap_broadcast_cast(value: &PrimExpr) -> Result<PrimExpr> {
         cast.value.clone(),
         broadcast.lanes.clone(),
     );
-    Ok(
-        Cast::from_complete_fields(cast.span.clone(), value.type_annotation(), broadcast.into())
-            .into(),
-    )
+    Ok(cast
+        .copy_with(value.type_annotation(), broadcast.into())
+        .into())
 }
 
 fn ramp(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {

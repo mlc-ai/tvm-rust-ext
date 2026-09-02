@@ -607,6 +607,31 @@ impl BufferType {
         }
     }
 
+    /// Copy this node with new `storage_scope`, `dtype`, `shape`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`BufferType::new`] and, like
+    /// [`BufferType::from_complete_fields`], runs no validation.
+    pub fn copy_with(
+        &self,
+        storage_scope: String,
+        dtype: PrimType,
+        shape: Array<PrimExpr>,
+    ) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            dtype,
+            storage_scope,
+            shape,
+            self.strides.clone(),
+            self.elem_offset.clone(),
+            self.data_alignment,
+            self.offset_factor,
+            self.layout.clone(),
+            self.allocated_addr.clone(),
+        )
+    }
+
     /// Construct a buffer variable.  Its runtime identity is an ordinary `ir.Var`.
     pub fn new_var(&self, name: &str) -> BufferVar {
         unsafe { BufferVar::from_var_unchecked(Var::with_type(name, Type::from(self.clone()))) }
@@ -761,6 +786,15 @@ impl BufferStore {
             }),
         }
     }
+
+    /// Copy this node with new `buffer`, `value`, `indices`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`BufferStore::new`] and, like
+    /// [`BufferStore::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, buffer: BufferVar, value: PrimExpr, indices: Array<PrimExpr>) -> Self {
+        Self::from_complete_fields(self.span.clone(), buffer, value, indices)
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `DeclBufferNode`.
@@ -846,6 +880,15 @@ impl DeclBuffer {
             }),
         }
     }
+
+    /// Copy this node with new `buffer`, `data`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`DeclBuffer::new`] and, like
+    /// [`DeclBuffer::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, buffer: BufferVar, data: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), buffer, data)
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `AllocBufferNode`.
@@ -917,6 +960,15 @@ impl AllocBuffer {
                 annotations,
             }),
         }
+    }
+
+    /// Copy this node with new `buffer`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`AllocBuffer::new`] and, like
+    /// [`AllocBuffer::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, buffer: BufferVar) -> Self {
+        Self::from_complete_fields(self.span.clone(), buffer, self.annotations.clone())
     }
 }
 

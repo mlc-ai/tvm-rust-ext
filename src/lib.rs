@@ -36,7 +36,6 @@ pub mod analysis;
 pub mod exports;
 pub mod ir;
 pub mod libinfo;
-mod shorthand;
 pub mod target;
 pub mod tirx;
 pub mod transform;

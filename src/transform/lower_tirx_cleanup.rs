@@ -52,10 +52,15 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         if buffer.type_annotation().layout.is_some() {
             let flattened = applier.flatten_buffer(&buffer, false)?;
             let mut source_type = buffer.type_annotation();
-            source_type = source_type.with_children(
+            source_type = BufferType::from_complete_fields(
+                source_type.span.clone(),
+                source_type.dtype.clone(),
+                source_type.storage_scope.clone(),
                 source_type.shape.clone(),
                 source_type.strides.clone(),
                 source_type.elem_offset.clone(),
+                source_type.data_alignment,
+                source_type.offset_factor,
                 None,
                 source_type.allocated_addr.clone(),
             );
@@ -77,7 +82,7 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let mut remover = BufferOffsetRemover::new()?;
     body = structural_mutate(body, &mut remover)?.try_into()?;
 
-    function.with_children(parameters, body, function.attrs.clone())
+    function.copy_with(parameters, body)
 }
 
 /// Build TVM's `tirx.LowerTIRxCleanup` PrimFunc pass in Rust.
@@ -148,10 +153,15 @@ impl LayoutApplier {
                 };
                 rebuild_buffer(
                     buffer,
-                    old_type.with_children(
+                    BufferType::from_complete_fields(
+                        old_type.span.clone(),
+                        old_type.dtype.clone(),
+                        old_type.storage_scope.clone(),
                         Array::new(shape),
                         Array::new(Vec::new()),
                         old_type.elem_offset.clone(),
+                        old_type.data_alignment,
+                        old_type.offset_factor,
                         old_type.layout.clone(),
                         old_type.allocated_addr.clone(),
                     ),
@@ -175,10 +185,15 @@ impl LayoutApplier {
                 let span = self.analyzer.simplify(&span)?;
                 rebuild_buffer(
                     buffer,
-                    old_type.with_children(
+                    BufferType::from_complete_fields(
+                        old_type.span.clone(),
+                        old_type.dtype.clone(),
+                        old_type.storage_scope.clone(),
                         Array::new(vec![span]),
                         Array::new(Vec::new()),
                         old_type.elem_offset.clone(),
+                        old_type.data_alignment,
+                        old_type.offset_factor,
                         old_type.layout.clone(),
                         old_type.allocated_addr.clone(),
                     ),
@@ -205,10 +220,15 @@ impl LayoutApplier {
             .map(|value| self.mutate_primitive(&value))
             .collect::<Result<Vec<_>>>()?;
         let elem_offset = self.mutate_primitive(&old_type.elem_offset)?;
-        let new_type = native_type.with_children(
+        let new_type = BufferType::from_complete_fields(
+            native_type.span.clone(),
+            native_type.dtype.clone(),
+            native_type.storage_scope.clone(),
             Array::new(shape),
             Array::new(strides),
             elem_offset,
+            native_type.data_alignment,
+            native_type.offset_factor,
             None,
             native_type.allocated_addr.clone(),
         );
@@ -357,7 +377,7 @@ impl LayoutApplier {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -371,7 +391,7 @@ impl LayoutApplier {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -381,11 +401,11 @@ impl LayoutApplier {
             if stored.same_as(&value.value) && indices_same(&indices, &value.indices) {
                 return Ok(value);
             }
-            return Ok(value.with_children(value.buffer.clone(), stored, indices));
+            return Ok(value.copy_with(value.buffer.clone(), stored, indices));
         }
         let flat_indices = self.flattened_indices(&value.buffer, &indices)?;
         let buffer = self.flatten_buffer(&value.buffer, false)?;
-        Ok(value.with_children(buffer, stored, flat_indices))
+        Ok(value.copy_with(buffer, stored, flat_indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -473,10 +493,15 @@ impl BufferOffsetRemover {
         } else {
             let mapped = rebuild_buffer(
                 &value.buffer,
-                old_type.with_children(
+                BufferType::from_complete_fields(
+                    old_type.span.clone(),
+                    old_type.dtype.clone(),
+                    old_type.storage_scope.clone(),
                     old_type.shape.clone(),
                     old_type.strides.clone(),
                     elem_offset,
+                    old_type.data_alignment,
+                    old_type.offset_factor,
                     old_type.layout.clone(),
                     old_type.allocated_addr.clone(),
                 ),
@@ -488,7 +513,7 @@ impl BufferOffsetRemover {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -501,7 +526,7 @@ impl BufferOffsetRemover {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored, indices))
+        Ok(value.copy_with(buffer, stored, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -540,11 +565,7 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        buffer.name.clone(),
-    ))
+    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn native_flatten_buffer(buffer: &BufferVar) -> Result<BufferVar> {

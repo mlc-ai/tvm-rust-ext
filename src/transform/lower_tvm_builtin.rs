@@ -22,7 +22,9 @@ use tvm_ffi::{
     ObjectRefCore, Result, String, TypeIndex,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default};
+use super::utils::{
+    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
 use crate::target::Target;
@@ -63,7 +65,7 @@ pub fn lower_tvm_builtin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         .transpose()?;
     let mut lowerer = BuiltinLower::new(device_type)?;
     let body = lowerer.visit_body_and_realize_alloca(function.body.clone())?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.LowerTVMBuiltin` pass in Rust.
@@ -360,7 +362,6 @@ impl BuiltinLower {
                 vec![data.clone()],
             ),
             throw.clone(),
-            None,
         )?;
         let free_call = Call::new(
             PrimType::new("int32")?,
@@ -375,7 +376,6 @@ impl BuiltinLower {
         let free = IfThenElse::new(
             crate::tirx::NE::new(free_call, IntImm::new("int32", 0)?)?,
             throw,
-            None,
         )?;
         self.pending_frees
             .last_mut()
@@ -430,7 +430,12 @@ impl BuiltinLower {
         let mut body = vec![mapped.body.clone()];
         body.extend(frees.into_iter().rev());
         Ok(mapped
-            .with_children(mapped.value.clone(), Stmt::sequence(body)?)
+            .copy_with(
+                mapped.node.clone(),
+                mapped.attr_key.clone(),
+                mapped.value.clone(),
+                Stmt::sequence(body)?,
+            )
             .into())
     }
 
@@ -447,7 +452,7 @@ impl BuiltinLower {
             return Ok(value.into());
         }
         Ok(value
-            .with_children(minimum, extent, body, value.step.clone())
+            .copy_with(value.loop_var.clone(), minimum, extent, body)
             .into())
     }
 
@@ -466,7 +471,10 @@ impl BuiltinLower {
         {
             return Ok(value.into());
         }
-        Ok(value.with_children(condition, then_case, else_case).into())
+        Ok(
+            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case)
+                .into(),
+        )
     }
 
     fn lower_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -752,7 +760,11 @@ impl BuiltinLower {
         if traced {
             lowered_arguments.push(arguments.get(arguments.len() - 1)?);
         }
-        Ok(value.with_children(lowered_operator, Array::new(lowered_arguments)))
+        Ok(value.copy_with(
+            value.ty.clone(),
+            lowered_operator,
+            Array::new(lowered_arguments),
+        ))
     }
 
     fn set_packed_argument(&mut self, mut argument: Expr, stack: &Var, offset: u64) -> Result<()> {
@@ -812,7 +824,7 @@ impl BuiltinLower {
             );
             let condition = PrimExpr::try_from(Expr::from(condition))?;
             self.current_preparation_mut()?.push(
-                IfThenElse::new(
+                IfThenElse::with_span(
                     condition,
                     struct_set(
                         stack,
@@ -826,6 +838,7 @@ impl BuiltinLower {
                         TVM_FFI_ANY_TYPE_INDEX,
                         IntImm::new("int32", TypeIndex::kTVMFFIOpaquePtr as i64)?,
                     )?),
+                    None,
                 )?
                 .into(),
             );
@@ -916,7 +929,6 @@ impl BuiltinLower {
                 get_operator("tirx.tvm_throw_last_error")?,
                 Vec::new(),
             ))?,
-            None,
         )?;
         let storage_scope = call.args.get(0)?;
         let free_call = Call::new(
@@ -938,13 +950,15 @@ impl BuiltinLower {
                 get_operator("tirx.tvm_throw_last_error")?,
                 Vec::new(),
             ))?,
-            None,
         )?;
         self.pending_frees
             .last_mut()
             .ok_or_else(|| value_error("nd allocation has no enclosing lifetime scope"))?
             .push(free.into());
-        Stmt::sequence(vec![binding.with_value(packed).into(), null_check.into()])
+        Stmt::sequence(vec![
+            binding.copy_with(binding.var.clone(), packed).into(),
+            null_check.into(),
+        ])
     }
 
     fn current_alloca_scope(&self) -> Result<&AllocaScope> {

@@ -128,6 +128,16 @@ impl Add {
             }),
         }
     }
+
+    /// Copy this node with new `a`, `b`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Add::new`] and, like
+    /// [`Add::from_complete_fields`], runs no validation.
+    /// The result type follows the new `a`.
+    pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+        Self::from_complete_fields(self.span.clone(), a.type_annotation(), a, b)
+    }
 }
 
 pub(crate) fn primitive_type(expr: &Expr, context: &str) -> Result<crate::ir::PrimType> {
@@ -241,6 +251,16 @@ macro_rules! define_binary_expression {
                     }),
                 }
             }
+
+            /// Copy this node with new `a`, `b`; every other field, span
+            /// included, is carried over from `self`.
+            ///
+            /// Takes the same required fields as `new` and, like
+            /// `from_complete_fields`, runs no validation.
+            /// The result type follows the new `a`.
+            pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+                Self::from_complete_fields(self.span.clone(), a.type_annotation(), a, b)
+            }
         }
     };
 }
@@ -345,6 +365,21 @@ impl EQ {
             }),
         }
     }
+
+    /// Copy this node with new `a`, `b`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`EQ::new`] and, like
+    /// [`EQ::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            PrimExpr::from(self).type_annotation(),
+            a,
+            b,
+        )
+    }
 }
 
 macro_rules! define_comparison_expression {
@@ -429,6 +464,21 @@ macro_rules! define_comparison_expression {
                         b,
                     }),
                 }
+            }
+
+            /// Copy this node with new `a`, `b`; every other field, span
+            /// included, is carried over from `self`.
+            ///
+            /// Takes the same required fields as `new` and, like
+            /// `from_complete_fields`, runs no validation.
+            /// The result type is carried over unchanged.
+            pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+                Self::from_complete_fields(
+                    self.span.clone(),
+                    PrimExpr::from(self).type_annotation(),
+                    a,
+                    b,
+                )
             }
         }
     };
@@ -528,6 +578,21 @@ impl And {
             }),
         }
     }
+
+    /// Copy this node with new `a`, `b`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`And::new`] and, like
+    /// [`And::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            PrimExpr::from(self).type_annotation(),
+            a,
+            b,
+        )
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `tirx.Or` node.
@@ -618,6 +683,21 @@ impl Or {
             }),
         }
     }
+
+    /// Copy this node with new `a`, `b`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Or::new`] and, like
+    /// [`Or::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            PrimExpr::from(self).type_annotation(),
+            a,
+            b,
+        )
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `tirx.Not` node.
@@ -692,6 +772,16 @@ impl Not {
             }),
         }
     }
+
+    /// Copy this node with new `a`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Not::new`] and, like
+    /// [`Not::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, a: PrimExpr) -> Self {
+        Self::from_complete_fields(self.span.clone(), PrimExpr::from(self).type_annotation(), a)
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `tirx.Cast` node.
@@ -760,6 +850,15 @@ impl Cast {
                 value,
             }),
         }
+    }
+
+    /// Copy this node with new `ty`, `value`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Cast::new`] and, like
+    /// [`Cast::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, ty: PrimType, value: PrimExpr) -> Self {
+        Self::from_complete_fields(self.span.clone(), ty, value)
     }
 }
 
@@ -1026,6 +1125,27 @@ impl Select {
             }),
         }
     }
+
+    /// Copy this node with new `condition`, `true_value`, `false_value`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Select::new`] and, like
+    /// [`Select::from_complete_fields`], runs no validation.
+    /// The result type follows the new `true_value`.
+    pub fn copy_with(
+        &self,
+        condition: PrimExpr,
+        true_value: PrimExpr,
+        false_value: PrimExpr,
+    ) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            true_value.type_annotation(),
+            condition,
+            true_value,
+            false_value,
+        )
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `LetNode`.
@@ -1119,6 +1239,16 @@ impl Let {
                 body,
             }),
         }
+    }
+
+    /// Copy this node with new `var`, `value`, `body`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Let::new`] and, like
+    /// [`Let::from_complete_fields`], runs no validation.
+    /// The result type follows the new `body`.
+    pub fn copy_with(&self, var: Var, value: PrimExpr, body: PrimExpr) -> Self {
+        Self::from_complete_fields(self.span.clone(), body.type_annotation(), var, value, body)
     }
 }
 
@@ -1382,6 +1512,15 @@ impl Bind {
             }),
         }
     }
+
+    /// Copy this node with new `var`, `value`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Bind::new`] and, like
+    /// [`Bind::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, var: Var, value: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), var, value)
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `AttrStmtNode`.
@@ -1470,6 +1609,15 @@ impl AttrStmt {
                 body,
             }),
         }
+    }
+
+    /// Copy this node with new `node`, `attr_key`, `value`, `body`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`AttrStmt::new`] and, like
+    /// [`AttrStmt::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, node: Any, attr_key: String, value: PrimExpr, body: Stmt) -> Self {
+        Self::from_complete_fields(self.span.clone(), node, attr_key, value, body)
     }
 }
 
@@ -1666,6 +1814,15 @@ impl SeqStmt {
             }),
         }
     }
+
+    /// Copy this node with new `seq`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`SeqStmt::new`] and, like
+    /// [`SeqStmt::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, seq: Array<Stmt>) -> Self {
+        Self::from_complete_fields(self.span.clone(), seq)
+    }
 }
 
 fn flatten_statement(statement: Stmt, output: &mut Vec<Stmt>) {
@@ -1725,14 +1882,19 @@ impl std::ops::Deref for IfThenElseObj {
 }
 
 impl IfThenElse {
-    /// Construct a conditional statement directly in Rust.
-    pub fn new<C, T>(condition: C, then_case: T, else_case: Option<Stmt>) -> Result<Self>
+    // customized_new(IfThenElse) begin
+    /// Construct a conditional statement with no `else` branch and no source
+    /// metadata, matching the C++ constructor defaults.
+    ///
+    /// Use [`IfThenElse::with_span`] to attach an `else` branch or a span.
+    pub fn new<C, T>(condition: C, then_case: T) -> Result<Self>
     where
         C: Into<Expr>,
         T: Into<Stmt>,
     {
-        Self::with_span(condition, then_case, else_case, None)
+        Self::with_span(condition, then_case, None, None)
     }
+    // customized_new(IfThenElse) end
 
     /// Construct a conditional statement with optional source metadata.
     pub fn with_span<C, T>(
@@ -1771,6 +1933,20 @@ impl IfThenElse {
                 else_case,
             }),
         }
+    }
+
+    /// Copy this node with new `condition`, `then_case`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`IfThenElse::new`] and, like
+    /// [`IfThenElse::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, condition: PrimExpr, then_case: Stmt) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            condition,
+            then_case,
+            self.else_case.clone(),
+        )
     }
 }
 
@@ -1855,8 +2031,13 @@ impl std::ops::Deref for ForObj {
 }
 
 impl For {
-    /// Construct a serial loop with no thread binding, annotations, or custom step.
-    pub fn serial<V, M, E, B>(loop_var: V, minimum: M, extent: E, body: B) -> Result<Self>
+    // customized_new(For) begin
+    /// Construct a serial loop with no thread binding, annotations, custom
+    /// step, or source metadata.
+    ///
+    /// Every field the C++ constructor defaults, plus the loop kind, is fixed
+    /// here; use [`For::with_metadata`] for any other loop.
+    pub fn new<V, M, E, B>(loop_var: V, minimum: M, extent: E, body: B) -> Result<Self>
     where
         V: Into<Var>,
         M: Into<Expr>,
@@ -1875,6 +2056,7 @@ impl For {
             None,
         )
     }
+    // customized_new(For) end
 
     /// Construct a loop directly in Rust with TVM's bound normalization and validation.
     #[allow(clippy::too_many_arguments)]
@@ -1942,6 +2124,31 @@ impl For {
                 step,
             }),
         }
+    }
+
+    /// Copy this node with new `loop_var`, `min`, `extent`, `body`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`For::new`] and, like
+    /// [`For::from_complete_fields`], runs no validation.
+    pub fn copy_with(
+        &self,
+        loop_var: PrimVar,
+        min: PrimExpr,
+        extent: PrimExpr,
+        body: Stmt,
+    ) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            loop_var,
+            min,
+            extent,
+            self.kind,
+            body,
+            self.thread_binding.clone(),
+            self.annotations.clone(),
+            self.step.clone(),
+        )
     }
 }
 
@@ -2021,6 +2228,15 @@ impl While {
             }),
         }
     }
+
+    /// Copy this node with new `condition`, `body`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`While::new`] and, like
+    /// [`While::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, condition: PrimExpr, body: Stmt) -> Self {
+        Self::from_complete_fields(self.span.clone(), condition, body)
+    }
 }
 
 /// ABI-complete Rust representation of TVM's `ReturnNode`.
@@ -2081,6 +2297,15 @@ impl Return {
                 value,
             }),
         }
+    }
+
+    /// Copy this node with new `value`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Return::new`] and, like
+    /// [`Return::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, value: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), value)
     }
 }
 
@@ -2274,6 +2499,20 @@ impl AssertStmt {
             }),
         }
     }
+
+    /// Copy this node with new `condition`, `error_kind`, `message_parts`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`AssertStmt::with_metadata`] and, like
+    /// [`AssertStmt::from_complete_fields`], runs no validation.
+    pub fn copy_with(
+        &self,
+        condition: PrimExpr,
+        error_kind: StringImm,
+        message_parts: Array<StringImm>,
+    ) -> Self {
+        Self::from_complete_fields(self.span.clone(), condition, error_kind, message_parts)
+    }
 }
 
 impl Evaluate {
@@ -2309,6 +2548,15 @@ impl Evaluate {
                 value,
             }),
         }
+    }
+
+    /// Copy this node with new `value`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Evaluate::new`] and, like
+    /// [`Evaluate::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, value: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), value)
     }
 
     /// Construct `Evaluate(IntImm("int32", value))`.
@@ -2386,6 +2634,22 @@ impl PrimFunc {
                 body,
             }),
         }
+    }
+
+    /// Copy this function with new `params` and `body`; `ret_type`, `attrs`,
+    /// and `span` are carried over from `self`.
+    ///
+    /// Takes the same required fields as [`PrimFunc::new`]. The function type
+    /// is derived again from the new parameters through
+    /// [`PrimFunc::with_metadata`], which is why this returns `Result`.
+    pub fn copy_with(&self, params: Vec<Var>, body: Stmt) -> Result<Self> {
+        Self::with_metadata(
+            params,
+            body,
+            self.ret_type.clone(),
+            self.attrs.clone(),
+            self.span.as_ref(),
+        )
     }
 }
 
