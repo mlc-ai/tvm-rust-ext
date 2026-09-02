@@ -30,6 +30,7 @@ use crate::ir::{
 
 mod buffer;
 mod iter_var;
+mod tile_primitive;
 
 pub use buffer::{
     AllocBuffer, AllocBufferObj, Axis, AxisObj, BufferRegion, BufferRegionObj, BufferStore,
@@ -37,6 +38,11 @@ pub use buffer::{
     Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, TileLayout, TileLayoutObj,
 };
 pub use iter_var::{IterVar, IterVarObj, IterVarType};
+pub use tile_primitive::{
+    DispatchContext, DispatchContextObj, ExecScope, ExecScopeObj, LambdaExpr, LambdaExprObj,
+    ScopeBinding, ScopeIdDef, ScopeIdDefObj, ScopeIdDefStmt, ScopeIdDefStmtObj, ScopeKind,
+    TilePrimitiveCall, TilePrimitiveCallObj,
+};
 
 /// Checked scalar view over a `Var` whose expression type is `PrimType`.
 pub type PrimVar = TypedVar<PrimType>;
@@ -241,12 +247,22 @@ macro_rules! define_binary_expression {
 
 define_binary_expression!(SubObj, Sub, "tirx.Sub", "a subtraction expression");
 define_binary_expression!(MulObj, Mul, "tirx.Mul", "a multiplication expression");
+define_binary_expression!(DivObj, Div, "tirx.Div", "a truncating-division expression");
+define_binary_expression!(ModObj, Mod, "tirx.Mod", "a truncating-remainder expression");
 define_binary_expression!(
     FloorDivObj,
     FloorDiv,
     "tirx.FloorDiv",
     "a floor-division expression"
 );
+define_binary_expression!(
+    FloorModObj,
+    FloorMod,
+    "tirx.FloorMod",
+    "a floor-remainder expression"
+);
+define_binary_expression!(MinObj, Min, "tirx.Min", "a minimum expression");
+define_binary_expression!(MaxObj, Max, "tirx.Max", "a maximum expression");
 
 /// ABI-complete Rust representation of TVM's `tirx.EQ` node.
 #[repr(C)]
@@ -514,6 +530,96 @@ impl And {
     }
 }
 
+/// ABI-complete Rust representation of TVM's `tirx.Or` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Or"]
+#[type_final]
+pub struct OrObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+/// Reference-counted handle to a logical disjunction.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Or {
+    data: ObjectArc<OrObj>,
+}
+
+impl std::ops::Deref for Or {
+    type Target = OrObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for OrObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Or {
+    /// Construct a logical disjunction directly in Rust.
+    pub fn new<L, R>(lhs: L, rhs: R) -> Result<Self>
+    where
+        L: Into<Expr>,
+        R: Into<Expr>,
+    {
+        Self::with_span(lhs, rhs, None)
+    }
+
+    /// Construct a logical disjunction with optional source metadata.
+    pub fn with_span<L, R>(lhs: L, rhs: R, span: Option<&Span>) -> Result<Self>
+    where
+        L: Into<Expr>,
+        R: Into<Expr>,
+    {
+        let lhs = lhs.into();
+        let rhs = rhs.into();
+        let operand_type = matching_binary_type(&lhs, &rhs)?;
+        if operand_type.dtype.code != DLDataTypeCode::kDLBool as u8 {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "logical disjunction operands must have bool type",
+                "",
+            ));
+        }
+        let result_type = PrimType::from_dtype(DLDataType {
+            code: DLDataTypeCode::kDLBool as u8,
+            bits: 8,
+            lanes: operand_type.dtype.lanes,
+        })?;
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            result_type,
+            PrimExpr::try_from(lhs)?,
+            PrimExpr::try_from(rhs)?,
+        ))
+    }
+
+    /// Construct a disjunction from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(OrObj {
+                base: ExprObj::new(span, ty.into()),
+                a,
+                b,
+            }),
+        }
+    }
+}
+
 /// ABI-complete Rust representation of TVM's `tirx.Not` node.
 #[repr(C)]
 #[derive(Object)]
@@ -583,6 +689,234 @@ impl Not {
             data: ObjectArc::new(NotObj {
                 base: ExprObj::new(span, ty.into()),
                 a,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `tirx.Cast` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Cast"]
+#[type_final]
+pub struct CastObj {
+    base: ExprObj,
+    pub value: PrimExpr,
+}
+
+/// Reference-counted handle to a primitive cast expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Cast {
+    data: ObjectArc<CastObj>,
+}
+
+impl std::ops::Deref for Cast {
+    type Target = CastObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for CastObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Cast {
+    /// Cast a primitive expression while preserving its lane count.
+    pub fn new<V>(ty: PrimType, value: V) -> Result<Self>
+    where
+        V: Into<Expr>,
+    {
+        Self::with_span(ty, value, None)
+    }
+
+    /// Cast a primitive expression with optional source metadata.
+    pub fn with_span<V>(ty: PrimType, value: V, span: Option<&Span>) -> Result<Self>
+    where
+        V: Into<Expr>,
+    {
+        let value = PrimExpr::try_from(value.into())?;
+        if value.type_annotation().dtype.lanes != ty.dtype.lanes {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Cast must preserve the operand lane count",
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(span.cloned(), ty, value))
+    }
+
+    /// Construct a cast from every physical field after external validation.
+    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: PrimExpr) -> Self {
+        Self {
+            data: ObjectArc::new(CastObj {
+                base: ExprObj::new(span, ty.into()),
+                value,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `tirx.Ramp` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Ramp"]
+#[type_final]
+pub struct RampObj {
+    expr: ExprObj,
+    pub base: PrimExpr,
+    pub stride: PrimExpr,
+    pub lanes: PrimExpr,
+}
+
+/// Reference-counted handle to a vector ramp expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Ramp {
+    data: ObjectArc<RampObj>,
+}
+
+impl std::ops::Deref for Ramp {
+    type Target = RampObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for RampObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.expr
+    }
+}
+
+impl Ramp {
+    /// Construct a ramp from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        base: PrimExpr,
+        stride: PrimExpr,
+        lanes: PrimExpr,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(RampObj {
+                expr: ExprObj::new(span, ty.into()),
+                base,
+                stride,
+                lanes,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `tirx.Broadcast` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Broadcast"]
+#[type_final]
+pub struct BroadcastObj {
+    base: ExprObj,
+    pub value: PrimExpr,
+    pub lanes: PrimExpr,
+}
+
+/// Reference-counted handle to a vector broadcast expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Broadcast {
+    data: ObjectArc<BroadcastObj>,
+}
+
+impl std::ops::Deref for Broadcast {
+    type Target = BroadcastObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for BroadcastObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Broadcast {
+    /// Construct a broadcast from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        value: PrimExpr,
+        lanes: PrimExpr,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(BroadcastObj {
+                base: ExprObj::new(span, ty.into()),
+                value,
+                lanes,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `tirx.Shuffle` node.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Shuffle"]
+#[type_final]
+pub struct ShuffleObj {
+    base: ExprObj,
+    pub vectors: Array<PrimExpr>,
+    pub indices: Array<PrimExpr>,
+}
+
+/// Reference-counted handle to a vector shuffle expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Shuffle {
+    data: ObjectArc<ShuffleObj>,
+}
+
+impl std::ops::Deref for Shuffle {
+    type Target = ShuffleObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for ShuffleObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Shuffle {
+    /// Construct a shuffle from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        vectors: Array<PrimExpr>,
+        indices: Array<PrimExpr>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(ShuffleObj {
+                base: ExprObj::new(span, ty.into()),
+                vectors,
+                indices,
             }),
         }
     }
@@ -814,6 +1148,28 @@ impl std::ops::Deref for CommReducer {
 
     fn deref(&self) -> &Self::Target {
         &self.data
+    }
+}
+
+impl CommReducer {
+    /// Construct a reducer from every physical field after external validation.
+    pub fn from_complete_fields(
+        lhs: Array<PrimVar>,
+        rhs: Array<PrimVar>,
+        result: Array<PrimExpr>,
+        identity_element: Array<PrimExpr>,
+        span: Option<Span>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(CommReducerObj {
+                base: tvm_ffi::Object::new(),
+                lhs,
+                rhs,
+                result,
+                identity_element,
+                span,
+            }),
+        }
     }
 }
 
@@ -1667,6 +2023,127 @@ impl While {
     }
 }
 
+/// ABI-complete Rust representation of TVM's `ReturnNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.Return"]
+#[type_final]
+pub struct ReturnObj {
+    base: StmtObj,
+    pub value: Expr,
+}
+
+/// Reference-counted handle to a function return statement.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Return {
+    data: ObjectArc<ReturnObj>,
+}
+
+impl std::ops::Deref for Return {
+    type Target = ReturnObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for ReturnObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Return {
+    /// Construct a return statement directly in Rust.
+    pub fn new<V>(value: V) -> Self
+    where
+        V: Into<Expr>,
+    {
+        Self::with_span(value, None)
+    }
+
+    /// Construct a return statement with optional source metadata.
+    pub fn with_span<V>(value: V, span: Option<&Span>) -> Self
+    where
+        V: Into<Expr>,
+    {
+        Self::from_complete_fields(span.cloned(), value.into())
+    }
+
+    /// Construct a return statement from every physical field.
+    pub fn from_complete_fields(span: Option<Span>, value: Expr) -> Self {
+        Self {
+            data: ObjectArc::new(ReturnObj {
+                base: StmtObj::new(span),
+                value,
+            }),
+        }
+    }
+}
+
+macro_rules! define_control_flow_leaf {
+    ($object:ident, $reference:ident, $type_key:literal, $description:literal) => {
+        #[doc = concat!("ABI-complete Rust representation of TVM's `", $type_key, "` node.")]
+        #[repr(C)]
+        #[derive(Object)]
+        #[type_key = $type_key]
+        #[type_final]
+        pub struct $object {
+            base: StmtObj,
+        }
+
+        #[doc = concat!("Reference-counted handle to ", $description, ".")]
+        #[repr(C)]
+        #[derive(ObjectRef, Clone)]
+        pub struct $reference {
+            data: ObjectArc<$object>,
+        }
+
+        impl std::ops::Deref for $reference {
+            type Target = $object;
+
+            fn deref(&self) -> &Self::Target {
+                &self.data
+            }
+        }
+
+        impl std::ops::Deref for $object {
+            type Target = StmtObj;
+
+            fn deref(&self) -> &Self::Target {
+                &self.base
+            }
+        }
+
+        impl $reference {
+            /// Construct the control-flow statement directly in Rust.
+            pub fn new(span: Option<&Span>) -> Self {
+                Self::from_complete_fields(span.cloned())
+            }
+
+            /// Construct the statement from every physical field.
+            pub fn from_complete_fields(span: Option<Span>) -> Self {
+                Self {
+                    data: ObjectArc::new($object {
+                        base: StmtObj::new(span),
+                    }),
+                }
+            }
+        }
+    };
+}
+
+define_control_flow_leaf!(BreakObj, Break, "tirx.Break", "a loop break statement");
+define_control_flow_leaf!(
+    ContinueObj,
+    Continue,
+    "tirx.Continue",
+    "a loop continue statement"
+);
+
 fn require_scalar_integer(value: &Expr, field: &str) -> Result<DLDataType> {
     let dtype = primitive_type(value, field)?.dtype;
     let is_integer =
@@ -2015,8 +2492,18 @@ tvm_ffi::impl_object_upcast!(
     Sub => PrimExpr,
     Mul => Expr,
     Mul => PrimExpr,
+    Div => Expr,
+    Div => PrimExpr,
+    Mod => Expr,
+    Mod => PrimExpr,
     FloorDiv => Expr,
     FloorDiv => PrimExpr,
+    FloorMod => Expr,
+    FloorMod => PrimExpr,
+    Min => Expr,
+    Min => PrimExpr,
+    Max => Expr,
+    Max => PrimExpr,
     EQ => Expr,
     EQ => PrimExpr,
     NE => Expr,
@@ -2031,8 +2518,18 @@ tvm_ffi::impl_object_upcast!(
     GE => PrimExpr,
     And => Expr,
     And => PrimExpr,
+    Or => Expr,
+    Or => PrimExpr,
     Not => Expr,
     Not => PrimExpr,
+    Cast => Expr,
+    Cast => PrimExpr,
+    Ramp => Expr,
+    Ramp => PrimExpr,
+    Broadcast => Expr,
+    Broadcast => PrimExpr,
+    Shuffle => Expr,
+    Shuffle => PrimExpr,
     Select => Expr,
     Select => PrimExpr,
     Let => Expr,
@@ -2045,10 +2542,15 @@ tvm_ffi::impl_object_upcast!(
     AttrStmt => Stmt,
     For => Stmt,
     While => Stmt,
+    Return => Stmt,
+    Break => Stmt,
+    Continue => Stmt,
     AssertStmt => Stmt,
     Evaluate => Stmt,
     SeqStmt => Stmt,
     IfThenElse => Stmt,
+    ScopeIdDefStmt => Stmt,
+    TilePrimitiveCall => Stmt,
     PrimFunc => crate::ir::BaseFunc,
     PrimFunc => Expr,
 );

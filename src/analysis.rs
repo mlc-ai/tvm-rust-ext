@@ -26,8 +26,8 @@ use tvm_ffi::{
 
 use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
 use crate::tirx::{
-    AddObj, AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, MulObj, SeqStmtObj,
-    StmtObj, SubObj,
+    AddObj, AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, MulObj, PrimVar,
+    SeqStmtObj, StmtObj, SubObj,
 };
 
 /// Opaque Rust view of TVM's stateful arithmetic analyzer.
@@ -48,6 +48,62 @@ pub struct AnalyzerObj {
 #[derive(ObjectRef, Clone)]
 pub struct Analyzer {
     data: ObjectArc<AnalyzerObj>,
+}
+
+/// Inclusive constant-integer bounds computed by [`Analyzer`].
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "arith.ConstIntBound"]
+#[type_final]
+pub struct ConstIntBoundObj {
+    base: tvm_ffi::Object,
+    pub min_value: i64,
+    pub max_value: i64,
+}
+
+/// Reference-counted handle to one inclusive integer interval.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct ConstIntBound {
+    data: ObjectArc<ConstIntBoundObj>,
+}
+
+/// Congruence class inferred by TVM's arithmetic analyzer.
+///
+/// The represented set is `{coeff * x + base | x in Z}`.  Both fields are
+/// reflected by TVM, so this is an ABI-complete value view rather than an
+/// opaque analysis handle.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "arith.ModularSet"]
+#[type_final]
+pub struct ModularSetObj {
+    base: tvm_ffi::Object,
+    pub coeff: i64,
+    pub base_value: i64,
+}
+
+/// Reference-counted result of modular-set analysis.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct ModularSet {
+    data: ObjectArc<ModularSetObj>,
+}
+
+impl std::ops::Deref for ModularSet {
+    type Target = ModularSetObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for ConstIntBound {
+    type Target = ConstIntBoundObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
 }
 
 /// Opaque Rust view of TVM's arithmetic integer-set abstraction.
@@ -98,6 +154,27 @@ impl Analyzer {
     pub fn simplify_with_steps(&self, expression: &PrimExpr, steps: i32) -> Result<PrimExpr> {
         tvm_ffi::cached_global_func!("arith.AnalyzerSimplify")
             .call_tuple((self, expression, steps))?
+            .try_into()
+    }
+
+    /// Canonicalize one primitive expression with TVM's arithmetic normalizer.
+    pub fn canonical_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerCanonicalSimplify")
+            .call_tuple((self, expression))?
+            .try_into()
+    }
+
+    /// Return the analyzer's inclusive constant-integer bounds for `expression`.
+    pub fn const_int_bound(&self, expression: &PrimExpr) -> Result<ConstIntBound> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerConstIntBound")
+            .call_tuple((self, expression))?
+            .try_into()
+    }
+
+    /// Infer the modular set of `expression`.
+    pub fn modular_set(&self, expression: &PrimExpr) -> Result<ModularSet> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerModularSet")
+            .call_tuple((self, expression))?
             .try_into()
     }
 
@@ -164,6 +241,27 @@ impl Analyzer {
             .call_tuple((self, maximum))?;
         Ok(())
     }
+
+    /// Select optional rewrite-simplifier extensions by their native bitmask.
+    pub fn set_enabled_extensions(&self, extensions: i64) -> Result<()> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerSetEnabledExtensions")
+            .call_tuple((self, extensions))?;
+        Ok(())
+    }
+}
+
+/// Decompose `expression` as one linear coefficient per variable plus a base.
+///
+/// TVM returns an empty array when the expression is not linear in the given
+/// variables.  On success the final array element is the variable-independent
+/// base term.
+pub fn detect_linear_equation(
+    expression: &PrimExpr,
+    variables: Vec<PrimVar>,
+) -> Result<tvm_ffi::Array<PrimExpr>> {
+    tvm_ffi::cached_global_func!("arith.DetectLinearEquation")
+        .call_tuple((expression, tvm_ffi::Array::new(variables)))?
+        .try_into()
 }
 
 impl IntSet {
@@ -254,6 +352,20 @@ struct OpObj {
 #[derive(ObjectRef, Clone)]
 struct Op {
     data: ObjectArc<OpObj>,
+}
+
+/// Read a boolean attribute from a registry-owned operator.
+///
+/// Operator attributes belong to the native operator registry rather than to
+/// the reflected `Call` fields, so Rust intentionally uses TVM's existing
+/// language-independent lookup here.
+pub(crate) fn operator_bool_attr(operator: &crate::ir::Expr, name: &str) -> Result<Option<bool>> {
+    let Ok(operator) = operator.clone().try_cast::<Op>() else {
+        return Ok(None);
+    };
+    tvm_ffi::cached_global_func!("ir.OpGetAttr")
+        .call_tuple((operator, tvm_ffi::String::from(name)))?
+        .try_into()
 }
 
 struct SideEffectAnalyzer {

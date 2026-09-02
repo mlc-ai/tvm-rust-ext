@@ -191,7 +191,7 @@ impl LoopUnroller {
         }
     }
 
-    fn mutate_for(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
         let mutated = rewrite_loop_children(self, mutator, value)?;
         let extent = self.constant_extent(&mutated)?;
         let mut automatic = mutated.kind == ForKind::kSerial
@@ -274,10 +274,7 @@ impl LoopUnroller {
         if expression.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Evaluate::from_complete_fields(
-            value.span.clone(),
-            expression,
-        ))
+        Ok(value.with_value(expression))
     }
 
     fn mutate_sequence(&mut self, value: SeqStmt, mutator: &mut Mutator) -> Result<SeqStmt> {
@@ -300,16 +297,13 @@ impl LoopUnroller {
             self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
         }
         if changed {
-            Ok(SeqStmt::from_complete_fields(
-                value.span.clone(),
-                Array::new(sequence),
-            ))
+            Ok(value.with_statements(Array::new(sequence)))
         } else {
             Ok(value)
         }
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

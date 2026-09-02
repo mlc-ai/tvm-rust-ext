@@ -30,9 +30,10 @@
 //! The second half of the module serves passes rather than fresh
 //! construction.  A mutator that rewrites a node's children has to allocate a
 //! new node and copy every other field from the old one; `with_children`
-//! (and the smaller `with_kind`, `with_buffer`, `with_body`, `with_attr`,
-//! `with_functions`) takes only the replaced fields and copies the rest from
-//! `self`, exactly as the passes did by hand with `from_complete_fields`.
+//! (and the smaller `with_kind`, `with_buffer`, `with_value`, `with_statements`,
+//! `with_body`, `with_attr`, `without_attr`, and `with_functions`) takes only
+//! the replaced fields and copies the rest from `self`, exactly as the passes
+//! did by hand with `from_complete_fields`.
 //!
 //! Everything here is pure delegation.  A shorthand never validates,
 //! normalizes, or allocates on its own; it forwards to the full constructor,
@@ -48,9 +49,9 @@ use crate::ir::{
     Type, Var,
 };
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For,
-    ForKind, IfThenElse, IterVar, IterVarType, Layout, Let, PrimFunc, Reduce, Select, Stmt,
-    StringImm,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
+    Evaluate, For, ForKind, IfThenElse, IterVar, IterVarType, Layout, Let, PrimFunc, Reduce,
+    Select, SeqStmt, Stmt, StringImm, While,
 };
 
 // ---------------------------------------------------------------------------
@@ -242,6 +243,34 @@ impl AttrStmt {
             value,
             body,
         )
+    }
+}
+
+impl Bind {
+    /// Copy this binding with a new value; keeps `span` and `var`.
+    pub fn with_value(&self, value: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), self.var.clone(), value)
+    }
+}
+
+impl Evaluate {
+    /// Copy this evaluation statement with a new value; keeps `span`.
+    pub fn with_value(&self, value: Expr) -> Self {
+        Self::from_complete_fields(self.span.clone(), value)
+    }
+}
+
+impl While {
+    /// Copy this while loop with a new condition and body; keeps `span`.
+    pub fn with_children(&self, condition: PrimExpr, body: Stmt) -> Self {
+        Self::from_complete_fields(self.span.clone(), condition, body)
+    }
+}
+
+impl SeqStmt {
+    /// Copy this sequence with new statements; keeps `span`.
+    pub fn with_statements(&self, statements: Array<Stmt>) -> Self {
+        Self::from_complete_fields(self.span.clone(), statements)
     }
 }
 
@@ -458,6 +487,24 @@ impl PrimFunc {
             .collect::<Vec<_>>();
         attributes.push((key, value.into()));
         let attrs = DictAttrs::from_dictionary(Map::from_iter(attributes));
+        Self::from_complete_fields(
+            self.span.clone(),
+            self.ty.clone(),
+            attrs,
+            self.params.clone(),
+            self.ret_type.clone(),
+            self.body.clone(),
+        )
+    }
+
+    /// Copy this function without attribute `key`; every other field is kept.
+    pub fn without_attr(&self, key: &str) -> Self {
+        let attrs = DictAttrs::from_dictionary(Map::from_iter(
+            self.attrs
+                .dict
+                .iter()
+                .filter(|(existing, _)| existing.as_str() != key),
+        ));
         Self::from_complete_fields(
             self.span.clone(),
             self.ty.clone(),

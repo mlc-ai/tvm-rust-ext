@@ -519,11 +519,7 @@ impl SsaConverter {
             if condition.same_as(&value.condition) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(While::from_complete_fields(
-                value.span.clone(),
-                condition,
-                body,
-            ))
+            Ok(value.with_children(condition, body))
         })();
         self.exit_scope();
         converted
@@ -578,7 +574,7 @@ impl SsaConverter {
         ))
     }
 
-    fn mutate_decl_buffer(
+    fn mutate_declaration(
         &mut self,
         value: DeclBuffer,
         mutator: &mut Mutator,
@@ -592,7 +588,7 @@ impl SsaConverter {
         Ok(value.with_children(buffer, data))
     }
 
-    fn mutate_alloc_buffer(
+    fn mutate_allocation(
         &mut self,
         value: AllocBuffer,
         mutator: &mut Mutator,
@@ -628,7 +624,7 @@ impl SsaConverter {
         Ok(value.with_children(Expr::from(buffer), indices))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

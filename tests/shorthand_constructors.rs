@@ -28,9 +28,9 @@ use tvm::ir::{
     PrimExpr, PrimType, Range, SourceMap, SourceName, Span, TensorLoad, Type, Var,
 };
 use tvm::tirx::{
-    Add, AllocBuffer, AssertStmt, AttrStmt, BufferStore, BufferType, BufferVar, CommReducer,
+    Add, AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, CommReducer,
     DeclBuffer, Evaluate, For, ForKind, IfThenElse, IterVar, IterVarType, Let, Not, PrimFunc,
-    Reduce, Select, Stmt, StringImm, LT,
+    Reduce, Select, SeqStmt, Stmt, StringImm, While, LT,
 };
 use tvm::tvm_ffi::{Any, Array, Function, Map, ObjectRefCore, String};
 
@@ -400,6 +400,52 @@ fn attr_stmt_with_children_keeps_node_and_key() {
 }
 
 #[test]
+fn basic_statement_rebuilds_keep_unchanged_fields() {
+    load_tvm_compiler();
+    let variable = Var::new("x", "int32").unwrap();
+
+    let binding = Bind::with_span(variable.clone(), prim(1), Some(&span())).unwrap();
+    let binding_value: Expr = prim(2).into();
+    let rebuilt = binding.with_value(binding_value.clone());
+    assert_structural_equal(
+        &rebuilt,
+        &Bind::from_complete_fields(binding.span.clone(), variable, binding_value),
+    );
+
+    let evaluate = Evaluate::with_span(prim(1), Some(&span())).unwrap();
+    let evaluate_value: Expr = prim(2).into();
+    let rebuilt = evaluate.with_value(evaluate_value.clone());
+    assert_structural_equal(
+        &rebuilt,
+        &Evaluate::from_complete_fields(evaluate.span.clone(), evaluate_value),
+    );
+
+    let condition = LT::new(prim(0), prim(1)).unwrap();
+    let while_loop = While::with_span(&condition, loop_body(), Some(&span())).unwrap();
+    let new_body: Stmt = Evaluate::from_i64(2).unwrap().into();
+    let rebuilt = while_loop.with_children(condition.clone().into(), new_body.clone());
+    assert_structural_equal(
+        &rebuilt,
+        &While::from_complete_fields(while_loop.span.clone(), condition.into(), new_body),
+    );
+
+    let sequence = SeqStmt::with_span(
+        vec![loop_body(), Evaluate::from_i64(2).unwrap().into()],
+        Some(&span()),
+    )
+    .unwrap();
+    let statements = Array::new(vec![
+        Evaluate::from_i64(3).unwrap().into(),
+        Evaluate::from_i64(4).unwrap().into(),
+    ]);
+    let rebuilt = sequence.with_statements(statements.clone());
+    assert_structural_equal(
+        &rebuilt,
+        &SeqStmt::from_complete_fields(sequence.span.clone(), statements),
+    );
+}
+
+#[test]
 fn conditional_statements_with_children_keep_span() {
     load_tvm_compiler();
     let condition = LT::new(Var::new("i", "int32").unwrap(), int_expression("int32", 4)).unwrap();
@@ -764,6 +810,15 @@ fn prim_func_rebuilds_keep_type_and_metadata() {
     assert_eq!(added.attrs.dict.len(), 2);
     assert_eq!(original.attrs.dict.len(), 1);
     assert!(added.body.same_as(&original.body));
+    let removed = added.without_attr("global_symbol");
+    assert_eq!(removed.attrs.dict.len(), 1);
+    assert!(removed
+        .attrs
+        .dict
+        .get(&String::from("global_symbol"))
+        .unwrap()
+        .is_none());
+    assert!(removed.body.same_as(&original.body));
 
     let new_parameter = Var::new("m", "int32").unwrap();
     let with_children = original

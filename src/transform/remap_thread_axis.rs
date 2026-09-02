@@ -63,7 +63,7 @@ pub fn remap_thread_axis(thread_map: Map<FfiString, IterVar>) -> Result<Pass> {
 }
 
 struct ThreadAxisRewriter {
-    thread_map: HashMap<std::string::String, IterVar>,
+    thread_map: HashMap<String, IterVar>,
     variable_map: HashMap<ObjectIdentity, Var>,
     buffer_remaps: BufferRemaps,
 }
@@ -159,7 +159,7 @@ impl ThreadAxisRewriter {
         Ok(value.with_children(buffer, stored_value, indices))
     }
 
-    fn mutate_alloc_buffer(
+    fn mutate_allocation(
         &mut self,
         value: AllocBuffer,
         mutator: &mut Mutator,
@@ -171,7 +171,7 @@ impl ThreadAxisRewriter {
         Ok(value.with_buffer(buffer))
     }
 
-    fn mutate_decl_buffer(
+    fn mutate_declaration(
         &mut self,
         value: DeclBuffer,
         mutator: &mut Mutator,
@@ -184,7 +184,7 @@ impl ThreadAxisRewriter {
         Ok(value.with_children(buffer, data))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -215,9 +215,7 @@ fn mutate_regular_attribute(
     Ok(value.with_children(attr_value, body))
 }
 
-fn collect_thread_map(
-    thread_map: &Map<FfiString, IterVar>,
-) -> HashMap<std::string::String, IterVar> {
+fn collect_thread_map(thread_map: &Map<FfiString, IterVar>) -> HashMap<String, IterVar> {
     let mut collected = HashMap::with_capacity(thread_map.len());
     for (tag, iter_var) in thread_map.iter() {
         collected.insert(tag.as_str().to_owned(), iter_var);
@@ -227,7 +225,7 @@ fn collect_thread_map(
 
 fn remap_launch_params(
     function: PrimFunc,
-    thread_map: &HashMap<std::string::String, IterVar>,
+    thread_map: &HashMap<String, IterVar>,
 ) -> Result<PrimFunc> {
     let Some(value) = function
         .attrs

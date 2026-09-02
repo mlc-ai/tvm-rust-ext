@@ -174,11 +174,7 @@ impl NoOpRemover {
         if bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            value.var.clone(),
-            bound_value,
-        ))
+        Ok(value.with_value(bound_value))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
@@ -545,7 +541,7 @@ impl NoOpRemover {
         Ok(value.with_children(source.into(), indices))
     }
 
-    fn mutate_alloc_buffer(
+    fn mutate_allocation(
         &mut self,
         value: AllocBuffer,
         mutator: &mut Mutator,
@@ -557,7 +553,7 @@ impl NoOpRemover {
         Ok(value.with_buffer(buffer))
     }
 
-    fn mutate_decl_buffer(
+    fn mutate_declaration(
         &mut self,
         value: DeclBuffer,
         mutator: &mut Mutator,
@@ -570,7 +566,7 @@ impl NoOpRemover {
         Ok(value.with_children(buffer, data))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

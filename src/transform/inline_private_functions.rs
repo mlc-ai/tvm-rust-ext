@@ -117,12 +117,7 @@ fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<Obje
     for (caller_identity, (_, function)) in functions {
         let mut collector = VisitCallbacks::new(
             CallGraphState::default(),
-            (
-                visit_call,
-                visit_attribute,
-                visit_loop,
-                visit_stmt_expr_default_callback,
-            ),
+            (visit_call, visit_attribute, visit_loop, visit_default),
         );
         structural_visit(&function.body, &mut collector)?;
         call_graph.insert(caller_identity.clone(), collector.into_state().callees);
@@ -188,7 +183,7 @@ fn visit_loop(value: For, visitor: &mut VisitContext<'_, CallGraphState>) -> Res
     Ok(())
 }
 
-fn visit_stmt_expr_default_callback(
+fn visit_default(
     value: &VisitValue,
     visitor: &mut VisitContext<'_, CallGraphState>,
 ) -> Result<Option<VisitInterrupt>> {
@@ -265,7 +260,7 @@ impl PrimFuncInliner {
         Ok(value.with_children(buffer, stored_value, indices))
     }
 
-    fn mutate_alloc_buffer(
+    fn mutate_allocation(
         &mut self,
         value: AllocBuffer,
         mutator: &mut Mutator,
@@ -277,7 +272,7 @@ impl PrimFuncInliner {
         Ok(value.with_buffer(buffer))
     }
 
-    fn mutate_decl_buffer(
+    fn mutate_declaration(
         &mut self,
         value: DeclBuffer,
         mutator: &mut Mutator,
@@ -326,7 +321,7 @@ impl PrimFuncInliner {
         if evaluated.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
+        Ok(value.with_value(evaluated).into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
@@ -345,7 +340,7 @@ impl PrimFuncInliner {
         Ok(value.with_children(op, args))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

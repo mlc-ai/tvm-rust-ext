@@ -66,7 +66,7 @@ struct TIRxOpaqueLower {
 
 #[tvm_ffi::dispatch(mutate)]
 impl TIRxOpaqueLower {
-    fn mutate_for(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
         let minimum: PrimExpr = mutator.mutate(self, &value.min)?.try_into()?;
         let extent: PrimExpr = mutator.mutate(self, &value.extent)?.try_into()?;
         let is_unit_loop = int_value(&extent) == Some(1);
@@ -168,7 +168,7 @@ impl TIRxOpaqueLower {
         Ok(value.with_children(buffer, stored_value, indices))
     }
 
-    fn mutate_alloc_buffer(
+    fn mutate_allocation(
         &mut self,
         value: AllocBuffer,
         mutator: &mut Mutator,
@@ -180,7 +180,7 @@ impl TIRxOpaqueLower {
         Ok(value.with_buffer(buffer))
     }
 
-    fn mutate_decl_buffer(
+    fn mutate_declaration(
         &mut self,
         value: DeclBuffer,
         mutator: &mut Mutator,
@@ -193,7 +193,7 @@ impl TIRxOpaqueLower {
         Ok(value.with_children(buffer, data))
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

@@ -38,7 +38,7 @@ pub(super) fn int_value(expr: &Expr) -> Option<i64> {
 }
 
 pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Cast")
+    tvm_ffi::cached_global_func!("tirx._cast")
         .call_tuple((target, value, Option::<crate::ir::Span>::None))?
         .try_into()
 }
@@ -48,6 +48,10 @@ pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimEx
 pub(super) struct BufferRemaps(HashMap<ObjectIdentity, BufferVar>);
 
 impl BufferRemaps {
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+
     pub(super) fn use_buffer(&self, buffer: &BufferVar) -> BufferVar {
         self.0
             .get(&ObjectIdentity::of(buffer.as_var()))
@@ -91,7 +95,7 @@ impl BufferRemaps {
             .iter()
             .map(|expression| mutate(&expression))
             .collect::<Result<Vec<_>>>()?;
-        let layout = mutate_tile_layout(&old_type.layout, &mut mutate)?;
+        let layout = mutate_layout(&old_type.layout, &mut mutate)?;
         let shape = Array::new(shape);
         let strides = Array::new(strides);
         let allocated_addr = Array::new(allocated_addr);
@@ -114,7 +118,7 @@ impl BufferRemaps {
     }
 }
 
-fn mutate_tile_layout<F>(layout: &Option<Layout>, mutate: &mut F) -> Result<Option<Layout>>
+pub(super) fn mutate_layout<F>(layout: &Option<Layout>, mut mutate: F) -> Result<Option<Layout>>
 where
     F: FnMut(&PrimExpr) -> Result<PrimExpr>,
 {
@@ -141,11 +145,11 @@ where
     };
     let shard = old_shard
         .iter()
-        .map(|iter| remap(iter, mutate))
+        .map(|iter| remap(iter, &mut mutate))
         .collect::<Result<Vec<_>>>()?;
     let replica = old_replica
         .iter()
-        .map(|iter| remap(iter, mutate))
+        .map(|iter| remap(iter, &mut mutate))
         .collect::<Result<Vec<_>>>()?;
     let shard = Array::new(shard);
     let replica = Array::new(replica);
@@ -469,9 +473,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if bound_value.same_as(&bind.value) {
             return Ok(value);
         }
-        return Ok(
-            Bind::from_complete_fields(bind.span.clone(), bind.var.clone(), bound_value).into(),
-        );
+        return Ok(bind.with_value(bound_value).into());
     }
     if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
         let attr_value: PrimExpr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
@@ -503,7 +505,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if condition.same_as(&while_node.condition) && body.same_as(&while_node.body) {
             return Ok(value);
         }
-        return Ok(While::from_complete_fields(while_node.span.clone(), condition, body).into());
+        return Ok(while_node.with_children(condition, body).into());
     }
     if value.clone().try_cast::<AllocBuffer>().is_ok() {
         // Buffer-definition recursion requires a pass-specific remap table.
@@ -576,7 +578,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if evaluated.same_as(&evaluate.value) {
             return Ok(value);
         }
-        return Ok(Evaluate::from_complete_fields(evaluate.span.clone(), evaluated).into());
+        return Ok(evaluate.with_value(evaluated).into());
     }
     mutator.default_mutate(dispatch).and_then(Stmt::try_from)
 }
