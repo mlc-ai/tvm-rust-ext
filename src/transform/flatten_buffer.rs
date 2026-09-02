@@ -24,9 +24,7 @@ use tvm_ffi::{
     ObjectRefCore, Result,
 };
 
-use super::utils::{
-    mutate_expr_default, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
-};
+use super::utils::{mutate_expr_default, mutate_stmt_expr_default, option_same_as};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
@@ -100,7 +98,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
             }
         }
 
-        Ok(with_prim_func_body(function, body))
+        Ok(function.with_body(body))
     })();
     finish_constraints(
         result,
@@ -148,18 +146,7 @@ impl BufferFlattener {
         let layout = super::utils::mutate_layout(&old_type.layout, |value| {
             structural_mutate(value.clone(), &mut *self)?.try_into()
         })?;
-        let fold_type = BufferType::from_complete_fields(
-            old_type.span.clone(),
-            old_type.dtype.clone(),
-            old_type.storage_scope.clone(),
-            shape,
-            strides,
-            elem_offset,
-            old_type.data_alignment,
-            old_type.offset_factor,
-            layout,
-            allocated_addr,
-        );
+        let fold_type = old_type.with_children(shape, strides, elem_offset, layout, allocated_addr);
         let fold_view = rebuild_buffer(buffer, fold_type)?;
 
         let native_flattened = native_flatten_buffer(&fold_view)?;
@@ -174,15 +161,10 @@ impl BufferFlattener {
         } else {
             IntImm::from_dtype(flat_type.elem_offset.type_annotation().dtype, 0)?.into()
         };
-        let flat_type = BufferType::from_complete_fields(
-            flat_type.span.clone(),
-            flat_type.dtype.clone(),
-            flat_type.storage_scope.clone(),
+        let flat_type = flat_type.with_children(
             Array::new(shape),
             flat_type.strides.clone(),
             elem_offset,
-            flat_type.data_alignment,
-            flat_type.offset_factor,
             None,
             flat_type.allocated_addr.clone(),
         );
@@ -321,11 +303,7 @@ impl BufferFlattener {
         if flattened.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            flattened,
-            value.annotations.clone(),
-        ))
+        Ok(value.with_buffer(flattened))
     }
 
     fn mutate_declaration(
@@ -355,11 +333,7 @@ impl BufferFlattener {
         if flattened.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            flattened,
-            data,
-        ))
+        Ok(value.with_children(flattened, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -368,12 +342,7 @@ impl BufferFlattener {
         self.mark_used(&value.buffer);
         let info = self.lookup(&value.buffer)?.clone();
         let indices = self.fold_indices(&info, indices)?;
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            info.flattened,
-            stored_value,
-            indices,
-        ))
+        Ok(value.with_children(info.flattened, stored_value, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -408,17 +377,7 @@ impl BufferFlattener {
             {
                 return Ok(value);
             }
-            Ok(For::from_complete_fields(
-                value.span.clone(),
-                value.loop_var.clone(),
-                minimum,
-                extent,
-                value.kind,
-                body,
-                value.thread_binding.clone(),
-                value.annotations.clone(),
-                step,
-            ))
+            Ok(value.with_children(minimum, extent, body, step))
         })
     }
 
@@ -438,13 +397,7 @@ impl BufferFlattener {
             if attr_value.same_as(&value.value) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(AttrStmt::from_complete_fields(
-                value.span.clone(),
-                value.node.clone(),
-                value.attr_key.clone(),
-                attr_value,
-                body,
-            ))
+            Ok(value.with_children(attr_value, body))
         })
     }
 
@@ -475,10 +428,7 @@ impl BufferFlattener {
         {
             return Ok(value.into());
         }
-        Ok(
-            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case)
-                .into(),
-        )
+        Ok(value.with_children(condition, then_case, else_case).into())
     }
 
     fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -502,14 +452,9 @@ impl BufferFlattener {
         {
             return Ok(value.into());
         }
-        Ok(Select::from_complete_fields(
-            value.span.clone(),
-            true_value.type_annotation(),
-            condition,
-            true_value,
-            false_value,
-        )
-        .into())
+        Ok(value
+            .with_children(condition, true_value, false_value)
+            .into())
     }
 
     fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
@@ -561,15 +506,12 @@ impl BufferFlattener {
             if is_zero(&condition) {
                 return Ok(false_value);
             }
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                value.ty.clone(),
-                value.op.clone(),
-                Array::new(vec![condition.into(), true_value, false_value]),
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .with_children(
+                    value.op.clone(),
+                    Array::new(vec![condition.into(), true_value, false_value]),
+                )
+                .into());
         }
 
         mutate_expr_default(self, mutator, value.into())
@@ -603,15 +545,9 @@ impl BufferFlattener {
         arguments.extend(indices.iter().map(Into::into));
         let mask = value.args.get(value.args.len() - 1)?;
         arguments.push(mutator.mutate(self, &mask)?.try_into()?);
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            value.op.clone(),
-            Array::new(arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .with_children(value.op.clone(), Array::new(arguments))
+            .into())
     }
 }
 

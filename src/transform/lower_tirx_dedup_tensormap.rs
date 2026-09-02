@@ -25,9 +25,7 @@ use tvm_ffi::{
     VisitValue,
 };
 
-use super::utils::{
-    int_value, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
-};
+use super::utils::{int_value, mutate_stmt_expr_default, visit_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, PrimExpr, Var};
 use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, StringImm, While};
@@ -54,7 +52,7 @@ pub fn lower_tirx_dedup_cu_tensor_maps_prim_func(function: PrimFunc) -> Result<P
     }
     let mut rewriter = DedupRewriter::new(analysis.operators, analysis.variable_remaps);
     let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
-    Ok(with_prim_func_body(function, body))
+    Ok(function.with_body(body))
 }
 
 /// Build TVM's `tirx.LowerTIRxDedupCuTensorMaps` pass in Rust.
@@ -240,17 +238,7 @@ impl DedupRewriter {
         {
             return Ok(value);
         }
-        Ok(For::from_complete_fields(
-            value.span.clone(),
-            value.loop_var.clone(),
-            minimum,
-            extent,
-            value.kind,
-            body,
-            value.thread_binding.clone(),
-            value.annotations.clone(),
-            value.step.clone(),
-        ))
+        Ok(value.with_children(minimum, extent, body, value.step.clone()))
     }
 
     fn mutate_while(&mut self, value: While, mutator: &mut Mutator) -> Result<While> {
@@ -259,11 +247,7 @@ impl DedupRewriter {
         if condition.same_as(&value.condition) && body.same_as(&value.body) {
             return Ok(value);
         }
-        Ok(While::from_complete_fields(
-            value.span.clone(),
-            condition,
-            body,
-        ))
+        Ok(value.with_children(condition, body))
     }
 
     fn mutate_conditional(
@@ -284,12 +268,7 @@ impl DedupRewriter {
         {
             return Ok(value);
         }
-        Ok(IfThenElse::from_complete_fields(
-            value.span.clone(),
-            condition,
-            then_case,
-            else_case,
-        ))
+        Ok(value.with_children(condition, then_case, else_case))
     }
 
     fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Stmt> {
@@ -304,7 +283,7 @@ impl DedupRewriter {
         if mapped_value.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(Bind::from_complete_fields(value.span.clone(), value.var.clone(), mapped_value).into())
+        Ok(value.with_value(mapped_value).into())
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
@@ -312,7 +291,7 @@ impl DedupRewriter {
         let mapped = if mapped_value.same_as(&value.value) {
             value
         } else {
-            Evaluate::from_complete_fields(value.span.clone(), mapped_value)
+            value.with_value(mapped_value)
         };
         let Ok(call) = mapped.value.clone().try_cast::<Call>() else {
             return Ok(mapped);

@@ -26,7 +26,7 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, cast_prim_expr, mutate_expr_default, mutate_stmt_expr_default, option_same_as,
-    with_prim_func_body, BufferRemaps,
+    BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
@@ -87,16 +87,9 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
     narrower.enabled = old_enabled;
 
     let body: Stmt = structural_mutate(function.body.clone(), &mut narrower)?.try_into()?;
-    let mut result = with_prim_func_body(function, body);
+    let mut result = function.with_body(body);
     if !array_same_as(&Array::new(params.clone()), &result.params) {
-        result = PrimFunc::from_complete_fields(
-            result.span.clone(),
-            result.ty.clone(),
-            result.attrs.clone(),
-            Array::new(params),
-            result.ret_type.clone(),
-            result.body.clone(),
-        );
+        result = result.with_children(params, result.body.clone(), result.attrs.clone())?;
     }
     Ok(result)
 }
@@ -291,13 +284,7 @@ impl IndexDataTypeNormalizer {
                 ))
             })
             .transpose()?;
-        let mapped = IterVar::with_metadata(
-            domain,
-            variable,
-            iteration.iter_type()?,
-            iteration.thread_tag()?.as_str(),
-            iteration.span()?.as_ref(),
-        )?;
+        let mapped = iteration.with_children(domain, variable)?;
         self.iter_var_remap.insert(identity, mapped.clone());
         Ok(mapped)
     }
@@ -622,12 +609,7 @@ impl IndexDataTypeNormalizer {
         {
             return Ok(value);
         }
-        Ok(IfThenElse::from_complete_fields(
-            value.span.clone(),
-            condition,
-            then_case,
-            else_case,
-        ))
+        Ok(value.with_children(condition, then_case, else_case))
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
@@ -657,11 +639,7 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.with_buffer(buffer))
     }
 
     fn mutate_declaration(
@@ -674,11 +652,7 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(crate::tirx::DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.with_children(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -697,12 +671,7 @@ impl IndexDataTypeNormalizer {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        ))
+        Ok(value.with_children(buffer, stored_value, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {

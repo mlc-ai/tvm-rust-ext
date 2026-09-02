@@ -242,14 +242,7 @@ fn rewrite_subroutine_calls(
     if body.same_as(&function.body) {
         Ok(function)
     } else {
-        Ok(PrimFunc::from_complete_fields(
-            function.span.clone(),
-            function.ty.clone(),
-            function.attrs.clone(),
-            function.params.clone(),
-            function.ret_type.clone(),
-            body,
-        ))
+        Ok(function.with_body(body))
     }
 }
 
@@ -1274,14 +1267,9 @@ fn replace_attributes<const N: usize>(
 fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
     for statement in statements.iter().rev() {
         if let Ok(attribute) = statement.clone().try_cast::<AttrStmt>() {
-            body = AttrStmt::from_complete_fields(
-                attribute.span.clone(),
-                attribute.node.clone(),
-                attribute.attr_key.clone(),
-                attribute.value.clone(),
-                body,
-            )
-            .into();
+            body = attribute
+                .with_children(attribute.value.clone(), body)
+                .into();
         } else if statement.clone().try_cast::<Bind>().is_ok()
             || statement
                 .clone()
@@ -1291,24 +1279,16 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
         {
             body = Stmt::sequence(vec![statement.clone(), body])?;
         } else if let Ok(conditional) = statement.clone().try_cast::<crate::tirx::IfThenElse>() {
-            body = crate::tirx::IfThenElse::from_complete_fields(
-                conditional.span.clone(),
-                conditional.condition.clone(),
-                body,
-                None,
-            )
-            .into();
+            body = conditional
+                .with_children(conditional.condition.clone(), body, None)
+                .into();
         } else if let Ok(sequence) = statement.clone().try_cast::<crate::tirx::SeqStmt>() {
             let mut prefix = sequence.seq.iter().collect::<Vec<_>>();
             if !prefix.is_empty() {
                 prefix.pop();
             }
             prefix.push(body);
-            body = crate::tirx::SeqStmt::from_complete_fields(
-                sequence.span.clone(),
-                Array::new(prefix),
-            )
-            .into();
+            body = sequence.with_statements(Array::new(prefix)).into();
         } else {
             return Err(value_error(
                 "unsupported statement in packed ABI binding nest",

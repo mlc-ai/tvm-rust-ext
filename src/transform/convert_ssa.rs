@@ -519,11 +519,7 @@ impl SsaConverter {
             if condition.same_as(&value.condition) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(While::from_complete_fields(
-                value.span.clone(),
-                condition,
-                body,
-            ))
+            Ok(value.with_children(condition, body))
         })();
         self.exit_scope();
         converted

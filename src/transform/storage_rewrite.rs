@@ -26,9 +26,7 @@ use tvm_ffi::{
 };
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
-use super::utils::{
-    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
-};
+use super::utils::{array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
@@ -64,7 +62,7 @@ pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         statements.push(rewritten);
         Stmt::sequence(statements)?
     };
-    let function = with_prim_func_body(function, body);
+    let function = function.with_body(body);
 
     // Match the native pass's final storage-type normalization.  Parameters
     // stay unchanged; only internal allocation/view element types and indices
@@ -562,21 +560,13 @@ impl StoragePlanRewriter {
             if data.same_as(&value.data) {
                 return Ok(value.into());
             }
-            return Ok(DeclBuffer::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                data,
-            )
-            .into());
+            return Ok(value.with_children(value.buffer.clone(), data).into());
         };
         let (_, remap) = self.plan.remap(&value.buffer).expect("remapped buffer");
         let storage = &self.plan.storage[remap.storage];
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            buffer_data(&storage.backing)?,
-        )
-        .into())
+        Ok(value
+            .with_children(buffer, buffer_data(&storage.backing)?)
+            .into())
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -603,19 +593,12 @@ impl StoragePlanRewriter {
             if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
                 return Ok(value.into());
             }
-            return Ok(BufferStore::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                stored_value,
-                indices,
-            )
-            .into());
+            return Ok(value
+                .with_children(value.buffer.clone(), stored_value, indices)
+                .into());
         };
         let indices = self.remap_indices(&value.buffer, indices, bit_offset)?;
-        Ok(
-            BufferStore::from_complete_fields(value.span.clone(), buffer, stored_value, indices)
-                .into(),
-        )
+        Ok(value.with_children(buffer, stored_value, indices).into())
     }
 
     fn mutate_variable(&mut self, value: Var) -> Result<Expr> {

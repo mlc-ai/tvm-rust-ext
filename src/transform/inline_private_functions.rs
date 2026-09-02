@@ -321,7 +321,7 @@ impl PrimFuncInliner {
         if evaluated.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
+        Ok(value.with_value(evaluated).into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {

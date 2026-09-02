@@ -25,7 +25,6 @@ use tvm_ffi::{
 };
 
 use super::force_narrow_index::IndexDataTypeNormalizer;
-use super::utils::with_prim_func_body;
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
@@ -59,7 +58,7 @@ pub fn narrow_data_type_prim_func(function: PrimFunc, target_bits: u8) -> Result
     let selected_types = collector.into_state().selected_types;
     let mut normalizer = IndexDataTypeNormalizer::from_selected_types(target, selected_types)?;
     let body: Stmt = structural_mutate(function.body.clone(), &mut normalizer)?.try_into()?;
-    Ok(with_prim_func_body(function, body))
+    Ok(function.with_body(body))
 }
 
 /// Build TVM's `tirx.NarrowDataType` PrimFunc pass in Rust.

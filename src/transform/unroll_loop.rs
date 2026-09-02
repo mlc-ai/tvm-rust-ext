@@ -274,10 +274,7 @@ impl LoopUnroller {
         if expression.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Evaluate::from_complete_fields(
-            value.span.clone(),
-            expression,
-        ))
+        Ok(value.with_value(expression))
     }
 
     fn mutate_sequence(&mut self, value: SeqStmt, mutator: &mut Mutator) -> Result<SeqStmt> {
@@ -300,10 +297,7 @@ impl LoopUnroller {
             self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
         }
         if changed {
-            Ok(SeqStmt::from_complete_fields(
-                value.span.clone(),
-                Array::new(sequence),
-            ))
+            Ok(value.with_statements(Array::new(sequence)))
         } else {
             Ok(value)
         }

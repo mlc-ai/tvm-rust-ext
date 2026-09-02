@@ -174,11 +174,7 @@ impl NoOpRemover {
         if bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            value.var.clone(),
-            bound_value,
-        ))
+        Ok(value.with_value(bound_value))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {

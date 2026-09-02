@@ -473,9 +473,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if bound_value.same_as(&bind.value) {
             return Ok(value);
         }
-        return Ok(
-            Bind::from_complete_fields(bind.span.clone(), bind.var.clone(), bound_value).into(),
-        );
+        return Ok(bind.with_value(bound_value).into());
     }
     if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
         let attr_value: PrimExpr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
@@ -507,7 +505,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if condition.same_as(&while_node.condition) && body.same_as(&while_node.body) {
             return Ok(value);
         }
-        return Ok(While::from_complete_fields(while_node.span.clone(), condition, body).into());
+        return Ok(while_node.with_children(condition, body).into());
     }
     if value.clone().try_cast::<AllocBuffer>().is_ok() {
         // Buffer-definition recursion requires a pass-specific remap table.
@@ -580,7 +578,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if evaluated.same_as(&evaluate.value) {
             return Ok(value);
         }
-        return Ok(Evaluate::from_complete_fields(evaluate.span.clone(), evaluated).into());
+        return Ok(evaluate.with_value(evaluated).into());
     }
     mutator.default_mutate(dispatch).and_then(Stmt::try_from)
 }
