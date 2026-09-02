@@ -29,14 +29,11 @@ use super::utils::{
     array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{
-    Call, CallObj, Expr, FloatImmObj, IntImmObj, PrimExpr, TensorLoad, TensorLoadObj, Var, VarObj,
-};
+use crate::ir::{Call, Expr, FloatImm, IntImm, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    AddObj, AllocBuffer, AndObj, AttrStmt, Bind, BufferStore, BufferVar, CastObj, DeclBuffer,
-    DivObj, EQObj, FloorDivObj, FloorModObj, For, GEObj, GTObj, IfThenElse, LEObj, LTObj, Let,
-    LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, PrimFunc, Reduce, SelectObj,
-    SeqStmt, Stmt, StringImmObj, SubObj, TileLayout, While,
+    Add, AllocBuffer, And, AttrStmt, Bind, BufferStore, BufferVar, Cast, DeclBuffer, Div, FloorDiv,
+    FloorMod, For, IfThenElse, Let, Max, Min, Mod, Mul, Not, Or, PrimFunc, Reduce, Select, SeqStmt,
+    Stmt, StringImm, Sub, TileLayout, While, EQ, GE, GT, LE, LT, NE,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -73,43 +70,29 @@ enum ExprClass {
     Other,
 }
 
+fn type_index_of<T: ObjectRefCore>() -> i32 {
+    <T::ContainerType as ObjectCore>::type_index()
+}
+
 fn expr_class(type_index: i32) -> ExprClass {
     macro_rules! is_one_of {
         ($($node:ty),+ $(,)?) => {
-            $(type_index == <$node>::type_index())||+
+            $(type_index == type_index_of::<$node>())||+
         };
     }
 
-    if is_one_of!(VarObj, IntImmObj, FloatImmObj, StringImmObj) {
+    if is_one_of!(Var, IntImm, FloatImm, StringImm) {
         ExprClass::Leaf
     } else if is_one_of!(
-        AddObj,
-        SubObj,
-        MulObj,
-        DivObj,
-        ModObj,
-        FloorDivObj,
-        FloorModObj,
-        MinObj,
-        MaxObj,
-        EQObj,
-        NEObj,
-        LTObj,
-        LEObj,
-        GTObj,
-        GEObj,
-        AndObj,
-        OrObj,
-        NotObj,
-        CastObj,
-        SelectObj,
+        Add, Sub, Mul, Div, Mod, FloorDiv, FloorMod, Min, Max, EQ, NE, LT, LE, GT, GE, And, Or,
+        Not, Cast, Select,
     ) {
         ExprClass::Recordable
-    } else if type_index == LetObj::type_index() {
+    } else if is_one_of!(Let) {
         ExprClass::Let
-    } else if type_index == CallObj::type_index() {
+    } else if is_one_of!(Call) {
         ExprClass::Call
-    } else if type_index == TensorLoadObj::type_index() {
+    } else if is_one_of!(TensorLoad) {
         ExprClass::TensorLoad
     } else {
         ExprClass::Other
