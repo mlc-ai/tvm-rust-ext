@@ -20,14 +20,17 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    Any, Array, MapValue, MutateDispatch, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore,
-    Result, VisitContext, VisitInterrupt, VisitValue,
+    Any, Array, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
 };
 
-use crate::ir::{Call, Expr, IntImm, OpaqueExpr, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::ir::{
+    Call, DictAttrs, Expr, IntImm, OpaqueExpr, PrimExpr, PrimType, Range, TensorLoad, Var,
+};
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
-    IfThenElse, Iter, Layout, Let, Reduce, Select, SeqStmt, Stmt, StringImm, TileLayout, While,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
+    Evaluate, For, IfThenElse, Iter, IterVar, Layout, Let, PrimFunc, Reduce, Select, SeqStmt, Stmt,
+    StringImm, TileLayout, While,
 };
 
 pub(super) fn int_value(expr: &Expr) -> Option<i64> {
@@ -35,6 +38,59 @@ pub(super) fn int_value(expr: &Expr) -> Option<i64> {
         .try_cast::<IntImm>()
         .ok()
         .map(|value| value.value)
+}
+
+pub(super) fn with_prim_func_body(function: PrimFunc, body: Stmt) -> PrimFunc {
+    PrimFunc::from_complete_fields(
+        function.span.clone(),
+        function.ty.clone(),
+        function.attrs.clone(),
+        function.params.clone(),
+        function.ret_type.clone(),
+        body,
+    )
+}
+
+pub(super) fn with_prim_func_attr(
+    function: PrimFunc,
+    key: &str,
+    value: impl Into<Any>,
+) -> PrimFunc {
+    let key = String::from(key);
+    let mut attributes = function
+        .attrs
+        .dict
+        .iter()
+        .filter(|(existing, _)| existing.as_str() != key.as_str())
+        .collect::<Vec<_>>();
+    attributes.push((key, value.into()));
+    let attrs = DictAttrs::from_dictionary(Map::from_iter(attributes));
+    PrimFunc::from_complete_fields(
+        function.span.clone(),
+        function.ty.clone(),
+        attrs,
+        function.params.clone(),
+        function.ret_type.clone(),
+        function.body.clone(),
+    )
+}
+
+pub(super) fn without_prim_func_attr(function: PrimFunc, key: &str) -> PrimFunc {
+    let attrs = DictAttrs::from_dictionary(Map::from_iter(
+        function
+            .attrs
+            .dict
+            .iter()
+            .filter(|(existing, _)| existing.as_str() != key),
+    ));
+    PrimFunc::from_complete_fields(
+        function.span.clone(),
+        function.ty.clone(),
+        attrs,
+        function.params.clone(),
+        function.ret_type.clone(),
+        function.body.clone(),
+    )
 }
 
 pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
@@ -107,7 +163,18 @@ impl BufferRemaps {
         {
             return Ok(buffer.clone());
         }
-        let new_type = old_type.with_children(shape, strides, elem_offset, layout, allocated_addr);
+        let new_type = BufferType::from_complete_fields(
+            old_type.span.clone(),
+            old_type.dtype.clone(),
+            old_type.storage_scope.clone(),
+            shape,
+            strides,
+            elem_offset,
+            old_type.data_alignment,
+            old_type.offset_factor,
+            layout,
+            allocated_addr,
+        );
         let mapped = BufferVar::try_from(Var::from_complete_fields(
             buffer.span.clone(),
             new_type.into(),
@@ -397,7 +464,13 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if array_same_as(&indices, &load.indices) {
             return Ok(value);
         }
-        return Ok(load.with_children(load.source.clone(), indices).into());
+        return Ok(TensorLoad::from_complete_fields(
+            load.span.clone(),
+            load.ty.clone().try_cast()?,
+            load.source.clone(),
+            indices,
+        )
+        .into());
     }
     if let Ok(call) = value.clone().try_cast::<Call>() {
         let op = if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
@@ -409,7 +482,15 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if op.same_as(&call.op) && array_same_as(&args, &call.args) {
             return Ok(value);
         }
-        return Ok(call.with_children(op, args).into());
+        return Ok(Call::from_complete_fields(
+            call.span.clone(),
+            call.ty.clone(),
+            op,
+            args,
+            call.attrs.clone(),
+            call.ty_args.clone(),
+        )
+        .into());
     }
     if let Ok(let_expr) = value.clone().try_cast::<Let>() {
         let bound_value: PrimExpr = mutator.mutate(dispatch, &let_expr.value)?.try_into()?;
@@ -417,7 +498,14 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if bound_value.same_as(&let_expr.value) && body.same_as(&let_expr.body) {
             return Ok(value);
         }
-        return Ok(let_expr.with_children(bound_value, body).into());
+        return Ok(Let::from_complete_fields(
+            let_expr.span.clone(),
+            body.type_annotation(),
+            let_expr.var.clone(),
+            bound_value,
+            body,
+        )
+        .into());
     }
     if let Ok(select) = value.clone().try_cast::<Select>() {
         let condition: PrimExpr = mutator.mutate(dispatch, &select.condition)?.try_into()?;
@@ -429,9 +517,14 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         {
             return Ok(value);
         }
-        return Ok(select
-            .with_children(condition, true_value, false_value)
-            .into());
+        return Ok(Select::from_complete_fields(
+            select.span.clone(),
+            true_value.type_annotation(),
+            condition,
+            true_value,
+            false_value,
+        )
+        .into());
     }
     if let Ok(reduce) = value.clone().try_cast::<Reduce>() {
         let mut axes = Vec::with_capacity(reduce.axis.len());
@@ -444,7 +537,13 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
             if option_same_as(&domain, &old_domain) {
                 axes.push(axis);
             } else {
-                axes.push(axis.with_children(domain, axis.var()?.as_var().clone())?);
+                axes.push(IterVar::with_metadata(
+                    domain,
+                    axis.var()?.as_var().clone(),
+                    axis.iter_type()?,
+                    axis.thread_tag()?.as_str(),
+                    axis.span()?.as_ref(),
+                )?);
             }
         }
         let source: Array<PrimExpr> = mutator.mutate(dispatch, &reduce.source)?.try_into()?;
@@ -458,7 +557,17 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         {
             return Ok(value);
         }
-        return Ok(reduce.with_children(source, init, axes, condition).into());
+        return Ok(Reduce::from_complete_fields(
+            reduce.span.clone(),
+            reduce.ty.clone().try_cast()?,
+            reduce.combiner.clone(),
+            source,
+            init,
+            axes,
+            condition,
+            reduce.value_index,
+        )
+        .into());
     }
     mutator.default_mutate(dispatch).and_then(Expr::try_from)
 }
@@ -473,7 +582,9 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if bound_value.same_as(&bind.value) {
             return Ok(value);
         }
-        return Ok(bind.with_value(bound_value).into());
+        return Ok(
+            Bind::from_complete_fields(bind.span.clone(), bind.var.clone(), bound_value).into(),
+        );
     }
     if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
         let attr_value: PrimExpr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
@@ -481,7 +592,14 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if attr_value.same_as(&attribute.value) && body.same_as(&attribute.body) {
             return Ok(value);
         }
-        return Ok(attribute.with_children(attr_value, body).into());
+        return Ok(AttrStmt::from_complete_fields(
+            attribute.span.clone(),
+            attribute.node.clone(),
+            attribute.attr_key.clone(),
+            attr_value,
+            body,
+        )
+        .into());
     }
     if let Ok(loop_node) = value.clone().try_cast::<For>() {
         let minimum: PrimExpr = mutator.mutate(dispatch, &loop_node.min)?.try_into()?;
@@ -495,7 +613,18 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         {
             return Ok(value);
         }
-        return Ok(loop_node.with_children(minimum, extent, body, step).into());
+        return Ok(For::from_complete_fields(
+            loop_node.span.clone(),
+            loop_node.loop_var.clone(),
+            minimum,
+            extent,
+            loop_node.kind,
+            body,
+            loop_node.thread_binding.clone(),
+            loop_node.annotations.clone(),
+            step,
+        )
+        .into());
     }
     if let Ok(while_node) = value.clone().try_cast::<While>() {
         let condition: PrimExpr = mutator
@@ -505,7 +634,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if condition.same_as(&while_node.condition) && body.same_as(&while_node.body) {
             return Ok(value);
         }
-        return Ok(while_node.with_children(condition, body).into());
+        return Ok(While::from_complete_fields(while_node.span.clone(), condition, body).into());
     }
     if value.clone().try_cast::<AllocBuffer>().is_ok() {
         // Buffer-definition recursion requires a pass-specific remap table.
@@ -517,9 +646,12 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if data.same_as(&declaration.data) {
             return Ok(value);
         }
-        return Ok(declaration
-            .with_children(declaration.buffer.clone(), data)
-            .into());
+        return Ok(DeclBuffer::from_complete_fields(
+            declaration.span.clone(),
+            declaration.buffer.clone(),
+            data,
+        )
+        .into());
     }
     if let Ok(store) = value.clone().try_cast::<BufferStore>() {
         let stored_value: PrimExpr = mutator.mutate(dispatch, &store.value)?.try_into()?;
@@ -527,9 +659,13 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if stored_value.same_as(&store.value) && array_same_as(&indices, &store.indices) {
             return Ok(value);
         }
-        return Ok(store
-            .with_children(store.buffer.clone(), stored_value, indices)
-            .into());
+        return Ok(BufferStore::from_complete_fields(
+            store.span.clone(),
+            store.buffer.clone(),
+            stored_value,
+            indices,
+        )
+        .into());
     }
     if let Ok(conditional) = value.clone().try_cast::<IfThenElse>() {
         let condition: PrimExpr = mutator
@@ -547,9 +683,13 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         {
             return Ok(value);
         }
-        return Ok(conditional
-            .with_children(condition, then_case, else_case)
-            .into());
+        return Ok(IfThenElse::from_complete_fields(
+            conditional.span.clone(),
+            condition,
+            then_case,
+            else_case,
+        )
+        .into());
     }
     if let Ok(assertion) = value.clone().try_cast::<AssertStmt>() {
         let condition: PrimExpr = mutator.mutate(dispatch, &assertion.condition)?.try_into()?;
@@ -565,9 +705,13 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         {
             return Ok(value);
         }
-        return Ok(assertion
-            .with_children(condition, error_kind, message_parts)
-            .into());
+        return Ok(AssertStmt::from_complete_fields(
+            assertion.span.clone(),
+            condition,
+            error_kind,
+            message_parts,
+        )
+        .into());
     }
     if let Ok(sequence) = value.clone().try_cast::<SeqStmt>() {
         let statements: Array<Stmt> = mutator.mutate(dispatch, &sequence.seq)?.try_into()?;
@@ -578,7 +722,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         if evaluated.same_as(&evaluate.value) {
             return Ok(value);
         }
-        return Ok(evaluate.with_value(evaluated).into());
+        return Ok(Evaluate::from_complete_fields(evaluate.span.clone(), evaluated).into());
     }
     mutator.default_mutate(dispatch).and_then(Stmt::try_from)
 }

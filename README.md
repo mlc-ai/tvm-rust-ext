@@ -63,27 +63,6 @@ semantic `new(...)` keep the exact physical allocator under the explicit
 `from_complete_fields(...)` name because Rust cannot overload the two
 signatures.
 
-Shorthand constructors that take only the required fields, such as
-`For::new`, `For::thread_bound`, `IterVar::thread_index`,
-`PrimFunc::with_attrs`, and `IRModule::from_functions`, are kept apart in
-[`src/shorthand.rs`](src/shorthand.rs). Each one fills the metadata callers
-rarely change (`span`, annotations, thread bindings, source maps, return
-types) with the C++ defaults and delegates to the full constructor, so it adds
-no validation or allocation logic of its own and is not part of the mechanical
-stubgen surface. The same module holds the rebuild shorthands the passes use
-when a mutator replaces a node's children: `with_children` on `For`,
-`AttrStmt`, `IfThenElse`, `AssertStmt`, `BufferStore`, `DeclBuffer`,
-`TensorLoad`, `Call`, `Let`, `Select`, `Reduce`, `IterVar`, `BufferType`, and
-`PrimFunc`, plus `For::with_kind`, `AllocBuffer::with_buffer`,
-`PrimFunc::with_body`, `PrimFunc::with_attr`, and `IRModule::with_functions`.
-They take only the replaced fields and copy every other field from the
-existing node, which is what the passes previously spelled out through
-`from_complete_fields`. A pass that renames a definition (`ConvertSSA`) or
-deliberately drops metadata (`LowerTIRxOpaque`) still calls the complete
-allocator. [`tests/shorthand_constructors.rs`](tests/shorthand_constructors.rs)
-checks each shorthand against its full constructor with C++ structural
-equality.
-
 The supporting handwritten slice is bounded but broader than the initial
 stubgen milestone so it can answer additional pass-authoring questions:
 

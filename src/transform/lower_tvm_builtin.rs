@@ -22,7 +22,9 @@ use tvm_ffi::{
     ObjectRefCore, Result, String, TypeIndex,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default};
+use super::utils::{
+    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
 use crate::target::Target;
@@ -63,7 +65,7 @@ pub fn lower_tvm_builtin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         .transpose()?;
     let mut lowerer = BuiltinLower::new(device_type)?;
     let body = lowerer.visit_body_and_realize_alloca(function.body.clone())?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.LowerTVMBuiltin` pass in Rust.
@@ -429,9 +431,14 @@ impl BuiltinLower {
         let mapped = mapped.try_cast::<AttrStmt>()?;
         let mut body = vec![mapped.body.clone()];
         body.extend(frees.into_iter().rev());
-        Ok(mapped
-            .with_children(mapped.value.clone(), Stmt::sequence(body)?)
-            .into())
+        Ok(AttrStmt::from_complete_fields(
+            mapped.span.clone(),
+            mapped.node.clone(),
+            mapped.attr_key.clone(),
+            mapped.value.clone(),
+            Stmt::sequence(body)?,
+        )
+        .into())
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
@@ -446,9 +453,18 @@ impl BuiltinLower {
         {
             return Ok(value.into());
         }
-        Ok(value
-            .with_children(minimum, extent, body, value.step.clone())
-            .into())
+        Ok(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
+            minimum,
+            extent,
+            value.kind,
+            body,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
+            value.step.clone(),
+        )
+        .into())
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
@@ -466,7 +482,10 @@ impl BuiltinLower {
         {
             return Ok(value.into());
         }
-        Ok(value.with_children(condition, then_case, else_case).into())
+        Ok(
+            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case)
+                .into(),
+        )
     }
 
     fn lower_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -752,7 +771,14 @@ impl BuiltinLower {
         if traced {
             lowered_arguments.push(arguments.get(arguments.len() - 1)?);
         }
-        Ok(value.with_children(lowered_operator, Array::new(lowered_arguments)))
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone(),
+            lowered_operator,
+            Array::new(lowered_arguments),
+            value.attrs.clone(),
+            value.ty_args.clone(),
+        ))
     }
 
     fn set_packed_argument(&mut self, mut argument: Expr, stack: &Var, offset: u64) -> Result<()> {
@@ -944,7 +970,10 @@ impl BuiltinLower {
             .last_mut()
             .ok_or_else(|| value_error("nd allocation has no enclosing lifetime scope"))?
             .push(free.into());
-        Stmt::sequence(vec![binding.with_value(packed).into(), null_check.into()])
+        Stmt::sequence(vec![
+            Bind::from_complete_fields(binding.span.clone(), binding.var.clone(), packed).into(),
+            null_check.into(),
+        ])
     }
 
     fn current_alloca_scope(&self) -> Result<&AllocaScope> {

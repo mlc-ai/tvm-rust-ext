@@ -27,7 +27,7 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
-    visit_stmt_expr_default,
+    visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{
@@ -176,7 +176,7 @@ fn compute_legalize_prim_func(
         plan.variable_remaps,
     )?;
     let body: Stmt = structural_mutate(function.body.clone(), &mut legalizer)?.try_into()?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 struct ComputePlan {
@@ -820,7 +820,11 @@ impl ComputeLegalizer {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<AllocBuffer> {
@@ -828,7 +832,11 @@ impl ComputeLegalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -1167,7 +1175,13 @@ fn storage_legalize_prim_func(
         .map(|parameter| legalizer.remap_variable_definition(parameter))
         .collect::<Result<Vec<_>>>()?;
     let body: Stmt = structural_mutate(function.body.clone(), &mut legalizer)?.try_into()?;
-    function.with_children(params, body, function.attrs.clone())
+    PrimFunc::with_metadata(
+        params,
+        body,
+        function.ret_type.clone(),
+        function.attrs.clone(),
+        function.span.as_ref(),
+    )
 }
 
 struct StorageLegalizer {
@@ -1324,7 +1338,11 @@ impl StorageLegalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_declaration(
@@ -1337,7 +1355,11 @@ impl StorageLegalizer {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
@@ -1383,7 +1405,12 @@ impl StorageLegalizer {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored,
+            indices,
+        ))
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {

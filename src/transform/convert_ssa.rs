@@ -56,7 +56,12 @@ pub fn convert_ssa_module(module: IRModule) -> Result<IRModule> {
     if !changed {
         return Ok(module);
     }
-    module.with_functions(functions)
+    IRModule::with_metadata(
+        Map::from_iter(functions),
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )
 }
 
 /// Convert repeated definitions in a single PrimFunc to SSA form.
@@ -199,10 +204,15 @@ impl SsaConverter {
             }
         }
 
-        let replacement_type = old_type.with_children(
+        let replacement_type = BufferType::from_complete_fields(
+            old_type.span.clone(),
+            old_type.dtype.clone(),
+            old_type.storage_scope.clone(),
             shape,
             strides,
             elem_offset,
+            old_type.data_alignment,
+            old_type.offset_factor,
             layout,
             old_type.allocated_addr.clone(),
         );
@@ -308,7 +318,13 @@ fn convert_function(converter: &mut SsaConverter, function: PrimFunc) -> Result<
         if !params_changed && attrs.same_as(&function.attrs) && body.same_as(&function.body) {
             return Ok(function);
         }
-        function.with_children(converted_params, body, attrs)
+        PrimFunc::with_metadata(
+            converted_params,
+            body,
+            function.ret_type.clone(),
+            attrs,
+            function.span.as_ref(),
+        )
     })();
     converter.exit_scope();
     converter.function_remaps.clear();
@@ -519,7 +535,11 @@ impl SsaConverter {
             if condition.same_as(&value.condition) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(value.with_children(condition, body))
+            Ok(While::from_complete_fields(
+                value.span.clone(),
+                condition,
+                body,
+            ))
         })();
         self.exit_scope();
         converted
@@ -543,7 +563,12 @@ impl SsaConverter {
         {
             return Ok(value);
         }
-        Ok(value.with_children(condition, then_case, else_case))
+        Ok(IfThenElse::from_complete_fields(
+            value.span.clone(),
+            condition,
+            then_case,
+            else_case,
+        ))
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
@@ -585,7 +610,11 @@ impl SsaConverter {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_allocation(
@@ -598,7 +627,11 @@ impl SsaConverter {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -611,7 +644,12 @@ impl SsaConverter {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored_value, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -621,7 +659,12 @@ impl SsaConverter {
         if buffer.same_as(&source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(value.with_children(Expr::from(buffer), indices))
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            Expr::from(buffer),
+            indices,
+        ))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -672,7 +715,13 @@ fn mutate_iter_var_attribute(
         if option_same_as(&original_domain, &domain) && variable.same_as(&original_variable) {
             iteration
         } else {
-            iteration.with_children(domain, variable.clone())?
+            IterVar::with_metadata(
+                domain,
+                variable.clone(),
+                iteration.iter_type()?,
+                iteration.thread_tag()?.as_str(),
+                iteration.span()?.as_ref(),
+            )?
         };
     let attr_value: PrimExpr = mutator.mutate(converter, &value.value)?.try_into()?;
     let body = mutate_scoped_statement(converter, mutator, &value.body)?;

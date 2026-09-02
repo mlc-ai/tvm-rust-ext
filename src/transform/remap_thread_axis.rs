@@ -20,11 +20,14 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCore,
-    Result, String as FfiString, RUNTIME_ERROR,
+    structural_mutate, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String as FfiString, RUNTIME_ERROR,
 };
 
-use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, BufferRemaps};
+use super::utils::{
+    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_attr,
+    with_prim_func_body, BufferRemaps,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Expr, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
@@ -48,7 +51,7 @@ pub fn remap_thread_axis_prim_func(
         buffer_remaps: BufferRemaps::default(),
     };
     let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.RemapThreadAxis` PrimFunc pass in Rust.
@@ -126,7 +129,17 @@ impl ThreadAxisRewriter {
         {
             return Ok(value);
         }
-        Ok(value.with_children(minimum, extent, body, step))
+        Ok(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
+            minimum,
+            extent,
+            value.kind,
+            body,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
+            step,
+        ))
     }
 
     fn mutate_thread_variable(&mut self, value: Var) -> Var {
@@ -143,7 +156,12 @@ impl ThreadAxisRewriter {
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(value.with_children(source.into(), indices))
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -156,7 +174,12 @@ impl ThreadAxisRewriter {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored_value, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
     }
 
     fn mutate_allocation(
@@ -168,7 +191,11 @@ impl ThreadAxisRewriter {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_declaration(
@@ -181,7 +208,11 @@ impl ThreadAxisRewriter {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -212,7 +243,13 @@ fn mutate_regular_attribute(
     if attr_value.same_as(&value.value) && body.same_as(&value.body) {
         return Ok(value);
     }
-    Ok(value.with_children(attr_value, body))
+    Ok(AttrStmt::from_complete_fields(
+        value.span.clone(),
+        value.node.clone(),
+        value.attr_key.clone(),
+        attr_value,
+        body,
+    ))
 }
 
 fn collect_thread_map(thread_map: &Map<FfiString, IterVar>) -> HashMap<String, IterVar> {
@@ -240,5 +277,9 @@ fn remap_launch_params(
         let tag = iter_var.thread_tag()?;
         remapped.push(thread_map.get(tag.as_str()).cloned().unwrap_or(iter_var));
     }
-    Ok(function.with_attr(KERNEL_LAUNCH_PARAMS, Array::new(remapped)))
+    Ok(with_prim_func_attr(
+        function,
+        KERNEL_LAUNCH_PARAMS,
+        Array::new(remapped),
+    ))
 }

@@ -24,7 +24,7 @@ use tvm_ffi::{
     ObjectRefCast, ObjectRefCore, Result,
 };
 
-use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
+use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -44,7 +44,7 @@ pub fn vectorize_loop_prim_func(function: PrimFunc, enable_vectorize: bool) -> R
         let mut skipper = VectorizeSkipper;
         structural_mutate(function.body.clone(), &mut skipper)?.try_into()?
     };
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.VectorizeLoop` PrimFunc pass in Rust.
@@ -97,7 +97,17 @@ impl VectorizeSkipper {
         if mapped.kind != ForKind::kVectorized {
             return Ok(mapped);
         }
-        Ok(mapped.with_kind(ForKind::kSerial))
+        Ok(For::from_complete_fields(
+            mapped.span.clone(),
+            mapped.loop_var.clone(),
+            mapped.min.clone(),
+            mapped.extent.clone(),
+            ForKind::kSerial,
+            mapped.body.clone(),
+            mapped.thread_binding.clone(),
+            mapped.annotations.clone(),
+            mapped.step.clone(),
+        ))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -292,7 +302,15 @@ impl Vectorizer {
         if array_same_as(&arguments, &value.args) {
             return Ok(value.into());
         }
-        Ok(value.with_children(value.op.clone(), arguments).into())
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone(),
+            value.op.clone(),
+            arguments,
+            value.attrs.clone(),
+            value.ty_args.clone(),
+        )
+        .into())
     }
 }
 
@@ -726,13 +744,13 @@ impl Vectorizer {
             total_lanes / other_index_lanes,
             is_scalable(&last),
         )?;
-        Ok(value
-            .with_children(
-                value.buffer.clone(),
-                broadcast_to(stored_value, total_lanes, is_scalable(&last))?,
-                Array::new(mapped_indices),
-            )
-            .into())
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            value.buffer.clone(),
+            broadcast_to(stored_value, total_lanes, is_scalable(&last))?,
+            Array::new(mapped_indices),
+        )
+        .into())
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
@@ -752,9 +770,18 @@ impl Vectorizer {
         if extent.same_as(&value.extent) && body.same_as(&value.body) {
             return Ok(value.into());
         }
-        Ok(value
-            .with_children(value.min.clone(), extent, body, value.step.clone())
-            .into())
+        Ok(For::from_complete_fields(
+            value.span.clone(),
+            value.loop_var.clone(),
+            value.min.clone(),
+            extent,
+            value.kind,
+            body,
+            value.thread_binding.clone(),
+            value.annotations.clone(),
+            value.step.clone(),
+        )
+        .into())
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
@@ -780,7 +807,10 @@ impl Vectorizer {
         {
             return Ok(value.into());
         }
-        Ok(value.with_children(condition, then_case, else_case).into())
+        Ok(
+            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case)
+                .into(),
+        )
     }
 
     fn mutate_while(&mut self, _value: While) -> Result<Stmt> {

@@ -26,14 +26,14 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, cast_prim_expr, mutate_expr_default, mutate_stmt_expr_default, option_same_as,
-    BufferRemaps,
+    with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
-    Add, AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, Cast, Div, FloorDiv, FloorMod, For,
-    IfThenElse, IterVar, Let, Max, Min, Mod, Mul, PrimFunc, Ramp, Select, Stmt, Sub, EQ, GE, GT,
-    LE, LT, NE,
+    Add, AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, Cast, DeclBuffer, Div, FloorDiv,
+    FloorMod, For, IfThenElse, IterVar, Let, Max, Min, Mod, Mul, PrimFunc, Ramp, Select, Stmt, Sub,
+    EQ, GE, GT, LE, LT, NE,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -87,9 +87,15 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
     narrower.enabled = old_enabled;
 
     let body: Stmt = structural_mutate(function.body.clone(), &mut narrower)?.try_into()?;
-    let mut result = function.with_body(body);
+    let mut result = with_prim_func_body(function, body);
     if !array_same_as(&Array::new(params.clone()), &result.params) {
-        result = result.with_children(params, result.body.clone(), result.attrs.clone())?;
+        result = PrimFunc::with_metadata(
+            params,
+            result.body.clone(),
+            result.ret_type.clone(),
+            result.attrs.clone(),
+            result.span.as_ref(),
+        )?;
     }
     Ok(result)
 }
@@ -284,7 +290,13 @@ impl IndexDataTypeNormalizer {
                 ))
             })
             .transpose()?;
-        let mapped = iteration.with_children(domain, variable)?;
+        let mapped = IterVar::with_metadata(
+            domain,
+            variable,
+            iteration.iter_type()?,
+            iteration.thread_tag()?.as_str(),
+            iteration.span()?.as_ref(),
+        )?;
         self.iter_var_remap.insert(identity, mapped.clone());
         Ok(mapped)
     }
@@ -609,7 +621,12 @@ impl IndexDataTypeNormalizer {
         {
             return Ok(value);
         }
-        Ok(value.with_children(condition, then_case, else_case))
+        Ok(IfThenElse::from_complete_fields(
+            value.span.clone(),
+            condition,
+            then_case,
+            else_case,
+        ))
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
@@ -639,7 +656,11 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_declaration(
@@ -652,7 +673,11 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -671,7 +696,12 @@ impl IndexDataTypeNormalizer {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored_value, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {

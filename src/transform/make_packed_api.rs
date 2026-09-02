@@ -24,7 +24,7 @@ use tvm_ffi::{
     ObjectRefCore, Result, String as FfiString, TypeIndex,
 };
 
-use super::utils::{cast_prim_expr, mutate_stmt_expr_default};
+use super::utils::{cast_prim_expr, mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::{
@@ -33,7 +33,8 @@ use crate::ir::{
 };
 use crate::target::Target;
 use crate::tirx::{
-    AttrStmt, Bind, DeclBuffer, Evaluate, For, ForKind, PrimFunc, Return, Stmt, StringImm,
+    AttrStmt, Bind, DeclBuffer, Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, SeqStmt,
+    Stmt, StringImm,
 };
 
 const CALLING_CONV: &str = "calling_conv";
@@ -242,7 +243,7 @@ fn rewrite_subroutine_calls(
     if body.same_as(&function.body) {
         Ok(function)
     } else {
-        Ok(function.with_body(body))
+        Ok(with_prim_func_body(function, body))
     }
 }
 
@@ -1267,9 +1268,14 @@ fn replace_attributes<const N: usize>(
 fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
     for statement in statements.iter().rev() {
         if let Ok(attribute) = statement.clone().try_cast::<AttrStmt>() {
-            body = attribute
-                .with_children(attribute.value.clone(), body)
-                .into();
+            body = AttrStmt::from_complete_fields(
+                attribute.span.clone(),
+                attribute.node.clone(),
+                attribute.attr_key.clone(),
+                attribute.value.clone(),
+                body,
+            )
+            .into();
         } else if statement.clone().try_cast::<Bind>().is_ok()
             || statement
                 .clone()
@@ -1279,16 +1285,20 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
         {
             body = Stmt::sequence(vec![statement.clone(), body])?;
         } else if let Ok(conditional) = statement.clone().try_cast::<crate::tirx::IfThenElse>() {
-            body = conditional
-                .with_children(conditional.condition.clone(), body, None)
-                .into();
+            body = IfThenElse::from_complete_fields(
+                conditional.span.clone(),
+                conditional.condition.clone(),
+                body,
+                None,
+            )
+            .into();
         } else if let Ok(sequence) = statement.clone().try_cast::<crate::tirx::SeqStmt>() {
             let mut prefix = sequence.seq.iter().collect::<Vec<_>>();
             if !prefix.is_empty() {
                 prefix.pop();
             }
             prefix.push(body);
-            body = sequence.with_statements(Array::new(prefix)).into();
+            body = SeqStmt::from_complete_fields(sequence.span.clone(), Array::new(prefix)).into();
         } else {
             return Err(value_error(
                 "unsupported statement in packed ABI binding nest",

@@ -25,13 +25,14 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, cast_prim_expr, int_value, mutate_stmt_expr_default, BufferRemaps,
+    array_same_as, cast_prim_expr, int_value, mutate_stmt_expr_default, with_prim_func_body,
+    BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Expr, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar, PrimFunc,
-    Stmt, StringImm,
+    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar, IterVarType,
+    PrimFunc, Stmt, StringImm,
 };
 
 const PRAGMA_UNROLL: &str = "pragma_unroll";
@@ -44,7 +45,7 @@ const VIRTUAL_THREAD: &str = "virtual_thread";
 pub fn lower_tirx_opaque_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let mut lowerer = TIRxOpaqueLower::default();
     let body = structural_mutate(function.body.clone(), &mut lowerer)?.try_into()?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.LowerTIRxOpaque` PrimFunc pass in Rust.
@@ -152,7 +153,12 @@ impl TIRxOpaqueLower {
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(value.with_children(source.into(), indices))
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -165,7 +171,12 @@ impl TIRxOpaqueLower {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored_value, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
     }
 
     fn mutate_allocation(
@@ -177,7 +188,11 @@ impl TIRxOpaqueLower {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_declaration(
@@ -190,7 +205,11 @@ impl TIRxOpaqueLower {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -219,7 +238,13 @@ fn make_launch_thread(
     body: Stmt,
 ) -> Result<Stmt> {
     let domain = Range::from_min_extent(minimum, extent.clone())?;
-    let iter_var = IterVar::thread_index(Some(domain), variable, thread_tag)?;
+    let iter_var = IterVar::with_metadata(
+        Some(domain),
+        variable,
+        IterVarType::kThreadIndex,
+        thread_tag,
+        None,
+    )?;
     let attr_key = match thread_tag {
         "vthread" | "vthread.x" | "vthread.y" | "vthread.z" => VIRTUAL_THREAD,
         _ => THREAD_EXTENT,

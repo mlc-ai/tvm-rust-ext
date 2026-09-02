@@ -29,15 +29,15 @@ use super::exec_context::{encode_split, ExecContext};
 use super::scope_id::{
     compute_warp_id_in_cta, resolve_scope_id, LaunchParams, ScopeDefinition, ScopeIdSet,
 };
-use super::utils::{mutate_stmt_default, mutate_stmt_expr_default};
+use super::utils::{mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, Var};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, And, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, FloorMod,
-    For, IfThenElse, IterVar, Mod, PrimFunc, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, SeqStmt,
-    Stmt, TilePrimitiveCall, EQ, GE, GT, LE, LT, NE,
+    For, IfThenElse, IterVar, IterVarType, Mod, PrimFunc, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
+    SeqStmt, Stmt, TilePrimitiveCall, EQ, GE, GT, LE, LT, NE,
 };
 
 const DEVICE_ENTRY: &str = "tirx.device_entry";
@@ -55,7 +55,7 @@ pub fn tile_primitive_dispatch_prim_func(function: PrimFunc) -> Result<PrimFunc>
     let mut dispatcher = TileDispatcher::new(target)?;
     let body = structural_mutate(function.body.clone(), &mut dispatcher)?.try_into()?;
     ensure_no_tile_calls(&body)?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.TilePrimitiveDispatch` PrimFunc pass in Rust.
@@ -189,7 +189,14 @@ impl TileDispatcher {
             if body.same_as(&entry.body) {
                 return Ok(entry.into());
             }
-            return Ok(entry.with_children(entry.value.clone(), body).into());
+            return Ok(AttrStmt::from_complete_fields(
+                entry.span.clone(),
+                entry.node.clone(),
+                entry.attr_key.clone(),
+                entry.value.clone(),
+                body,
+            )
+            .into());
         }
 
         for initializer in self.device_initializers.drain(..).rev() {
@@ -264,7 +271,13 @@ impl TileDispatcher {
             let variable = Var::with_type("warp_id_in_cta", value.type_annotation());
             let domain =
                 Range::from_min_extent(IntImm::new("int32", 0)?, IntImm::new("int32", 1)?)?;
-            let iter_var = IterVar::thread_index(Some(domain), variable.clone(), "warp_id_in_cta")?;
+            let iter_var = IterVar::with_metadata(
+                Some(domain),
+                variable.clone(),
+                IterVarType::kThreadIndex,
+                "warp_id_in_cta",
+                None,
+            )?;
             self.launch_params.insert("warp_id_in_cta".into(), iter_var);
             bindings.push((variable, value));
         }
@@ -292,7 +305,13 @@ impl TileDispatcher {
             let tag = format!("{prefix}{}", axis_name(dimension));
             let variable = Var::with_type(&tag, extent.type_annotation());
             let domain = Range::from_min_extent(IntImm::new("int32", 0)?, extent)?;
-            let iter_var = IterVar::thread_index(Some(domain), variable, &tag)?;
+            let iter_var = IterVar::with_metadata(
+                Some(domain),
+                variable,
+                IterVarType::kThreadIndex,
+                &tag,
+                None,
+            )?;
             self.launch_params.insert(tag, iter_var);
         }
         Ok(())
@@ -312,7 +331,13 @@ impl TileDispatcher {
             let domain = Range::from_min_extent(IntImm::new("int32", 0)?, extent)?;
             self.launch_params.insert(
                 tag.clone(),
-                IterVar::thread_index(Some(domain), variable, &tag)?,
+                IterVar::with_metadata(
+                    Some(domain),
+                    variable,
+                    IterVarType::kThreadIndex,
+                    &tag,
+                    None,
+                )?,
             );
         }
         Ok(())
@@ -914,9 +939,14 @@ impl TileDispatcher {
         if !changed {
             return Ok(predicate.clone());
         }
-        PrimExpr::try_from(Expr::from(
-            call.with_children(call.op.clone(), Array::new(arguments)),
-        ))
+        PrimExpr::try_from(Expr::from(Call::from_complete_fields(
+            call.span.clone(),
+            call.ty.clone(),
+            call.op.clone(),
+            Array::new(arguments),
+            call.attrs.clone(),
+            call.ty_args.clone(),
+        )))
     }
 
     fn as_boolean(&self, predicate: PrimExpr) -> Result<PrimExpr> {

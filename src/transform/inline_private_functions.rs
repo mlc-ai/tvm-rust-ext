@@ -26,7 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, BufferRemaps,
+    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+    BufferRemaps,
 };
 use super::{create_module_pass, Pass};
 use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, OpaqueExpr, PrimExpr, TensorLoad, Var};
@@ -69,7 +70,7 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
             let updated = if body.same_as(&function.body) {
                 function
             } else {
-                function.with_body(body)
+                with_prim_func_body(function, body)
             };
             changed |= !updated.same_as(&base_function);
             BaseFunc::from(updated)
@@ -84,7 +85,12 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
 
     updated_functions
         .retain(|(global, _)| !inliner.removable.contains(&ObjectIdentity::of(global)));
-    let updated = module.with_functions(updated_functions)?;
+    let updated = IRModule::with_metadata(
+        Map::from_iter(updated_functions),
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )?;
     super::convert_ssa::convert_ssa_module(updated)
 }
 
@@ -244,7 +250,12 @@ impl PrimFuncInliner {
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(value.with_children(source.into(), indices))
+        Ok(TensorLoad::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone().try_cast()?,
+            source.into(),
+            indices,
+        ))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -257,7 +268,12 @@ impl PrimFuncInliner {
         {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, stored_value, indices))
+        Ok(BufferStore::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            stored_value,
+            indices,
+        ))
     }
 
     fn mutate_allocation(
@@ -269,7 +285,11 @@ impl PrimFuncInliner {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_buffer(buffer))
+        Ok(AllocBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            value.annotations.clone(),
+        ))
     }
 
     fn mutate_declaration(
@@ -282,7 +302,11 @@ impl PrimFuncInliner {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(value.with_children(buffer, data))
+        Ok(DeclBuffer::from_complete_fields(
+            value.span.clone(),
+            buffer,
+            data,
+        ))
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Stmt> {
@@ -321,7 +345,7 @@ impl PrimFuncInliner {
         if evaluated.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(value.with_value(evaluated).into())
+        Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
@@ -337,7 +361,14 @@ impl PrimFuncInliner {
         if op.same_as(&value.op) && array_same_as(&args, &value.args) {
             return Ok(value);
         }
-        Ok(value.with_children(op, args))
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            value.ty.clone(),
+            op,
+            args,
+            value.attrs.clone(),
+            value.ty_args.clone(),
+        ))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

@@ -19,6 +19,7 @@
 
 use tvm_ffi::Result;
 
+use super::utils::with_prim_func_body;
 use super::{create_prim_func_pass, Pass};
 use crate::ir::IntImm;
 use crate::tirx::{AttrStmt, PrimFunc};
@@ -33,7 +34,7 @@ pub fn decorate_device_scope_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         IntImm::new("int32", 0)?,
         function.body.clone(),
     )?;
-    Ok(function.with_body(body.into()))
+    Ok(with_prim_func_body(function, body.into()))
 }
 
 /// Build TVM's `s_tir.DecorateDeviceScope` PrimFunc pass in Rust.

@@ -24,7 +24,9 @@ use tvm_ffi::{
     ObjectRefCast, ObjectRefCore, Result, String as FfiString, WalkOrder, WalkResult,
 };
 
-use super::utils::{mutate_stmt_default, mutate_stmt_expr_default};
+use super::utils::{
+    mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr, with_prim_func_body,
+};
 use super::{convert_ssa_module, create_module_pass, Pass};
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, IRModule, IntImm, PointerType, PrimExpr, PrimType, TupleType,
@@ -82,10 +84,15 @@ pub fn split_host_device_module(module: IRModule) -> Result<IRModule> {
             device_functions: &mut device_functions,
         };
         let body: Stmt = structural_mutate(function.body.clone(), &mut splitter)?.try_into()?;
-        functions.push((global, BaseFunc::from(function.with_body(body))));
+        functions.push((global, BaseFunc::from(with_prim_func_body(function, body))));
     }
     functions.extend(device_functions);
-    let split = module.with_functions(functions)?;
+    let split = IRModule::with_metadata(
+        Map::from_iter(functions),
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )?;
     lower_device_kernel_launches(convert_ssa_module(split)?)
 }
 
@@ -109,7 +116,7 @@ fn annotate_device_regions(function: PrimFunc) -> Result<PrimFunc> {
         device_target: target.without_host()?,
     };
     let body: Stmt = structural_mutate(function.body.clone(), &mut annotator)?.try_into()?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 struct DeviceRegionAnnotator {
@@ -226,9 +233,9 @@ impl HostDeviceSplitter<'_> {
             crate::ir::DictAttrs::empty(),
             None,
         )?;
-        device_function = device_function.with_attr(TARGET, target);
-        device_function = device_function.with_attr(NO_ALIAS, true);
-        device_function = device_function.with_attr(IS_GLOBAL_FUNC, true);
+        device_function = with_prim_func_attr(device_function, TARGET, target);
+        device_function = with_prim_func_attr(device_function, NO_ALIAS, true);
+        device_function = with_prim_func_attr(device_function, IS_GLOBAL_FUNC, true);
         for key in [S_TIR, KERNEL_LAUNCH_PARAMS, NUM_INPUTS] {
             if let Some(attribute) = self
                 .current_function
@@ -236,12 +243,12 @@ impl HostDeviceSplitter<'_> {
                 .dict
                 .get(&FfiString::from(key))?
             {
-                device_function = device_function.with_attr(key, attribute);
+                device_function = with_prim_func_attr(device_function, key, attribute);
             }
         }
         if is_cuda {
             for (key, value) in launch_bounds {
-                device_function = device_function.with_attr(key, value);
+                device_function = with_prim_func_attr(device_function, key, value);
             }
         }
 
@@ -385,7 +392,7 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
         rewriter.current_host_target = target.host()?;
         rewriter.current_target = Some(target.without_host()?);
         let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
-        rewritten.push((global, BaseFunc::from(function.with_body(body))));
+        rewritten.push((global, BaseFunc::from(with_prim_func_body(function, body))));
         rewriter.current_target = None;
         rewriter.current_host_target = None;
     }
@@ -405,7 +412,7 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
             ));
         }
         if launched || external {
-            function = function.with_attr(IS_GLOBAL_FUNC, true);
+            function = with_prim_func_attr(function, IS_GLOBAL_FUNC, true);
         }
         if launched {
             let info = kernel_info
@@ -423,15 +430,24 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
                 TupleType::empty().into(),
                 body,
             );
-            function = function.with_attr(CALLING_CONV, DEVICE_KERNEL_LAUNCH);
-            function = function.with_attr(KERNEL_LAUNCH_PARAMS, info.launch_parameters.clone());
-            function = function.with_attr(GLOBAL_SYMBOL, info.global_symbol.clone());
+            function = with_prim_func_attr(function, CALLING_CONV, DEVICE_KERNEL_LAUNCH);
+            function = with_prim_func_attr(
+                function,
+                KERNEL_LAUNCH_PARAMS,
+                info.launch_parameters.clone(),
+            );
+            function = with_prim_func_attr(function, GLOBAL_SYMBOL, info.global_symbol.clone());
         } else if external && function_string_attr(&function, GLOBAL_SYMBOL)?.is_none() {
-            function = function.with_attr(GLOBAL_SYMBOL, global.name_hint.clone());
+            function = with_prim_func_attr(function, GLOBAL_SYMBOL, global.name_hint.clone());
         }
         finalized.push((global, BaseFunc::from(function)));
     }
-    module.with_functions(finalized)
+    IRModule::with_metadata(
+        Map::from_iter(finalized),
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )
 }
 
 fn collect_called_globals(module: &IRModule) -> Result<HashSet<ObjectIdentity>> {

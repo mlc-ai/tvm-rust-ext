@@ -20,11 +20,15 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
-    Result, String as FfiString, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Map, MapValue, Mutator, ObjectIdentity,
+    ObjectRefCast, Result, String as FfiString, VisitCallbacks, VisitContext, VisitInterrupt,
+    VisitValue,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default};
+use super::utils::{
+    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr,
+    with_prim_func_body, without_prim_func_attr,
+};
 use super::{create_module_pass, Pass};
 use crate::ir::{BaseFunc, Call, GlobalVar, IRModule, OpaqueExpr};
 use crate::target::Target;
@@ -61,21 +65,23 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
         if let Some(existing) = function_attr(&primitive, TARGET)? {
             let existing = Target::try_from(existing)?;
             if externally_exposed && existing.host()?.is_none() && target.host()?.is_some() {
-                primitive = primitive.with_attr(TARGET, existing.with_host(&target_host)?);
+                primitive =
+                    with_prim_func_attr(primitive, TARGET, existing.with_host(&target_host)?);
             }
             functions.push((global, primitive.into()));
             continue;
         }
 
         if has_nonzero_attr(&primitive, IS_HOST_FUNC)? {
-            primitive = primitive.without_attr(IS_HOST_FUNC);
-            primitive = primitive.with_attr(TARGET, target_host.with_host(&target_host)?);
+            primitive = without_prim_func_attr(primitive, IS_HOST_FUNC);
+            primitive =
+                with_prim_func_attr(primitive, TARGET, target_host.with_host(&target_host)?);
             functions.push((global, primitive.into()));
             continue;
         }
 
         if externally_exposed {
-            primitive = primitive.with_attr(TARGET, target.clone());
+            primitive = with_prim_func_attr(primitive, TARGET, target.clone());
         } else {
             let identity = ObjectIdentity::of(&global);
             let called_by_host = calls.host.contains(&identity);
@@ -84,19 +90,19 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
                 let host_function: PrimFunc = tvm_ffi::cached_global_func!("s_tir.RenewDefs")
                     .call_tuple((primitive.clone(),))?
                     .try_into()?;
-                primitive = primitive.with_attr(TARGET, target_without_host.clone());
-                let host_function = host_function.with_attr(TARGET, target_host.clone());
+                primitive = with_prim_func_attr(primitive, TARGET, target_without_host.clone());
+                let host_function = with_prim_func_attr(host_function, TARGET, target_host.clone());
                 let base = format!("{}_host", global.name_hint.as_str());
                 let name = fresh_name(&base, &mut used_names);
                 let host_global = GlobalVar::new(&name);
                 replacements.insert(identity, host_global.clone());
                 additions.push((host_global, BaseFunc::from(host_function)));
             } else if called_by_host {
-                primitive = primitive.with_attr(TARGET, target_host.clone());
+                primitive = with_prim_func_attr(primitive, TARGET, target_host.clone());
             } else {
                 // Device-only and currently unreferenced private functions both
                 // receive the target without its host, matching native TIRx.
-                primitive = primitive.with_attr(TARGET, target_without_host.clone());
+                primitive = with_prim_func_attr(primitive, TARGET, target_without_host.clone());
             }
         }
         functions.push((global, primitive.into()));
@@ -117,11 +123,16 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
             };
             let body: Stmt =
                 structural_mutate(primitive.body.clone(), &mut substitutor)?.try_into()?;
-            *function = primitive.with_body(body).into();
+            *function = with_prim_func_body(primitive, body).into();
         }
     }
 
-    module.with_functions(functions)
+    IRModule::with_metadata(
+        Map::from_iter(functions),
+        module.source_map.clone(),
+        module.attrs.clone(),
+        module.global_infos.clone(),
+    )
 }
 
 /// Build TVM's `tirx.BindTarget` module pass in Rust.
@@ -235,7 +246,14 @@ impl CallSubstitutor<'_> {
         let Some(replacement) = self.replacements.get(&ObjectIdentity::of(&global)) else {
             return Ok(call);
         };
-        Ok(call.with_children(replacement.clone().into(), call.args.clone()))
+        Ok(Call::from_complete_fields(
+            call.span.clone(),
+            call.ty.clone(),
+            replacement.clone().into(),
+            call.args.clone(),
+            call.attrs.clone(),
+            call.ty_args.clone(),
+        ))
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {

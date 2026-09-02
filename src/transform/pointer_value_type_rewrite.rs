@@ -124,7 +124,13 @@ pub(super) fn pointer_value_type_rewrite_with_options(
                 .unwrap_or(parameter)
         })
         .collect::<Vec<_>>();
-    function.with_children(params, body, function.attrs.clone())
+    PrimFunc::with_metadata(
+        params,
+        body,
+        function.ret_type.clone(),
+        function.attrs.clone(),
+        function.span.as_ref(),
+    )
 }
 
 struct BufferInfo {
@@ -942,7 +948,10 @@ impl PointerVarSubstituter {
         {
             return Ok(value.into());
         }
-        Ok(value.with_children(buffer, stored_value, indices).into())
+        Ok(
+            BufferStore::from_complete_fields(value.span.clone(), buffer, stored_value, indices)
+                .into(),
+        )
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -963,7 +972,14 @@ impl PointerVarSubstituter {
         if buffer.same_as(&value.buffer) {
             return Ok(value.into());
         }
-        Ok(value.with_buffer(buffer).into())
+        Ok(
+            AllocBuffer::from_complete_fields(
+                value.span.clone(),
+                buffer,
+                value.annotations.clone(),
+            )
+            .into(),
+        )
     }
 
     fn mutate_declaration(&mut self, value: DeclBuffer, mutator: &mut Mutator) -> Result<Stmt> {
@@ -972,7 +988,7 @@ impl PointerVarSubstituter {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value.into());
         }
-        Ok(value.with_children(buffer, data).into())
+        Ok(DeclBuffer::from_complete_fields(value.span.clone(), buffer, data).into())
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
@@ -1170,7 +1186,10 @@ impl VectorTypeRewriter {
         {
             return Ok(value.into());
         }
-        Ok(value.with_children(buffer, stored_value, indices).into())
+        Ok(
+            BufferStore::from_complete_fields(value.span.clone(), buffer, stored_value, indices)
+                .into(),
+        )
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -1265,7 +1284,14 @@ impl VectorTypeRewriter {
         if buffer.same_as(&value.buffer) {
             return Ok(value.into());
         }
-        Ok(value.with_buffer(buffer).into())
+        Ok(
+            AllocBuffer::from_complete_fields(
+                value.span.clone(),
+                buffer,
+                value.annotations.clone(),
+            )
+            .into(),
+        )
     }
 
     fn mutate_declaration(&mut self, value: DeclBuffer, mutator: &mut Mutator) -> Result<Stmt> {
@@ -1274,7 +1300,7 @@ impl VectorTypeRewriter {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value.into());
         }
-        Ok(value.with_children(buffer, data).into())
+        Ok(DeclBuffer::from_complete_fields(value.span.clone(), buffer, data).into())
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

@@ -23,7 +23,7 @@ use tvm_ffi::{
     ObjectCore, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
 };
 
-use super::utils::{array_same_as, int_value, mutate_stmt_expr_default};
+use super::utils::{array_same_as, int_value, mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
 use crate::ir::{Call, Expr, PrimExpr, Range, TensorLoad, Var};
@@ -143,7 +143,7 @@ fn stmt_simplify_with_options(
 
     let body = structural_mutate(function.body.clone(), &mut simplifier).and_then(Stmt::try_from);
     let body = simplifier.finish_root_scope(body)?;
-    Ok(function.with_body(body))
+    Ok(with_prim_func_body(function, body))
 }
 
 /// Build TVM's `tirx.StmtSimplify` PrimFunc pass in Rust.
@@ -272,7 +272,17 @@ impl StmtSimplifier {
             {
                 return Ok(value);
             }
-            Ok(value.with_children(minimum, extent, body, step))
+            Ok(For::from_complete_fields(
+                value.span.clone(),
+                value.loop_var.clone(),
+                minimum,
+                extent,
+                value.kind,
+                body,
+                value.thread_binding.clone(),
+                value.annotations.clone(),
+                step,
+            ))
         })
     }
 
@@ -287,7 +297,11 @@ impl StmtSimplifier {
         if bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(value.with_value(bound_value))
+        Ok(Bind::from_complete_fields(
+            value.span.clone(),
+            value.var.clone(),
+            bound_value,
+        ))
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
@@ -331,7 +345,13 @@ impl StmtSimplifier {
             {
                 return Ok(value.into());
             }
-            Ok(value.with_children(condition, then_case, else_case).into())
+            Ok(IfThenElse::from_complete_fields(
+                value.span.clone(),
+                condition,
+                then_case,
+                else_case,
+            )
+            .into())
         })
     }
 
@@ -351,7 +371,13 @@ impl StmtSimplifier {
             if attr_value.same_as(&value.value) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(value.with_children(attr_value, body))
+            Ok(AttrStmt::from_complete_fields(
+                value.span.clone(),
+                value.node.clone(),
+                value.attr_key.clone(),
+                attr_value,
+                body,
+            ))
         })
     }
 
@@ -361,7 +387,8 @@ impl StmtSimplifier {
         if condition.same_as(&value.condition) {
             return Ok(value);
         }
-        Ok(value.with_children(
+        Ok(AssertStmt::from_complete_fields(
+            value.span.clone(),
             condition,
             value.error_kind.clone(),
             value.message_parts.clone(),
@@ -375,7 +402,12 @@ impl StmtSimplifier {
         {
             value
         } else {
-            value.with_children(value.buffer.clone(), stored_value, indices)
+            BufferStore::from_complete_fields(
+                value.span.clone(),
+                value.buffer.clone(),
+                stored_value,
+                indices,
+            )
         };
 
         if let Ok(load) = store.value.clone().try_cast::<TensorLoad>() {
@@ -423,12 +455,15 @@ impl StmtSimplifier {
             if int_value(&condition) == Some(0) {
                 return Ok(false_value);
             }
-            return Ok(value
-                .with_children(
-                    value.op.clone(),
-                    Array::new(vec![condition.into(), true_value, false_value]),
-                )
-                .into());
+            return Ok(Call::from_complete_fields(
+                value.span.clone(),
+                value.ty.clone(),
+                value.op.clone(),
+                Array::new(vec![condition.into(), true_value, false_value]),
+                value.attrs.clone(),
+                value.ty_args.clone(),
+            )
+            .into());
         }
         super::utils::mutate_expr_default(self, mutator, value.into())
     }
