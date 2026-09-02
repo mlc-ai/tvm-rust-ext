@@ -234,6 +234,20 @@ impl Axis {
     pub fn name(&self) -> Result<String> {
         FieldGetter::new(AxisObj::type_index(), "name")?.get(&**self)
     }
+
+    /// Return whether this registry axis is mapped to a hardware thread.
+    pub fn is_thread_axis(&self) -> Result<bool> {
+        tvm_ffi::cached_global_func!("tirx.AxisIsThreadAxis")
+            .call_tuple((self,))?
+            .try_into()
+    }
+
+    /// Return whether this registry axis contributes to a memory coordinate.
+    pub fn is_memory_axis(&self) -> Result<bool> {
+        tvm_ffi::cached_global_func!("tirx.AxisIsMemoryAxis")
+            .call_tuple((self,))?
+            .try_into()
+    }
 }
 
 /// ABI-complete Rust representation of one layout extent/stride/axis component.
@@ -343,6 +357,38 @@ impl TileLayout {
 
     pub fn offset(&self) -> Result<Map<Axis, PrimExpr>> {
         self.field("offset")
+    }
+
+    /// Return the logical size for all axes or one named axis.
+    pub fn get_size(&self, axis_name: Option<&str>) -> Result<PrimExpr> {
+        Layout::from(self.clone()).get_size(axis_name)
+    }
+
+    /// Return the physical span for all axes or one named axis.
+    pub fn get_span(&self, axis_name: Option<&str>) -> Result<PrimExpr> {
+        Layout::from(self.clone()).get_span(axis_name)
+    }
+
+    /// Return whether any component is mapped to a hardware thread axis.
+    pub fn has_thread_axis(&self) -> Result<bool> {
+        for iteration in self.shard()?.iter().chain(self.replica()?.iter()) {
+            if iteration.axis.is_thread_axis()? {
+                return Ok(true);
+            }
+        }
+        for (axis, _) in self.offset()?.iter() {
+            if axis.is_thread_axis()? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Return whether this is TVM's Trainium-specific tiled layout.
+    pub fn is_trainium(&self) -> Result<bool> {
+        tvm_ffi::cached_global_func!("tirx.TileLayoutIsTrainium")
+            .call_tuple((self,))?
+            .try_into()
     }
 
     /// Construct a tile layout through its native constructor.

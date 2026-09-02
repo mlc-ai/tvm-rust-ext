@@ -1129,6 +1129,28 @@ impl std::ops::Deref for PointerTypeObj {
     }
 }
 
+impl PointerType {
+    /// Construct a pointer type through TVM's canonical type constructor.
+    pub fn new<T>(element_type: T, storage_scope: &str) -> Result<Self>
+    where
+        T: Into<Type>,
+    {
+        tvm_ffi::cached_global_func!("ir.PointerType")
+            .call_tuple((element_type.into(), String::from(storage_scope)))?
+            .try_into()
+    }
+
+    /// Return the type stored at this pointer.
+    pub fn element_type(&self) -> Result<Type> {
+        FieldGetter::new(PointerTypeObj::type_index(), "element_type")?.get(&**self)
+    }
+
+    /// Return the pointer's native storage scope.
+    pub fn storage_scope(&self) -> Result<String> {
+        FieldGetter::new(PointerTypeObj::type_index(), "storage_scope")?.get(&**self)
+    }
+}
+
 /// ABI-complete Rust representation of TVM's `PrimTypeNode`.
 #[repr(C)]
 #[derive(Object)]
@@ -1248,6 +1270,39 @@ impl std::ops::Deref for IntImm {
 }
 
 impl std::ops::Deref for IntImmObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `FloatImmNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.FloatImm"]
+#[type_final]
+pub struct FloatImmObj {
+    base: ExprObj,
+    pub value: f64,
+}
+
+/// Reference-counted handle to a floating-point literal.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct FloatImm {
+    data: ObjectArc<FloatImmObj>,
+}
+
+impl std::ops::Deref for FloatImm {
+    type Target = FloatImmObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for FloatImmObj {
     type Target = ExprObj;
 
     fn deref(&self) -> &Self::Target {
@@ -1447,6 +1502,73 @@ impl IntImm {
     pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: i64) -> Self {
         Self {
             data: ObjectArc::new(IntImmObj {
+                base: ExprObj::new(span, ty.into()),
+                value,
+            }),
+        }
+    }
+}
+
+impl FloatImm {
+    /// Construct a scalar floating-point literal directly in Rust.
+    pub fn new(dtype: &str, value: f64) -> Result<Self> {
+        Self::from_dtype(DLDataType::try_from_str(dtype)?, value)
+    }
+
+    /// Construct a scalar floating-point literal from a parsed DLPack dtype.
+    pub fn from_dtype(dtype: DLDataType, value: f64) -> Result<Self> {
+        Self::from_dtype_with_span(dtype, value, None)
+    }
+
+    /// Construct a scalar floating-point literal with source metadata.
+    pub fn from_dtype_with_span(
+        dtype: DLDataType,
+        value: f64,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        if dtype.lanes != 1 {
+            return Err(Error::new(
+                VALUE_ERROR,
+                "FloatImm can only represent a scalar value",
+                "",
+            ));
+        }
+        let is_floating = matches!(
+            dtype.code,
+            x if x == DLDataTypeCode::kDLFloat as u8
+                || x == DLDataTypeCode::kDLBfloat as u8
+                || x == DLDataTypeCode::kDLFloat8_e3m4 as u8
+                || x == DLDataTypeCode::kDLFloat8_e4m3 as u8
+                || x == DLDataTypeCode::kDLFloat8_e4m3b11fnuz as u8
+                || x == DLDataTypeCode::kDLFloat8_e4m3fn as u8
+                || x == DLDataTypeCode::kDLFloat8_e4m3fnuz as u8
+                || x == DLDataTypeCode::kDLFloat8_e5m2 as u8
+                || x == DLDataTypeCode::kDLFloat8_e5m2fnuz as u8
+                || x == DLDataTypeCode::kDLFloat8_e8m0fnu as u8
+                || x == DLDataTypeCode::kDLFloat6_e2m3fn as u8
+                || x == DLDataTypeCode::kDLFloat6_e3m2fn as u8
+                || x == DLDataTypeCode::kDLFloat4_e2m1fn as u8
+                || x >= 129
+        );
+        if !is_floating {
+            let dtype_name = dtype.to_string();
+            return Err(Error::new(
+                VALUE_ERROR,
+                &format!("FloatImm requires a floating-point dtype, but received {dtype_name}"),
+                "",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            PrimType::from_dtype(dtype)?,
+            value,
+        ))
+    }
+
+    /// Construct a floating-point literal from every physical field.
+    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: f64) -> Self {
+        Self {
+            data: ObjectArc::new(FloatImmObj {
                 base: ExprObj::new(span, ty.into()),
                 value,
             }),
@@ -1688,6 +1810,8 @@ tvm_ffi::impl_object_upcast!(
     BaseFunc => Expr,
     IntImm => Expr,
     IntImm => PrimExpr,
+    FloatImm => Expr,
+    FloatImm => PrimExpr,
     OpaqueExpr => Expr,
     OpaqueType => Type,
     PointerType => Type,

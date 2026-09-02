@@ -38,7 +38,7 @@ pub(super) fn int_value(expr: &Expr) -> Option<i64> {
 }
 
 pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Cast")
+    tvm_ffi::cached_global_func!("tirx._cast")
         .call_tuple((target, value, Option::<crate::ir::Span>::None))?
         .try_into()
 }
@@ -48,6 +48,10 @@ pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimEx
 pub(super) struct BufferRemaps(HashMap<ObjectIdentity, BufferVar>);
 
 impl BufferRemaps {
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+
     pub(super) fn use_buffer(&self, buffer: &BufferVar) -> BufferVar {
         self.0
             .get(&ObjectIdentity::of(buffer.as_var()))
@@ -91,7 +95,7 @@ impl BufferRemaps {
             .iter()
             .map(|expression| mutate(&expression))
             .collect::<Result<Vec<_>>>()?;
-        let layout = mutate_tile_layout(&old_type.layout, &mut mutate)?;
+        let layout = mutate_layout(&old_type.layout, &mut mutate)?;
         let shape = Array::new(shape);
         let strides = Array::new(strides);
         let allocated_addr = Array::new(allocated_addr);
@@ -114,7 +118,7 @@ impl BufferRemaps {
     }
 }
 
-fn mutate_tile_layout<F>(layout: &Option<Layout>, mutate: &mut F) -> Result<Option<Layout>>
+pub(super) fn mutate_layout<F>(layout: &Option<Layout>, mut mutate: F) -> Result<Option<Layout>>
 where
     F: FnMut(&PrimExpr) -> Result<PrimExpr>,
 {
@@ -141,11 +145,11 @@ where
     };
     let shard = old_shard
         .iter()
-        .map(|iter| remap(iter, mutate))
+        .map(|iter| remap(iter, &mut mutate))
         .collect::<Result<Vec<_>>>()?;
     let replica = old_replica
         .iter()
-        .map(|iter| remap(iter, mutate))
+        .map(|iter| remap(iter, &mut mutate))
         .collect::<Result<Vec<_>>>()?;
     let shard = Array::new(shard);
     let replica = Array::new(replica);

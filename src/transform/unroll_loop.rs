@@ -191,7 +191,7 @@ impl LoopUnroller {
         }
     }
 
-    fn mutate_for(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
         let mutated = rewrite_loop_children(self, mutator, value)?;
         let extent = self.constant_extent(&mutated)?;
         let mut automatic = mutated.kind == ForKind::kSerial
@@ -309,7 +309,7 @@ impl LoopUnroller {
         }
     }
 
-    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

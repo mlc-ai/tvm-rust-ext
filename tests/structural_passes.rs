@@ -22,15 +22,17 @@ use tvm::analysis::{
     node_statistics, CallEffectKind, ExprTraceEvent,
 };
 use tvm::ir::{
-    BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, GlobalVar, IRModule, IntImm, OpaqueExpr,
-    PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName, Span, TensorLoad, Type,
-    Var,
+    BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
+    OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName,
+    Span, TensorLoad, Type, Var,
 };
 use tvm::tirx::{
     Add, AddObj, AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Axis, Bind, BindObj,
-    BufferRegion, BufferStore, BufferType, DeclBuffer, Evaluate, EvaluateObj, For, ForKind,
-    IfThenElse, Iter, IterVar, IterVarType, Layout, Let, MatchBufferRegion, Mul, Not, PrimFunc,
-    Select, SeqStmt, Stmt, TileLayout, While, GE, GT, LE, LT, NE,
+    BufferRegion, BufferStore, BufferType, DeclBuffer, DispatchContext, Evaluate, EvaluateObj,
+    ExecScope, FloorDiv, FloorMod, For, ForKind, IfThenElse, Iter, IterVar, IterVarType, Layout,
+    Let, MatchBufferRegion, Mul, Not, PrimFunc, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
+    ScopeKind, Select, SeqStmt, Stmt, StringImm, TileLayout, TilePrimitiveCall, While, EQ, GE, GT,
+    LE, LT, NE,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -1453,6 +1455,479 @@ fn rust_remove_no_op_matches_cpp_on_redundant_buffer_store() {
 }
 
 #[test]
+fn rust_stmt_simplify_matches_cpp_for_flat_bind_conditions() {
+    load_tvm_compiler();
+    let variable = Var::new("condition", "int32").unwrap();
+    let condition = EQ::new(variable.clone(), int_expression(1)).unwrap();
+    let body = SeqStmt::new(vec![
+        Bind::new(variable.clone(), int_expression(1))
+            .unwrap()
+            .into(),
+        IfThenElse::new(
+            condition,
+            Evaluate::from_i64(2).unwrap(),
+            Some(Evaluate::from_i64(3).unwrap().into()),
+        )
+        .unwrap()
+        .into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::stmt_simplify_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_stmt_simplify_matches_cpp_for_loop_constraints_and_redundant_store() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int32", 4)]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let index = Var::new("index", "int32").unwrap();
+    let load = TensorLoad::from_buffer(&buffer, vec![index.clone().into()]).unwrap();
+    let redundant_store = BufferStore::new(&buffer, load, vec![index.clone().into()]).unwrap();
+    let conditional = IfThenElse::new(
+        LT::new(index.clone(), int_expression(4)).unwrap(),
+        redundant_store,
+        Some(Evaluate::from_i64(7).unwrap().into()),
+    )
+    .unwrap();
+    let body = For::serial(index, int_expression(0), int_expression(4), conditional).unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::stmt_simplify_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_flatten_buffer_matches_cpp_for_parameter_buffer_and_nested_loops() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new(
+        "global",
+        "int32",
+        vec![
+            typed_int_expression("int64", 4),
+            typed_int_expression("int64", 8),
+        ],
+    )
+    .unwrap();
+    let buffer = buffer_type.new_var("matrix");
+    let row = Var::new("row", "int64").unwrap();
+    let column = Var::new("column", "int64").unwrap();
+    let store = BufferStore::new(
+        &buffer,
+        int_expression(7),
+        vec![row.clone().into(), column.clone().into()],
+    )
+    .unwrap();
+    let body = For::serial(
+        row,
+        typed_int_expression("int64", 0),
+        typed_int_expression("int64", 4),
+        For::serial(
+            column,
+            typed_int_expression("int64", 0),
+            typed_int_expression("int64", 8),
+            store,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::flatten_buffer_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.FlattenBuffer")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_flatten_buffer_matches_cpp_for_local_definition_load_and_store() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new(
+        "local",
+        "int32",
+        vec![
+            typed_int_expression("int64", 2),
+            typed_int_expression("int64", 3),
+        ],
+    )
+    .unwrap();
+    let buffer = buffer_type.new_var("scratch");
+    let row = typed_int_expression("int64", 1);
+    let column = typed_int_expression("int64", 2);
+    let load = TensorLoad::from_buffer(&buffer, vec![row.clone(), column.clone()]).unwrap();
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        BufferStore::new(&buffer, int_expression(11), vec![row, column])
+            .unwrap()
+            .into(),
+        Evaluate::new(load).unwrap().into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::flatten_buffer_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.FlattenBuffer")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int64", 16)]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let index = Var::new("index", "int64").unwrap();
+    let store = BufferStore::new(
+        &buffer,
+        int_expression(7),
+        vec![Add::new(index.clone(), typed_int_expression("int64", 1))
+            .unwrap()
+            .into()],
+    )
+    .unwrap();
+    let body = For::serial(
+        index,
+        typed_int_expression("int64", 0),
+        typed_int_expression("int64", 15),
+        store,
+    )
+    .unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::force_narrow_index_to_int32_prim_func(function).unwrap())
+            .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ForceNarrowIndexToInt32")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_narrow_data_type_matches_cpp_for_proven_and_unproven_ranges() {
+    load_tvm_compiler();
+    let build = |name: &str, extent: i64| {
+        let buffer_type = BufferType::new(
+            "global",
+            "int32",
+            vec![typed_int_expression("int64", extent)],
+        )
+        .unwrap();
+        let buffer = buffer_type.new_var(name);
+        let index = Var::new(&format!("{name}_index"), "int64").unwrap();
+        let body = For::serial(
+            index.clone(),
+            typed_int_expression("int64", 0),
+            typed_int_expression("int64", extent),
+            BufferStore::new(&buffer, int_expression(1), vec![index.into()]).unwrap(),
+        )
+        .unwrap();
+        PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap()
+    };
+    let safe = build("safe", 16);
+    let unsafe_range = build("wide", 70_000);
+    let module =
+        module_from_named_prim_funcs(vec![("safe", safe.clone()), ("wide", unsafe_range.clone())]);
+
+    let rust_module = module_from_named_prim_funcs(vec![
+        (
+            "safe",
+            transform::narrow_data_type_prim_func(safe, 16).unwrap(),
+        ),
+        (
+            "wide",
+            transform::narrow_data_type_prim_func(unsafe_range, 16).unwrap(),
+        ),
+    ]);
+    let cpp_narrow: transform::Pass = Function::get_global("tirx.transform.NarrowDataType")
+        .unwrap()
+        .call_tuple((16_i64,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_module = cpp_narrow.run(module).unwrap();
+
+    assert_structural_equal(&rust_module, &cpp_module);
+}
+
+#[test]
+fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("cuda")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let callee_global = GlobalVar::new("worker");
+    let callee = PrimFunc::with_metadata(
+        Vec::new(),
+        Evaluate::from_i64(0).unwrap(),
+        PrimType::new("int32").unwrap(),
+        DictAttrs::empty(),
+        None,
+    )
+    .unwrap();
+    let call = || {
+        Evaluate::new(Call::new(
+            PrimType::new("int32").unwrap(),
+            callee_global.clone(),
+            Vec::new(),
+        ))
+        .unwrap()
+    };
+    let device_call = AttrStmt::new(
+        0_i64,
+        "tirx.device_entry",
+        typed_int_expression("bool", 1),
+        call(),
+    )
+    .unwrap();
+    let caller = PrimFunc::with_metadata(
+        Vec::new(),
+        SeqStmt::new(vec![call().into(), device_call.into()]).unwrap(),
+        Type::missing(),
+        DictAttrs::from_dictionary(Map::from_iter([(
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("main")),
+        )])),
+        None,
+    )
+    .unwrap();
+    let module = IRModule::with_metadata(
+        Map::from_iter([
+            (callee_global, BaseFunc::from(callee)),
+            (GlobalVar::new("main"), BaseFunc::from(caller)),
+        ]),
+        SourceMap::new(),
+        DictAttrs::empty(),
+        Map::new(),
+    )
+    .unwrap();
+
+    let rust_result = transform::bind_target_module(module.clone(), target.clone()).unwrap();
+    let cpp_bind: transform::Pass = Function::get_global("tirx.transform.BindTarget")
+        .unwrap()
+        .call_tuple((target,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = cpp_bind.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tirx_cleanup_matches_cpp_for_a_layout_buffer_parameter() {
+    load_tvm_compiler();
+    let extent = typed_int_expression("int64", 8);
+    let layout: Layout = TileLayout::new(
+        vec![Iter::new(
+            &extent,
+            typed_int_expression("int64", 1),
+            Axis::get("m").unwrap(),
+        )
+        .unwrap()],
+        Vec::new(),
+        Map::new(),
+    )
+    .unwrap()
+    .into();
+    let buffer_type = BufferType::with_metadata(
+        "global",
+        PrimType::new("int32").unwrap(),
+        vec![extent],
+        Vec::new(),
+        typed_int_expression("int64", 0),
+        64,
+        1,
+        Some(layout),
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let body = BufferStore::new(
+        &buffer,
+        int_expression(7),
+        vec![typed_int_expression("int64", 3)],
+    )
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(
+        vec![buffer.as_var().clone()],
+        body,
+        Type::missing(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_tirx_cleanup_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTIRxCleanup")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_bf16_storage_legalize_matches_cpp_for_local_buffer_storage() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("local", "bfloat16", vec![typed_int_expression("int64", 4)]).unwrap();
+    let buffer = buffer_type.new_var("values");
+    let stored: PrimExpr = Function::get_global("tirx.reinterpret")
+        .unwrap()
+        .call_tuple((
+            PrimType::new("bfloat16").unwrap(),
+            IntImm::new("uint16", 0x3f80).unwrap(),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        BufferStore::new(&buffer, stored, vec![typed_int_expression("int64", 0)])
+            .unwrap()
+            .into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::bf16_storage_legalize_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.BF16StorageLegalize")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_fp8_storage_legalize_matches_cpp_for_local_buffer_storage() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new(
+        "local",
+        "float8_e4m3fn",
+        vec![typed_int_expression("int64", 4)],
+    )
+    .unwrap();
+    let buffer = buffer_type.new_var("values");
+    let stored: PrimExpr = Function::get_global("tirx.reinterpret")
+        .unwrap()
+        .call_tuple((
+            PrimType::new("float8_e4m3fn").unwrap(),
+            IntImm::new("uint8", 0x38).unwrap(),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        BufferStore::new(&buffer, stored, vec![typed_int_expression("int64", 0)])
+            .unwrap()
+            .into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::fp8_storage_legalize_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.FP8StorageLegalize")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_bf16_compute_legalize_matches_cpp_across_a_buffer_boundary() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("global", "bfloat16", vec![typed_int_expression("int64", 4)]).unwrap();
+    let buffer = buffer_type.new_var("values");
+    let index = typed_int_expression("int64", 0);
+    let loaded = TensorLoad::from_buffer(&buffer, vec![index.clone()]).unwrap();
+    let increment = tvm::ir::FloatImm::new("bfloat16", 1.0).unwrap();
+    let updated = Add::new(loaded, increment).unwrap();
+    let body = BufferStore::new(&buffer, updated, vec![index]).unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::bf16_compute_legalize_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.BF16ComputeLegalize")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_fp8_compute_legalize_matches_cpp_across_a_buffer_boundary() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new(
+        "global",
+        "float8_e4m3fn",
+        vec![typed_int_expression("int64", 4)],
+    )
+    .unwrap();
+    let buffer = buffer_type.new_var("values");
+    let index = typed_int_expression("int64", 0);
+    let loaded = TensorLoad::from_buffer(&buffer, vec![index.clone()]).unwrap();
+    let increment = tvm::ir::FloatImm::new("float8_e4m3fn", 1.0).unwrap();
+    let updated = Add::new(loaded, increment).unwrap();
+    let body = BufferStore::new(&buffer, updated, vec![index]).unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result = IRModule::from_expr(
+        transform::fp8_compute_legalize_prim_func(function, "float16").unwrap(),
+    )
+    .unwrap();
+    let cpp_pass: transform::Pass = Function::get_global("tirx.transform.FP8ComputeLegalize")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("float16"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = cpp_pass.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
 fn rust_remove_no_op_uses_branch_constraints_like_cpp() {
     load_tvm_compiler();
     let extent = Var::new("n", "int32").unwrap();
@@ -2779,6 +3254,1021 @@ fn common_subexpr_elim_remaps_buffer_definitions_and_uses_together() {
     let rust_result =
         IRModule::from_expr(transform::common_subexpr_elim_prim_func(function).unwrap()).unwrap();
     let cpp_result = cpp_pass("tirx.transform.CommonSubexprElim")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tirx_dedup_cu_tensor_maps_matches_cpp() {
+    load_tvm_compiler();
+    let get_operator = |name: &str| -> Expr {
+        Function::get_global("ir.GetOp")
+            .unwrap()
+            .call_tuple((tvm::tvm_ffi::String::from(name),))
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
+    let stack_alloca = get_operator("tirx.tvm_stack_alloca");
+    let call_packed = get_operator("tirx.tvm_call_packed");
+    let handle_type = PointerType::new(PrimType::void(), "global").unwrap();
+    let first = Var::with_type("first_tensormap", handle_type.clone());
+    let duplicate = Var::with_type("duplicate_tensormap", handle_type.clone());
+    let allocation = |variable: Var| {
+        Bind::new(
+            variable,
+            Call::new(
+                handle_type.clone(),
+                stack_alloca.clone(),
+                vec![StringImm::new("tensormap").into(), int_expression(1)],
+            ),
+        )
+        .unwrap()
+    };
+    let encode = |variable: Var| {
+        Evaluate::new(Call::new(
+            PrimType::new("int32").unwrap(),
+            call_packed.clone(),
+            vec![
+                StringImm::new("runtime.cuTensorMapEncodeTiled").into(),
+                variable.into(),
+                int_expression(16),
+                int_expression(32),
+            ],
+        ))
+        .unwrap()
+    };
+    let use_handle = Evaluate::new(Call::new(
+        PrimType::new("int32").unwrap(),
+        call_packed.clone(),
+        vec![
+            StringImm::new("testing.consume_tensormap").into(),
+            duplicate.clone().into(),
+        ],
+    ))
+    .unwrap();
+    let body = Stmt::sequence(vec![
+        allocation(first.clone()).into(),
+        encode(first.clone()).into(),
+        allocation(duplicate.clone()).into(),
+        encode(duplicate).into(),
+        use_handle.into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let expected_body = Stmt::sequence(vec![
+        allocation(first.clone()).into(),
+        encode(first.clone()).into(),
+        Evaluate::new(Call::new(
+            PrimType::new("int32").unwrap(),
+            call_packed,
+            vec![
+                StringImm::new("testing.consume_tensormap").into(),
+                first.into(),
+            ],
+        ))
+        .unwrap()
+        .into(),
+    ])
+    .unwrap();
+    let expected = IRModule::from_expr(PrimFunc::from_body(expected_body).unwrap()).unwrap();
+
+    let rust_result = IRModule::from_expr(
+        transform::lower_tirx_dedup_cu_tensor_maps_prim_func(function).unwrap(),
+    )
+    .unwrap();
+
+    assert_structural_equal(&rust_result, &expected);
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_integer_floor_division() {
+    load_tvm_compiler();
+    let value = Var::new("value", "int32").unwrap();
+    let body =
+        Evaluate::new(FloorDiv::new(value.clone(), IntImm::new("int32", 8).unwrap()).unwrap())
+            .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function =
+        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_access_pointer() {
+    load_tvm_compiler();
+    let element_type = PrimType::new("float32").unwrap();
+    let pointer_type = PointerType::new(element_type.clone(), "global").unwrap();
+    let data = Var::with_type("data", pointer_type.clone());
+    let access_ptr: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_access_ptr"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let access = Call::new(
+        pointer_type,
+        access_ptr,
+        vec![
+            FloatImm::new("float32", 0.0).unwrap().into(),
+            data.clone().into(),
+            int_expression(3),
+            int_expression(8),
+            int_expression(1),
+        ],
+    );
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(
+        vec![data],
+        Evaluate::new(access).unwrap(),
+        Type::missing(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_signed_floor_remainder() {
+    load_tvm_compiler();
+    let value = Var::new("value", "int32").unwrap();
+    let body =
+        Evaluate::new(FloorMod::new(value.clone(), IntImm::new("int32", 3).unwrap()).unwrap())
+            .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function =
+        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_registered_target_rule() {
+    load_tvm_compiler();
+    let value = Var::new("value", "float32").unwrap();
+    let exponential: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.exp"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = Evaluate::new(Call::new(
+        PrimType::new("float32").unwrap(),
+        exponential,
+        vec![value.clone().into()],
+    ))
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function =
+        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() {
+    load_tvm_compiler();
+    let a = Var::new("a", "float32").unwrap();
+    let b = Var::new("b", "float32").unwrap();
+    let c = Var::new("c", "float32").unwrap();
+    let expression = Add::new(Mul::new(a.clone(), b.clone()).unwrap(), c.clone()).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(
+        vec![a, b, c],
+        Evaluate::new(expression).unwrap(),
+        Type::missing(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_warp_memory_matches_cpp_for_flat_buffer_access() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new("warp", "int32", vec![int_expression(64)]).unwrap();
+    let buffer = buffer_type.new_var("warp_buffer");
+    let thread = Var::new("thread_idx", "int32").unwrap();
+    let thread_axis = IterVar::with_metadata(
+        None,
+        thread.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let index = Mul::new(thread.clone(), IntImm::new("int32", 2).unwrap()).unwrap();
+    let store = BufferStore::new(
+        buffer.clone(),
+        IntImm::new("int32", 1).unwrap(),
+        vec![index.clone().into()],
+    )
+    .unwrap();
+    let load = TensorLoad::from_buffer(buffer.clone(), vec![index.into()]).unwrap();
+    let scope = AttrStmt::new(
+        thread_axis,
+        "thread_extent",
+        IntImm::new("int32", 32).unwrap(),
+        Stmt::sequence(vec![store.into(), Evaluate::new(load).unwrap().into()]).unwrap(),
+    )
+    .unwrap();
+    let body =
+        Stmt::sequence(vec![AllocBuffer::new(buffer).unwrap().into(), scope.into()]).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("cuda").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_warp_memory_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerWarpMemory")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_warp_memory_matches_cpp_for_cross_thread_shuffle() {
+    load_tvm_compiler();
+    let buffer_type = BufferType::new("warp", "int32", vec![int_expression(64)]).unwrap();
+    let buffer = buffer_type.new_var("warp_buffer");
+    let thread = Var::new("thread_idx", "int32").unwrap();
+    let thread_axis = IterVar::with_metadata(
+        None,
+        thread.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let store_index = Mul::new(thread, IntImm::new("int32", 2).unwrap()).unwrap();
+    let store = BufferStore::new(
+        buffer.clone(),
+        IntImm::new("int32", 1).unwrap(),
+        vec![store_index.into()],
+    )
+    .unwrap();
+    let load = TensorLoad::from_buffer(buffer.clone(), vec![int_expression(6)]).unwrap();
+    let scope = AttrStmt::new(
+        thread_axis,
+        "thread_extent",
+        IntImm::new("int32", 32).unwrap(),
+        Stmt::sequence(vec![store.into(), Evaluate::new(load).unwrap().into()]).unwrap(),
+    )
+    .unwrap();
+    let body =
+        Stmt::sequence(vec![AllocBuffer::new(buffer).unwrap().into(), scope.into()]).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("cuda").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_warp_memory_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerWarpMemory")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tvm_builtin_matches_cpp_for_context_id() {
+    load_tvm_compiler();
+    let context_id: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_context_id"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = Evaluate::new(Call::new(
+        PrimType::new("int32").unwrap(),
+        context_id,
+        Vec::new(),
+    ))
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_tvm_builtin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTVMBuiltin")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tvm_builtin_matches_cpp_for_packed_call_stack() {
+    load_tvm_compiler();
+    let call_packed: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_call_packed"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let body = Evaluate::new(Call::new(
+        PrimType::new("int32").unwrap(),
+        call_packed,
+        vec![
+            StringImm::new("testing.consume").into(),
+            IntImm::new("int32", 4).unwrap().into(),
+        ],
+    ))
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_tvm_builtin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTVMBuiltin")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tvm_builtin_matches_cpp_for_shape_stack() {
+    load_tvm_compiler();
+    let operator = |name: &str| -> Expr {
+        Function::get_global("ir.GetOp")
+            .unwrap()
+            .call_tuple((tvm::tvm_ffi::String::from(name),))
+            .unwrap()
+            .try_into()
+            .unwrap()
+    };
+    let shape = Call::new(
+        PointerType::new(PrimType::new("int64").unwrap(), "global").unwrap(),
+        operator("tirx.tvm_stack_make_shape"),
+        vec![int_expression(4), int_expression(8)],
+    );
+    let body = Evaluate::new(Call::new(
+        PrimType::new("int32").unwrap(),
+        operator("tirx.tvm_call_packed"),
+        vec![StringImm::new("testing.consume_shape").into(), shape.into()],
+    ))
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_tvm_builtin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTVMBuiltin")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_lower_tvm_builtin_matches_cpp_for_workspace_allocation() {
+    load_tvm_compiler();
+    let buffer = BufferType::new("local", "int32", vec![int_expression(1024)])
+        .unwrap()
+        .new_var("workspace");
+    let body = AttrStmt::new(
+        tvm::tvm_ffi::String::from("default"),
+        "device_id",
+        IntImm::new("int32", 0).unwrap(),
+        Stmt::sequence(vec![
+            AllocBuffer::new(buffer).unwrap().into(),
+            Evaluate::from_i64(0).unwrap().into(),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("llvm").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::lower_tvm_builtin_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.LowerTVMBuiltin")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_pointer_value_type_rewrite_matches_cpp_for_vector_buffer_load() {
+    load_tvm_compiler();
+    let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
+        .unwrap()
+        .new_var("data");
+    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+        .unwrap()
+        .call_tuple((
+            prim_int_expression(0),
+            prim_int_expression(1),
+            prim_int_expression(4),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
+    let function =
+        PrimFunc::new(vec![buffer.as_var().clone()], Evaluate::new(load).unwrap()).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
+            .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_pointer_value_type_rewrite_matches_cpp_for_scalar_shuffle_read() {
+    load_tvm_compiler();
+    let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
+        .unwrap()
+        .new_var("data");
+    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+        .unwrap()
+        .call_tuple((
+            prim_int_expression(0),
+            prim_int_expression(1),
+            prim_int_expression(4),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let vector_load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
+    let scalar_load = TensorLoad::from_buffer(buffer.clone(), vec![int_expression(1)]).unwrap();
+    let body = Stmt::sequence(vec![
+        Evaluate::new(vector_load).unwrap().into(),
+        Evaluate::new(scalar_load).unwrap().into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
+            .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_pointer_value_type_rewrite_matches_cpp_for_allocated_buffer() {
+    load_tvm_compiler();
+    let buffer = BufferType::new("local", "float32", vec![int_expression(16)])
+        .unwrap()
+        .new_var("temporary");
+    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+        .unwrap()
+        .call_tuple((
+            prim_int_expression(0),
+            prim_int_expression(1),
+            prim_int_expression(4),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
+    let body = Stmt::sequence(vec![
+        AllocBuffer::new(buffer).unwrap().into(),
+        Evaluate::new(load).unwrap().into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
+            .unwrap();
+    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_vectorize_loop_matches_cpp_for_buffer_update() {
+    load_tvm_compiler();
+    let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
+        .unwrap()
+        .new_var("data");
+    let lane = Var::new("lane", "int32").unwrap();
+    let index: Expr = lane.clone().into();
+    let load = TensorLoad::from_buffer(buffer.clone(), vec![index.clone()]).unwrap();
+    let updated = Add::new(load, FloatImm::new("float32", 1.0).unwrap()).unwrap();
+    let store = BufferStore::new(&buffer, updated, vec![index]).unwrap();
+    let loop_node = For::with_metadata(
+        lane,
+        int_expression(0),
+        int_expression(4),
+        ForKind::kVectorized,
+        store.into(),
+        None,
+        Map::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    let function = PrimFunc::new(vec![buffer.as_var().clone()], loop_node).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::vectorize_loop_prim_func(function, true).unwrap()).unwrap();
+    let native_pass: transform::Pass = Function::get_global("tirx.transform.VectorizeLoop")
+        .unwrap()
+        .call_tuple((true,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = native_pass.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_vectorize_loop_matches_cpp_when_disabled() {
+    load_tvm_compiler();
+    let lane = Var::new("lane", "int32").unwrap();
+    let loop_node = For::with_metadata(
+        lane,
+        int_expression(0),
+        int_expression(4),
+        ForKind::kVectorized,
+        Evaluate::from_i64(0).unwrap().into(),
+        None,
+        Map::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    let function = PrimFunc::from_body(loop_node).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::vectorize_loop_prim_func(function, false).unwrap()).unwrap();
+    let native_pass: transform::Pass = Function::get_global("tirx.transform.VectorizeLoop")
+        .unwrap()
+        .call_tuple((false,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cpp_result = native_pass.run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_for_sequential_tagged_allocations() {
+    load_tvm_compiler();
+    let buffer_a = BufferType::new("local.L0A", "float32", vec![int_expression(200)])
+        .unwrap()
+        .new_var("a");
+    let buffer_b = BufferType::new("local.L0A", "float32", vec![int_expression(200)])
+        .unwrap()
+        .new_var("b");
+    let lane_a = Var::new("i", "int32").unwrap();
+    let lane_b = Var::new("j", "int32").unwrap();
+    let store_a = BufferStore::new(
+        &buffer_a,
+        FloatImm::new("float32", 1.2).unwrap(),
+        vec![Expr::from(lane_a.clone())],
+    )
+    .unwrap();
+    let store_b = BufferStore::new(
+        &buffer_b,
+        FloatImm::new("float32", 1.3).unwrap(),
+        vec![Expr::from(lane_b.clone())],
+    )
+    .unwrap();
+    let loop_a = For::serial(lane_a, int_expression(0), int_expression(10), store_a).unwrap();
+    let loop_b = For::serial(lane_b, int_expression(0), int_expression(10), store_b).unwrap();
+    let body = Stmt::sequence(vec![
+        AllocBuffer::new(buffer_a).unwrap().into(),
+        loop_a.into(),
+        AllocBuffer::new(buffer_b).unwrap().into(),
+        loop_b.into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(function.clone()).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::storage_rewrite_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.StorageRewrite")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_make_packed_api_matches_cpp_for_scalar_arguments_and_return() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("cuda")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let value = Var::new("value", "int32").unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([
+        (
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("add_one")),
+        ),
+        (tvm::tvm_ffi::String::from("target"), Any::from(target)),
+    ]));
+    let function = PrimFunc::with_metadata(
+        vec![value.clone()],
+        Return::new(Add::new(value, int_expression(1)).unwrap()),
+        PrimType::new("int32").unwrap(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let rust_result = transform::make_packed_api_module(module.clone()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.MakePackedAPI")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_make_packed_api_matches_cpp_for_buffer_argument() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("cuda")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let extent = Var::new("n", "int64").unwrap();
+    let buffer = BufferType::new(
+        "global",
+        "float32",
+        vec![Expr::from(extent.clone()), typed_int_expression("int64", 4)],
+    )
+    .unwrap()
+    .new_var("buffer");
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([
+        (
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("read_buffer")),
+        ),
+        (tvm::tvm_ffi::String::from("target"), Any::from(target)),
+    ]));
+    let load = TensorLoad::from_buffer(
+        buffer.as_var().clone(),
+        vec![
+            typed_int_expression("int64", 0),
+            typed_int_expression("int64", 0),
+        ],
+    )
+    .unwrap();
+    let function = PrimFunc::with_metadata(
+        vec![buffer.as_var().clone()],
+        Return::new(load),
+        PrimType::new("float32").unwrap(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let rust_result = transform::make_packed_api_module(module.clone()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.MakePackedAPI")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_split_host_device_matches_cpp_for_cuda_thread_extent() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("cuda")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let thread_var = Var::new("threadIdx.x", "int32").unwrap();
+    let thread = IterVar::with_metadata(
+        None,
+        thread_var,
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let body = AttrStmt::new(
+        thread,
+        "thread_extent",
+        int_expression(32),
+        Evaluate::from_i64(0).unwrap(),
+    )
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([
+        (
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("main")),
+        ),
+        (tvm::tvm_ffi::String::from("target"), Any::from(target)),
+    ]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let rust_result = transform::split_host_device_module(module.clone()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.SplitHostDevice")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_split_host_device_matches_cpp_for_buffer_capture() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("cuda")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let buffer = BufferType::new("global", "int32", vec![int_expression(16)])
+        .unwrap()
+        .new_var("buffer");
+    let thread_var = Var::new("threadIdx.x", "int32").unwrap();
+    let thread = IterVar::with_metadata(
+        None,
+        thread_var.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )
+    .unwrap();
+    let store = BufferStore::new(&buffer, int_expression(1), vec![Expr::from(thread_var)]).unwrap();
+    let body = AttrStmt::new(thread, "thread_extent", int_expression(16), store).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([
+        (
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("write_buffer")),
+        ),
+        (tvm::tvm_ffi::String::from("target"), Any::from(target)),
+    ]));
+    let function = PrimFunc::with_metadata(
+        vec![buffer.as_var().clone()],
+        body,
+        Type::missing(),
+        attrs,
+        None,
+    )
+    .unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let rust_result = transform::split_host_device_module(module.clone()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.SplitHostDevice")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_split_host_device_matches_cpp_for_cpu_device_scope() {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm").unwrap();
+    let target = tvm::target::Target::new("c")
+        .unwrap()
+        .with_host(&host)
+        .unwrap();
+    let body = AttrStmt::new(
+        0_i64,
+        "device_scope",
+        int_expression(0),
+        Evaluate::from_i64(0).unwrap(),
+    )
+    .unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([
+        (
+            tvm::tvm_ffi::String::from("global_symbol"),
+            Any::from(tvm::tvm_ffi::String::from("host_compute")),
+        ),
+        (tvm::tvm_ffi::String::from("target"), Any::from(target)),
+    ]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(function).unwrap();
+
+    let rust_result = transform::split_host_device_module(module.clone()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.SplitHostDevice")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_tile_primitive_dispatch_matches_cpp_for_scope_ids() {
+    load_tvm_compiler();
+    let block_x: tvm::tirx::PrimVar = Var::new("bx", "int32").unwrap().try_into().unwrap();
+    let block_y: tvm::tirx::PrimVar = Var::new("by", "int32").unwrap().try_into().unwrap();
+    let block_z: tvm::tirx::PrimVar = Var::new("bz", "int32").unwrap().try_into().unwrap();
+    let lane: tvm::tirx::PrimVar = Var::new("lane", "int32").unwrap().try_into().unwrap();
+    let blocks = ScopeIdDef::new(
+        vec![block_x, block_y, block_z],
+        Some(vec![
+            prim_int_expression(1),
+            prim_int_expression(1),
+            prim_int_expression(1),
+        ]),
+        ScopeBinding::KERNEL_CTA,
+        None,
+    )
+    .unwrap();
+    let threads = ScopeIdDef::new(
+        vec![lane.clone()],
+        Some(vec![prim_int_expression(32)]),
+        ScopeBinding::CTA_THREAD,
+        None,
+    )
+    .unwrap();
+    let body = Stmt::sequence(vec![
+        ScopeIdDefStmt::new(blocks, None).unwrap().into(),
+        ScopeIdDefStmt::new(threads, None).unwrap().into(),
+        Evaluate::new(lane).unwrap().into(),
+    ])
+    .unwrap();
+    let body = AttrStmt::new(0_i64, "tirx.device_entry", int_expression(1), body).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("cuda").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+    let lower_input = module.clone();
+
+    let rust_function = transform::tile_primitive_dispatch_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.TilePrimitiveDispatch")
+        .run(module)
+        .unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+
+    let rust_lowered = transform::lower_tirx()
+        .unwrap()
+        .run(lower_input.clone())
+        .unwrap();
+    let cpp_lowered = cpp_pass("tirx.transform.LowerTIRx")
+        .run(lower_input)
+        .unwrap();
+    assert_structural_equal(&rust_lowered, &cpp_lowered);
+}
+
+#[test]
+fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
+    load_tvm_compiler();
+    Function::register_global(
+        "tirx.f_op_dispatcher",
+        Function::from_typed(
+            |_call: TilePrimitiveCall, context: DispatchContext| -> Result<PrimFunc> {
+                let lane = context
+                    .inter()?
+                    .get(&tvm::tvm_ffi::String::from("laneid"))?
+                    .expect("thread dispatch exposes laneid");
+                PrimFunc::from_body(Evaluate::new(lane.get(1)?)?)
+            },
+        ),
+    )
+    .unwrap();
+    let operator: Expr = Function::get_global("ir.GetOp")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("tirx.tile.zero"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let call = TilePrimitiveCall::new(
+        operator,
+        Vec::new(),
+        Map::new(),
+        Map::new(),
+        None,
+        ExecScope::new(ScopeKind::THREAD).unwrap(),
+    )
+    .unwrap();
+    let block: tvm::tirx::PrimVar = Var::new("block", "int32").unwrap().try_into().unwrap();
+    let lane: tvm::tirx::PrimVar = Var::new("lane", "int32").unwrap().try_into().unwrap();
+    let blocks = ScopeIdDef::new(
+        vec![block],
+        Some(vec![prim_int_expression(1)]),
+        ScopeBinding::KERNEL_CTA,
+        None,
+    )
+    .unwrap();
+    let threads = ScopeIdDef::new(
+        vec![lane.clone()],
+        Some(vec![prim_int_expression(32)]),
+        ScopeBinding::CTA_THREAD,
+        None,
+    )
+    .unwrap();
+    let filtered_call =
+        IfThenElse::new(EQ::new(lane, prim_int_expression(3)).unwrap(), call, None).unwrap();
+    let body = Stmt::sequence(vec![
+        ScopeIdDefStmt::new(blocks, None).unwrap().into(),
+        ScopeIdDefStmt::new(threads, None).unwrap().into(),
+        filtered_call.into(),
+    ])
+    .unwrap();
+    let body = AttrStmt::new(0_i64, "tirx.device_entry", int_expression(1), body).unwrap();
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        tvm::tvm_ffi::String::from("target"),
+        Any::from(tvm::target::Target::new("cuda").unwrap()),
+    )]));
+    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::tile_primitive_dispatch_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.TilePrimitiveDispatch")
         .run(module)
         .unwrap();
 

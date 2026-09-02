@@ -44,9 +44,20 @@ pub fn assert_structural_equal<L: AnyCompatible, R: AnyCompatible>(lhs: &L, rhs:
         .unwrap();
     if !bool::try_from(equal).unwrap() {
         let repr = Function::get_global("ffi.ReprPrint").unwrap();
+        let mismatch = Function::get_global("ffi.GetFirstStructuralMismatch")
+            .unwrap()
+            .call_packed(&[
+                AnyView::from(lhs),
+                AnyView::from(rhs),
+                AnyView::from(&false),
+                AnyView::from(&false),
+            ])
+            .unwrap();
+        let mismatch =
+            String::try_from(repr.call_packed(&[AnyView::from(&mismatch)]).unwrap()).unwrap();
         let lhs = String::try_from(repr.call_packed(&[AnyView::from(lhs)]).unwrap()).unwrap();
         let rhs = String::try_from(repr.call_packed(&[AnyView::from(rhs)]).unwrap()).unwrap();
-        panic!("structural mismatch:\nleft:  {lhs}\nright: {rhs}");
+        panic!("structural mismatch at {mismatch}:\nleft:  {lhs}\nright: {rhs}");
     }
 }
 

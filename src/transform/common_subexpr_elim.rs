@@ -20,18 +20,23 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Error, Map, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue, TYPE_ERROR,
+    structural_mutate, structural_visit, Any, Error, Map, Mutator, ObjectCore, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    TYPE_ERROR,
 };
 
 use super::utils::{
     array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{Call, Expr, PrimExpr, TensorLoad, Var};
+use crate::ir::{
+    Call, CallObj, Expr, FloatImmObj, IntImmObj, PrimExpr, TensorLoad, TensorLoadObj, Var, VarObj,
+};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, Let,
-    PrimFunc, Reduce, SeqStmt, Stmt, TileLayout, While,
+    AddObj, AllocBuffer, AndObj, AttrStmt, Bind, BufferStore, BufferVar, CastObj, DeclBuffer,
+    DivObj, EQObj, FloorDivObj, FloorModObj, For, GEObj, GTObj, IfThenElse, LEObj, LTObj, Let,
+    LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, PrimFunc, Reduce, SelectObj,
+    SeqStmt, Stmt, StringImmObj, SubObj, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -68,27 +73,47 @@ enum ExprClass {
     Other,
 }
 
-fn expr_class(type_index: i32) -> Result<ExprClass> {
-    let type_info = unsafe { tvm_ffi::tvm_ffi_sys::TVMFFIGetTypeInfo(type_index) };
-    if type_info.is_null() {
-        return Err(Error::new(
-            TYPE_ERROR,
-            &format!("cannot find type info for type_index={type_index}"),
-            "",
-        ));
+fn expr_class(type_index: i32) -> ExprClass {
+    macro_rules! is_one_of {
+        ($($node:ty),+ $(,)?) => {
+            $(type_index == <$node>::type_index())||+
+        };
     }
-    let type_key = unsafe { (*type_info).type_key.as_str() };
-    Ok(match type_key {
-        "ir.Var" | "ir.IntImm" | "ir.FloatImm" | "tirx.StringImm" => ExprClass::Leaf,
-        "tirx.Add" | "tirx.Sub" | "tirx.Mul" | "tirx.Div" | "tirx.Mod" | "tirx.FloorDiv"
-        | "tirx.FloorMod" | "tirx.Min" | "tirx.Max" | "tirx.EQ" | "tirx.NE" | "tirx.LT"
-        | "tirx.LE" | "tirx.GT" | "tirx.GE" | "tirx.And" | "tirx.Or" | "tirx.Not" | "tirx.Cast"
-        | "tirx.Select" => ExprClass::Recordable,
-        "tirx.Let" => ExprClass::Let,
-        "ir.Call" => ExprClass::Call,
-        "ir.TensorLoad" => ExprClass::TensorLoad,
-        _ => ExprClass::Other,
-    })
+
+    if is_one_of!(VarObj, IntImmObj, FloatImmObj, StringImmObj) {
+        ExprClass::Leaf
+    } else if is_one_of!(
+        AddObj,
+        SubObj,
+        MulObj,
+        DivObj,
+        ModObj,
+        FloorDivObj,
+        FloorModObj,
+        MinObj,
+        MaxObj,
+        EQObj,
+        NEObj,
+        LTObj,
+        LEObj,
+        GTObj,
+        GEObj,
+        AndObj,
+        OrObj,
+        NotObj,
+        CastObj,
+        SelectObj,
+    ) {
+        ExprClass::Recordable
+    } else if type_index == LetObj::type_index() {
+        ExprClass::Let
+    } else if type_index == CallObj::type_index() {
+        ExprClass::Call
+    } else if type_index == TensorLoadObj::type_index() {
+        ExprClass::TensorLoad
+    } else {
+        ExprClass::Other
+    }
 }
 
 fn structural_hash(expression: &PrimExpr) -> Result<i64> {
@@ -331,7 +356,7 @@ impl CsePlanner {
             parent.direct_children.push(expression.clone());
         }
 
-        let class = expr_class(value.type_index())?;
+        let class = expr_class(value.type_index());
         visitor.state_mut().expression_frames.push(ExprFrame {
             expression,
             class,
