@@ -1843,13 +1843,18 @@ impl IRModule {
             .filter(|name| !name.is_empty())
             .unwrap_or("main");
         let global_var = GlobalVar::new(global_name);
-        Self::with_metadata(
-            [(global_var, function)].into_iter().collect(),
-            SourceMap::new(),
-            DictAttrs::empty(),
-            Map::new(),
-        )
+        Self::new([(global_var, function)].into_iter().collect())
     }
+
+    // customized_new(IRModule) begin
+    /// Construct a module that holds only `functions`.
+    ///
+    /// The source map, attributes, and global infos take the C++ constructor
+    /// defaults (all empty); use [`IRModule::with_metadata`] to supply them.
+    pub fn new(functions: Map<GlobalVar, BaseFunc>) -> Result<Self> {
+        Self::with_metadata(functions, SourceMap::new(), DictAttrs::empty(), Map::new())
+    }
+    // customized_new(IRModule) end
 
     /// Construct a module directly in Rust from all of its stored state.
     ///

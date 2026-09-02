@@ -177,16 +177,11 @@ impl Vectorizer {
         let body: Stmt = tvm_ffi::cached_global_func!("tirx.Substitute")
             .call_tuple((statement, substitutions))?
             .try_into()?;
-        For::with_metadata(
+        For::new(
             scalar,
-            IntImm::from_dtype(ty.dtype, 0)?.into(),
-            self.lanes.clone().into(),
-            ForKind::kSerial,
+            IntImm::from_dtype(ty.dtype, 0)?,
+            self.lanes.clone(),
             body,
-            None,
-            Map::new(),
-            None,
-            None,
         )
         .map(Into::into)
     }

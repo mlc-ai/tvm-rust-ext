@@ -457,14 +457,10 @@ impl NoOpRemover {
             Some(else_case) if is_no_op(&else_case) => Ok(IfThenElse::new(
                 conditional.condition.clone(),
                 conditional.then_case.clone(),
-                None,
             )?
             .into()),
             Some(else_case) if then_is_no_op => {
-                Ok(
-                    IfThenElse::new(Not::new(conditional.condition.clone())?, else_case, None)?
-                        .into(),
-                )
+                Ok(IfThenElse::new(Not::new(conditional.condition.clone())?, else_case)?.into())
             }
             None if then_is_no_op => self.make_evaluate(conditional.condition.clone()),
             _ => Ok(conditional.into()),

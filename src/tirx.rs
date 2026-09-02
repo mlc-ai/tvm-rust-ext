@@ -1725,14 +1725,19 @@ impl std::ops::Deref for IfThenElseObj {
 }
 
 impl IfThenElse {
-    /// Construct a conditional statement directly in Rust.
-    pub fn new<C, T>(condition: C, then_case: T, else_case: Option<Stmt>) -> Result<Self>
+    // customized_new(IfThenElse) begin
+    /// Construct a conditional statement with no `else` branch and no source
+    /// metadata, matching the C++ constructor defaults.
+    ///
+    /// Use [`IfThenElse::with_span`] to attach an `else` branch or a span.
+    pub fn new<C, T>(condition: C, then_case: T) -> Result<Self>
     where
         C: Into<Expr>,
         T: Into<Stmt>,
     {
-        Self::with_span(condition, then_case, else_case, None)
+        Self::with_span(condition, then_case, None, None)
     }
+    // customized_new(IfThenElse) end
 
     /// Construct a conditional statement with optional source metadata.
     pub fn with_span<C, T>(
@@ -1855,8 +1860,13 @@ impl std::ops::Deref for ForObj {
 }
 
 impl For {
-    /// Construct a serial loop with no thread binding, annotations, or custom step.
-    pub fn serial<V, M, E, B>(loop_var: V, minimum: M, extent: E, body: B) -> Result<Self>
+    // customized_new(For) begin
+    /// Construct a serial loop with no thread binding, annotations, custom
+    /// step, or source metadata.
+    ///
+    /// Every field the C++ constructor defaults, plus the loop kind, is fixed
+    /// here; use [`For::with_metadata`] for any other loop.
+    pub fn new<V, M, E, B>(loop_var: V, minimum: M, extent: E, body: B) -> Result<Self>
     where
         V: Into<Var>,
         M: Into<Expr>,
@@ -1875,6 +1885,7 @@ impl For {
             None,
         )
     }
+    // customized_new(For) end
 
     /// Construct a loop directly in Rust with TVM's bound normalization and validation.
     #[allow(clippy::too_many_arguments)]

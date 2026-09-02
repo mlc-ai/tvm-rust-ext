@@ -160,18 +160,14 @@ pub fn make_packed_api_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
     let scoped_body: Stmt = compute_scope.into();
     let scoped_body = if let Some(set_device) = set_device {
-        crate::tirx::SeqStmt::from_complete_fields(None, Array::new(vec![set_device, scoped_body]))
-            .into()
+        crate::tirx::SeqStmt::new(vec![set_device, scoped_body])?.into()
     } else {
         scoped_body
     };
-    let body = crate::tirx::SeqStmt::from_complete_fields(
-        None,
-        Array::new(vec![
-            scoped_body,
-            Return::new(IntImm::new("int32", 0)?).into(),
-        ]),
-    )
+    let body = crate::tirx::SeqStmt::new(vec![
+        scoped_body,
+        Return::new(IntImm::new("int32", 0)?).into(),
+    ])?
     .into();
     let body = merge_nest(&binder.buffer_declarations, body)?;
     let body = merge_nest(&binder.assertions, body)?;
@@ -1051,13 +1047,9 @@ impl PackedAbiBinder {
             ],
             None,
         )?;
-        let check = crate::tirx::IfThenElse::new(not(strides_are_null)?, assertion, None)?;
+        let check = crate::tirx::IfThenElse::new(not(strides_are_null)?, assertion)?;
         self.assertions.push(
-            crate::tirx::SeqStmt::from_complete_fields(
-                None,
-                Array::new(vec![check.into(), Evaluate::from_i64(0)?.into()]),
-            )
-            .into(),
+            crate::tirx::SeqStmt::new(vec![check.into(), Evaluate::from_i64(0)?.into()])?.into(),
         );
         Ok(())
     }

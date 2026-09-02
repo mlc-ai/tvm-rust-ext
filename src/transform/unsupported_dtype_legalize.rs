@@ -490,14 +490,7 @@ impl ComputeLegalizer {
         {
             return Ok(value.into());
         }
-        Ok(Select::from_complete_fields(
-            None,
-            true_value.type_annotation(),
-            condition,
-            true_value,
-            false_value,
-        )
-        .into())
+        Ok(Select::new(condition, true_value, false_value)?.into())
     }
 
     fn mutate_broadcast(&mut self, value: Broadcast, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -615,10 +608,7 @@ impl ComputeLegalizer {
         {
             return Ok(value.into());
         }
-        Ok(
-            Let::from_complete_fields(None, body.type_annotation(), variable, bound_value, body)
-                .into(),
-        )
+        Ok(Let::new(variable, bound_value, body)?.into())
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -720,11 +710,7 @@ impl ComputeLegalizer {
         if bound_value.same_as(&value.value) && variable.same_as(&value.var) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            None,
-            variable,
-            bound_value.into(),
-        ))
+        Bind::new(variable, bound_value)
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -748,9 +734,7 @@ impl ComputeLegalizer {
         if stored.type_annotation().dtype != storage_type.dtype {
             stored = self.conversion.convert(stored, storage_type)?;
         }
-        Ok(BufferStore::from_complete_fields(
-            None, buffer, stored, indices,
-        ))
+        BufferStore::new(buffer, stored, indices.iter().map(Into::into).collect())
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {

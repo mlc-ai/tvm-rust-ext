@@ -362,7 +362,6 @@ impl BuiltinLower {
                 vec![data.clone()],
             ),
             throw.clone(),
-            None,
         )?;
         let free_call = Call::new(
             PrimType::new("int32")?,
@@ -377,7 +376,6 @@ impl BuiltinLower {
         let free = IfThenElse::new(
             crate::tirx::NE::new(free_call, IntImm::new("int32", 0)?)?,
             throw,
-            None,
         )?;
         self.pending_frees
             .last_mut()
@@ -838,7 +836,7 @@ impl BuiltinLower {
             );
             let condition = PrimExpr::try_from(Expr::from(condition))?;
             self.current_preparation_mut()?.push(
-                IfThenElse::new(
+                IfThenElse::with_span(
                     condition,
                     struct_set(
                         stack,
@@ -852,6 +850,7 @@ impl BuiltinLower {
                         TVM_FFI_ANY_TYPE_INDEX,
                         IntImm::new("int32", TypeIndex::kTVMFFIOpaquePtr as i64)?,
                     )?),
+                    None,
                 )?
                 .into(),
             );
@@ -942,7 +941,6 @@ impl BuiltinLower {
                 get_operator("tirx.tvm_throw_last_error")?,
                 Vec::new(),
             ))?,
-            None,
         )?;
         let storage_scope = call.args.get(0)?;
         let free_call = Call::new(
@@ -964,7 +962,6 @@ impl BuiltinLower {
                 get_operator("tirx.tvm_throw_last_error")?,
                 Vec::new(),
             ))?,
-            None,
         )?;
         self.pending_frees
             .last_mut()

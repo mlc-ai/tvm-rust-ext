@@ -136,14 +136,26 @@ impl IterVar {
         self.field("span")
     }
 
-    /// Construct an untagged iteration variable through its native constructor.
-    pub fn new<D, V>(domain: D, variable: V, iter_type: IterVarType) -> Result<Self>
+    // customized_new(IterVar) begin
+    /// Construct an untagged data-parallel (`kDataPar`) iteration variable
+    /// through its native constructor.
+    ///
+    /// Use [`IterVar::with_metadata`] for another iteration type, a thread
+    /// tag, a missing domain, or a span.
+    pub fn new<D, V>(domain: D, variable: V) -> Result<Self>
     where
         D: Into<Range>,
         V: Into<Var>,
     {
-        Self::with_metadata(Some(domain.into()), variable.into(), iter_type, "", None)
+        Self::with_metadata(
+            Some(domain.into()),
+            variable.into(),
+            IterVarType::kDataPar,
+            "",
+            None,
+        )
     }
+    // customized_new(IterVar) end
 
     /// Validate and construct an iteration variable, allowing a missing domain
     /// for thread axes just like the native constructor.

@@ -497,7 +497,7 @@ impl IndexDataTypeNormalizer {
         })?;
         true_value = cast_if_needed(true_value, &dtype)?;
         false_value = cast_if_needed(false_value, &dtype)?;
-        Ok(Select::from_complete_fields(None, dtype, condition, true_value, false_value).into())
+        Ok(Select::new(condition, true_value, false_value)?.into())
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<PrimExpr> {
