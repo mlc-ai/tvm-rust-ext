@@ -463,11 +463,7 @@ impl SsaConverter {
         if variable.same_as(&value.var) && bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            variable,
-            bound_value,
-        ))
+        Ok(value.copy_with(variable, bound_value))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
@@ -486,13 +482,7 @@ impl SsaConverter {
         {
             return Ok(value);
         }
-        Ok(Let::from_complete_fields(
-            value.span.clone(),
-            body.type_annotation(),
-            variable,
-            bound_value,
-            body,
-        ))
+        Ok(value.copy_with(variable, bound_value, body))
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {
@@ -535,11 +525,7 @@ impl SsaConverter {
             if condition.same_as(&value.condition) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(While::from_complete_fields(
-                value.span.clone(),
-                condition,
-                body,
-            ))
+            Ok(value.copy_with(condition, body))
         })();
         self.exit_scope();
         converted
@@ -590,13 +576,7 @@ impl SsaConverter {
         if node_unchanged && attr_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
         }
-        Ok(AttrStmt::from_complete_fields(
-            value.span.clone(),
-            node,
-            value.attr_key.clone(),
-            attr_value,
-            body,
-        ))
+        Ok(value.copy_with(node, value.attr_key.clone(), attr_value, body))
     }
 
     fn mutate_declaration(
@@ -610,11 +590,7 @@ impl SsaConverter {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_allocation(
@@ -627,11 +603,7 @@ impl SsaConverter {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -644,12 +616,7 @@ impl SsaConverter {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored_value, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -659,12 +626,7 @@ impl SsaConverter {
         if buffer.same_as(&source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(TensorLoad::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone().try_cast()?,
-            Expr::from(buffer),
-            indices,
-        ))
+        Ok(value.copy_with(Expr::from(buffer), indices))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -688,11 +650,7 @@ fn mutate_iter_var_attribute(
             if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
                 Ok(domain.clone())
             } else {
-                Ok(Range::from_complete_fields(
-                    minimum,
-                    extent,
-                    domain.span.clone(),
-                ))
+                Ok(domain.copy_with(minimum, extent))
             }
         })
         .transpose()?;
@@ -738,8 +696,7 @@ fn mutate_iter_var_attribute(
         return Ok(value);
     }
 
-    Ok(AttrStmt::from_complete_fields(
-        value.span.clone(),
+    Ok(value.copy_with(
         Any::from(iteration),
         value.attr_key.clone(),
         attr_value,

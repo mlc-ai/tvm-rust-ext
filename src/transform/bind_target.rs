@@ -246,13 +246,10 @@ impl CallSubstitutor<'_> {
         let Some(replacement) = self.replacements.get(&ObjectIdentity::of(&global)) else {
             return Ok(call);
         };
-        Ok(Call::from_complete_fields(
-            call.span.clone(),
+        Ok(call.copy_with(
             call.ty.clone(),
             replacement.clone().into(),
             call.args.clone(),
-            call.attrs.clone(),
-            call.ty_args.clone(),
         ))
     }
 

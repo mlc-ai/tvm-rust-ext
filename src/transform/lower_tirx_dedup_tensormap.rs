@@ -240,17 +240,7 @@ impl DedupRewriter {
         {
             return Ok(value);
         }
-        Ok(For::from_complete_fields(
-            value.span.clone(),
-            value.loop_var.clone(),
-            minimum,
-            extent,
-            value.kind,
-            body,
-            value.thread_binding.clone(),
-            value.annotations.clone(),
-            value.step.clone(),
-        ))
+        Ok(value.copy_with(value.loop_var.clone(), minimum, extent, body))
     }
 
     fn mutate_while(&mut self, value: While, mutator: &mut Mutator) -> Result<While> {
@@ -259,11 +249,7 @@ impl DedupRewriter {
         if condition.same_as(&value.condition) && body.same_as(&value.body) {
             return Ok(value);
         }
-        Ok(While::from_complete_fields(
-            value.span.clone(),
-            condition,
-            body,
-        ))
+        Ok(value.copy_with(condition, body))
     }
 
     fn mutate_conditional(
@@ -304,7 +290,7 @@ impl DedupRewriter {
         if mapped_value.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(Bind::from_complete_fields(value.span.clone(), value.var.clone(), mapped_value).into())
+        Ok(value.copy_with(value.var.clone(), mapped_value).into())
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
@@ -312,7 +298,7 @@ impl DedupRewriter {
         let mapped = if mapped_value.same_as(&value.value) {
             value
         } else {
-            Evaluate::from_complete_fields(value.span.clone(), mapped_value)
+            value.copy_with(mapped_value)
         };
         let Ok(call) = mapped.value.clone().try_cast::<Call>() else {
             return Ok(mapped);

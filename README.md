@@ -63,6 +63,15 @@ semantic `new(...)` keep the exact physical allocator under the explicit
 `from_complete_fields(...)` name because Rust cannot overload the two
 signatures.
 
+Nodes that passes rebuild also expose `copy_with(&self, ...)`, which takes the
+same required fields as `new` and carries every other field (span, kind,
+annotations, attributes, optional children) over from the existing node, the
+way TVM's `CopyOnWrite()` rebuild does. Like `from_complete_fields`, it
+performs no validation; a result type that is a plain function of the new
+children (`Let`, `Select`, arithmetic) is recomputed, everything else is
+copied unchanged. `PrimFunc::copy_with` re-derives the function type and so
+returns `Result`.
+
 The supporting handwritten slice is bounded but broader than the initial
 stubgen milestone so it can answer additional pass-authoring questions:
 

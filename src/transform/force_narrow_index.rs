@@ -31,9 +31,9 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
-    Add, AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, Cast, DeclBuffer, Div, FloorDiv,
-    FloorMod, For, IfThenElse, IterVar, Let, Max, Min, Mod, Mul, PrimFunc, Ramp, Select, Stmt, Sub,
-    EQ, GE, GT, LE, LT, NE,
+    Add, AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, Cast, Div, FloorDiv, FloorMod, For,
+    IfThenElse, IterVar, Let, Max, Min, Mod, Mul, PrimFunc, Ramp, Select, Stmt, Sub, EQ, GE, GT,
+    LE, LT, NE,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -89,13 +89,7 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
     let body: Stmt = structural_mutate(function.body.clone(), &mut narrower)?.try_into()?;
     let mut result = with_prim_func_body(function, body);
     if !array_same_as(&Array::new(params.clone()), &result.params) {
-        result = PrimFunc::with_metadata(
-            params,
-            result.body.clone(),
-            result.ret_type.clone(),
-            result.attrs.clone(),
-            result.span.as_ref(),
-        )?;
+        result = result.copy_with(params, result.body.clone())?;
     }
     Ok(result)
 }
@@ -183,11 +177,7 @@ impl IndexDataTypeNormalizer {
             None
         };
         if let Some(replacement) = replacement.filter(|replacement| replacement.dtype != ty.dtype) {
-            let mapped = Var::from_complete_fields(
-                value.span.clone(),
-                replacement.into(),
-                value.name.clone(),
-            );
+            let mapped = value.copy_with(value.name.clone(), replacement.into());
             self.var_remap.insert(identity, mapped.clone());
             mapped
         } else {
@@ -283,11 +273,7 @@ impl IndexDataTypeNormalizer {
                 let extent: PrimExpr =
                     structural_mutate(domain.extent.clone(), &mut *self)?.try_into()?;
                 let ty = variable.ty.clone().try_cast::<PrimType>()?;
-                Ok(Range::from_complete_fields(
-                    cast_if_needed(minimum, &ty)?,
-                    cast_if_needed(extent, &ty)?,
-                    domain.span.clone(),
-                ))
+                Ok(domain.copy_with(cast_if_needed(minimum, &ty)?, cast_if_needed(extent, &ty)?))
             })
             .transpose()?;
         let mapped = IterVar::with_metadata(
@@ -505,11 +491,9 @@ impl IndexDataTypeNormalizer {
         let variable = if bound_value.type_annotation().dtype
             != value.var.ty.clone().try_cast::<PrimType>()?.dtype
         {
-            let variable = Var::from_complete_fields(
-                value.var.span.clone(),
-                bound_value.type_annotation().into(),
-                value.var.name.clone(),
-            );
+            let variable = value
+                .var
+                .copy_with(value.var.name.clone(), bound_value.type_annotation().into());
             self.var_remap
                 .insert(ObjectIdentity::of(&value.var), variable.clone());
             variable
@@ -520,14 +504,7 @@ impl IndexDataTypeNormalizer {
         if bound_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value.into());
         }
-        Ok(Let::from_complete_fields(
-            value.span.clone(),
-            body.type_annotation(),
-            variable,
-            bound_value,
-            body,
-        )
-        .into())
+        Ok(value.copy_with(variable, bound_value, body).into())
     }
 
     fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
@@ -536,11 +513,9 @@ impl IndexDataTypeNormalizer {
             if primitive.type_annotation().dtype
                 != value.var.ty.clone().try_cast::<PrimType>()?.dtype
             {
-                let variable = Var::from_complete_fields(
-                    value.var.span.clone(),
-                    primitive.type_annotation().into(),
-                    value.var.name.clone(),
-                );
+                let variable = value
+                    .var
+                    .copy_with(value.var.name.clone(), primitive.type_annotation().into());
                 self.var_remap
                     .insert(ObjectIdentity::of(&value.var), variable.clone());
                 variable
@@ -553,11 +528,7 @@ impl IndexDataTypeNormalizer {
         if variable.same_as(&value.var) && bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            variable,
-            bound_value,
-        ))
+        Ok(value.copy_with(variable, bound_value))
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {
@@ -642,8 +613,7 @@ impl IndexDataTypeNormalizer {
         let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
         self.enabled = old_enabled;
         let ty = iteration.var()?.type_annotation();
-        Ok(AttrStmt::from_complete_fields(
-            value.span.clone(),
+        Ok(value.copy_with(
             iteration.into(),
             value.attr_key.clone(),
             cast_if_needed(attr_value, &ty)?,
@@ -656,11 +626,7 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -673,11 +639,7 @@ impl IndexDataTypeNormalizer {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -696,12 +658,7 @@ impl IndexDataTypeNormalizer {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored_value, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -736,19 +693,17 @@ impl IndexDataTypeNormalizer {
             })?;
             true_value = cast_if_needed(true_value, &dtype)?;
             false_value = cast_if_needed(false_value, &dtype)?;
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                dtype.into(),
-                value.op.clone(),
-                Array::new(vec![
-                    condition.into(),
-                    true_value.into(),
-                    false_value.into(),
-                ]),
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .copy_with(
+                    dtype.into(),
+                    value.op.clone(),
+                    Array::new(vec![
+                        condition.into(),
+                        true_value.into(),
+                        false_value.into(),
+                    ]),
+                )
+                .into());
         }
 
         let before_lhs_type = value

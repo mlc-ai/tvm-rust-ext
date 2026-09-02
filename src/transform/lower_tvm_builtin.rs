@@ -429,14 +429,14 @@ impl BuiltinLower {
         let mapped = mapped.try_cast::<AttrStmt>()?;
         let mut body = vec![mapped.body.clone()];
         body.extend(frees.into_iter().rev());
-        Ok(AttrStmt::from_complete_fields(
-            mapped.span.clone(),
-            mapped.node.clone(),
-            mapped.attr_key.clone(),
-            mapped.value.clone(),
-            Stmt::sequence(body)?,
-        )
-        .into())
+        Ok(mapped
+            .copy_with(
+                mapped.node.clone(),
+                mapped.attr_key.clone(),
+                mapped.value.clone(),
+                Stmt::sequence(body)?,
+            )
+            .into())
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
@@ -451,18 +451,9 @@ impl BuiltinLower {
         {
             return Ok(value.into());
         }
-        Ok(For::from_complete_fields(
-            value.span.clone(),
-            value.loop_var.clone(),
-            minimum,
-            extent,
-            value.kind,
-            body,
-            value.thread_binding.clone(),
-            value.annotations.clone(),
-            value.step.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(value.loop_var.clone(), minimum, extent, body)
+            .into())
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
@@ -769,13 +760,10 @@ impl BuiltinLower {
         if traced {
             lowered_arguments.push(arguments.get(arguments.len() - 1)?);
         }
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
+        Ok(value.copy_with(
             value.ty.clone(),
             lowered_operator,
             Array::new(lowered_arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
         ))
     }
 
@@ -968,7 +956,7 @@ impl BuiltinLower {
             .ok_or_else(|| value_error("nd allocation has no enclosing lifetime scope"))?
             .push(free.into());
         Stmt::sequence(vec![
-            Bind::from_complete_fields(binding.span.clone(), binding.var.clone(), packed).into(),
+            binding.copy_with(binding.var.clone(), packed).into(),
             null_check.into(),
         ])
     }

@@ -35,9 +35,9 @@ use crate::ir::{
 };
 use crate::target::Target;
 use crate::tirx::{
-    Add, AllocBuffer, AttrStmt, Bind, Broadcast, BufferStore, BufferType, BufferVar, Cast,
-    CommReducer, DeclBuffer, Div, Let, Max, Min, Mul, PrimFunc, PrimVar, Select, Shuffle, Stmt,
-    Sub, EQ, GE, GT, LE, LT, NE,
+    Add, AllocBuffer, AttrStmt, Bind, Broadcast, BufferStore, BufferVar, Cast, CommReducer,
+    DeclBuffer, Div, Let, Max, Min, Mul, PrimFunc, PrimVar, Select, Shuffle, Stmt, Sub, EQ, GE, GT,
+    LE, LT, NE,
 };
 
 /// Promote BF16 computations to float32 while preserving external storage.
@@ -205,23 +205,12 @@ impl ComputePlan {
         if !self.unsupported.matches(&old_type.dtype) {
             return Ok(());
         }
-        let new_type = BufferType::from_complete_fields(
-            old_type.span.clone(),
-            with_lanes(&self.promote_type, old_type.dtype.dtype.lanes)?,
+        let new_type = old_type.copy_with(
             old_type.storage_scope.clone(),
+            with_lanes(&self.promote_type, old_type.dtype.dtype.lanes)?,
             old_type.shape.clone(),
-            old_type.strides.clone(),
-            old_type.elem_offset.clone(),
-            old_type.data_alignment,
-            old_type.offset_factor,
-            old_type.layout.clone(),
-            old_type.allocated_addr.clone(),
         );
-        let mapped = BufferVar::try_from(Var::from_complete_fields(
-            buffer.span.clone(),
-            new_type.into(),
-            buffer.name.clone(),
-        ))?;
+        let mapped = BufferVar::try_from(buffer.copy_with(buffer.name.clone(), new_type.into()))?;
         self.variable_remaps
             .insert(ObjectIdentity::of(buffer.as_var()), mapped.as_var().clone());
         Ok(())
@@ -424,15 +413,9 @@ impl ComputeLegalizer {
         if is_load {
             arguments.extend(indices.into_iter().map(Into::into));
             arguments.push(predicate);
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                access_type.into(),
-                value.op.clone(),
-                Array::new(arguments),
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .copy_with(access_type.into(), value.op.clone(), Array::new(arguments))
+                .into());
         }
         let mut stored = stored.expect("masked store has a value");
         if self.unsupported.matches(&buffer.type_annotation().dtype) {
@@ -444,15 +427,13 @@ impl ComputeLegalizer {
         arguments.push(stored.into());
         arguments.extend(indices.into_iter().map(Into::into));
         arguments.push(predicate);
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            PrimType::void().into(),
-            value.op.clone(),
-            Array::new(arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(
+                PrimType::void().into(),
+                value.op.clone(),
+                Array::new(arguments),
+            )
+            .into())
     }
 }
 
@@ -590,11 +571,9 @@ impl ComputeLegalizer {
         let bound_value = self.promote(value.value.clone())?;
         let variable = if bound_value.type_annotation().dtype != value.value.type_annotation().dtype
         {
-            let mapped = Var::from_complete_fields(
-                value.var.span.clone(),
-                value.value.type_annotation().into(),
-                value.var.name.clone(),
-            );
+            let mapped = value
+                .var
+                .copy_with(value.var.name.clone(), value.value.type_annotation().into());
             self.variable_remaps
                 .insert(ObjectIdentity::of(&value.var), mapped.clone());
             mapped
@@ -696,11 +675,9 @@ impl ComputeLegalizer {
                 .type_annotation()
                 .dtype
         {
-            let mapped = Var::from_complete_fields(
-                value.var.span.clone(),
-                value.value.ty.clone(),
-                value.var.name.clone(),
-            );
+            let mapped = value
+                .var
+                .copy_with(value.var.name.clone(), value.value.ty.clone());
             self.variable_remaps
                 .insert(ObjectIdentity::of(&value.var), mapped.clone());
             mapped
@@ -759,11 +736,8 @@ impl ComputeLegalizer {
                 let identity_type = identities.get(index)?.type_annotation();
                 for variable in [reducer.lhs.get(index)?, reducer.rhs.get(index)?] {
                     if variable.type_annotation().dtype != identity_type.dtype {
-                        let mapped = Var::from_complete_fields(
-                            variable.span.clone(),
-                            identity_type.clone().into(),
-                            variable.name.clone(),
-                        );
+                        let mapped =
+                            variable.copy_with(variable.name.clone(), identity_type.clone().into());
                         self.variable_remaps
                             .insert(ObjectIdentity::of(variable.as_var()), mapped);
                     }
@@ -783,8 +757,7 @@ impl ComputeLegalizer {
             node_changed = true;
         }
         if !value.same_as(&mutated) || node_changed {
-            return Ok(AttrStmt::from_complete_fields(
-                mutated.span.clone(),
+            return Ok(mutated.copy_with(
                 node,
                 mutated.attr_key.clone(),
                 mutated.value.clone(),
@@ -804,11 +777,7 @@ impl ComputeLegalizer {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<AllocBuffer> {
@@ -816,11 +785,7 @@ impl ComputeLegalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -1159,13 +1124,7 @@ fn storage_legalize_prim_func(
         .map(|parameter| legalizer.remap_variable_definition(parameter))
         .collect::<Result<Vec<_>>>()?;
     let body: Stmt = structural_mutate(function.body.clone(), &mut legalizer)?.try_into()?;
-    PrimFunc::with_metadata(
-        params,
-        body,
-        function.ret_type.clone(),
-        function.attrs.clone(),
-        function.span.as_ref(),
-    )
+    function.copy_with(params, body)
 }
 
 struct StorageLegalizer {
@@ -1249,23 +1208,12 @@ impl StorageLegalizer {
             return Ok(current);
         }
         let old_type = current.type_annotation();
-        let new_type = BufferType::from_complete_fields(
-            old_type.span.clone(),
-            self.storage_type(&old_type.dtype)?,
+        let new_type = old_type.copy_with(
             old_type.storage_scope.clone(),
+            self.storage_type(&old_type.dtype)?,
             old_type.shape.clone(),
-            old_type.strides.clone(),
-            old_type.elem_offset.clone(),
-            old_type.data_alignment,
-            old_type.offset_factor,
-            old_type.layout.clone(),
-            old_type.allocated_addr.clone(),
         );
-        let mapped = BufferVar::try_from(Var::from_complete_fields(
-            current.span.clone(),
-            new_type.into(),
-            current.name.clone(),
-        ))?;
+        let mapped = BufferVar::try_from(current.copy_with(current.name.clone(), new_type.into()))?;
         self.variable_remaps
             .insert(ObjectIdentity::of(buffer.as_var()), mapped.as_var().clone());
         self.buffer_remaps
@@ -1322,11 +1270,7 @@ impl StorageLegalizer {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -1339,11 +1283,7 @@ impl StorageLegalizer {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
@@ -1356,13 +1296,7 @@ impl StorageLegalizer {
         {
             return Ok(value);
         }
-        Ok(Let::from_complete_fields(
-            value.span.clone(),
-            body.type_annotation(),
-            variable,
-            bound_value,
-            body,
-        ))
+        Ok(value.copy_with(variable, bound_value, body))
     }
 
     fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
@@ -1371,11 +1305,7 @@ impl StorageLegalizer {
         if bound_value.same_as(&value.value) && variable.same_as(&value.var) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            variable,
-            bound_value,
-        ))
+        Ok(value.copy_with(variable, bound_value))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -1389,12 +1319,7 @@ impl StorageLegalizer {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored, indices))
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
@@ -1404,13 +1329,7 @@ impl StorageLegalizer {
         if !node_changed && attr_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
         }
-        Ok(AttrStmt::from_complete_fields(
-            value.span.clone(),
-            node,
-            value.attr_key.clone(),
-            attr_value,
-            body,
-        ))
+        Ok(value.copy_with(node, value.attr_key.clone(), attr_value, body))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -1448,15 +1367,9 @@ impl StorageLegalizer {
                 self.storage_type(&element)?,
                 pointer.storage_scope()?.as_str(),
             )?;
-            return Ok(Call::from_complete_fields(
-                call.span.clone(),
-                pointer.into(),
-                call.op.clone(),
-                call.args.clone(),
-                call.attrs.clone(),
-                call.ty_args.clone(),
-            )
-            .into());
+            return Ok(call
+                .copy_with(pointer.into(), call.op.clone(), call.args.clone())
+                .into());
         }
 
         let Ok(output_type) = value.ty.clone().try_cast::<PrimType>() else {
@@ -1518,15 +1431,9 @@ impl StorageLegalizer {
         } else {
             PrimType::void().into()
         };
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            ty,
-            value.op.clone(),
-            Array::new(arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(ty, value.op.clone(), Array::new(arguments))
+            .into())
     }
 }
 

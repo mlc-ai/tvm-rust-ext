@@ -33,8 +33,8 @@ use crate::ir::{
 };
 use crate::target::Target;
 use crate::tirx::{
-    AttrStmt, Bind, DeclBuffer, Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, SeqStmt,
-    Stmt, StringImm,
+    AttrStmt, Bind, DeclBuffer, Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, Stmt,
+    StringImm,
 };
 
 const CALLING_CONV: &str = "calling_conv";
@@ -1260,14 +1260,14 @@ fn replace_attributes<const N: usize>(
 fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
     for statement in statements.iter().rev() {
         if let Ok(attribute) = statement.clone().try_cast::<AttrStmt>() {
-            body = AttrStmt::from_complete_fields(
-                attribute.span.clone(),
-                attribute.node.clone(),
-                attribute.attr_key.clone(),
-                attribute.value.clone(),
-                body,
-            )
-            .into();
+            body = attribute
+                .copy_with(
+                    attribute.node.clone(),
+                    attribute.attr_key.clone(),
+                    attribute.value.clone(),
+                    body,
+                )
+                .into();
         } else if statement.clone().try_cast::<Bind>().is_ok()
             || statement
                 .clone()
@@ -1290,7 +1290,7 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
                 prefix.pop();
             }
             prefix.push(body);
-            body = SeqStmt::from_complete_fields(sequence.span.clone(), Array::new(prefix)).into();
+            body = sequence.copy_with(Array::new(prefix)).into();
         } else {
             return Err(value_error(
                 "unsupported statement in packed ABI binding nest",

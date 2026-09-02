@@ -653,10 +653,9 @@ fn swap_broadcast_cast(value: &PrimExpr) -> Result<PrimExpr> {
         cast.value.clone(),
         broadcast.lanes.clone(),
     );
-    Ok(
-        Cast::from_complete_fields(cast.span.clone(), value.type_annotation(), broadcast.into())
-            .into(),
-    )
+    Ok(cast
+        .copy_with(value.type_annotation(), broadcast.into())
+        .into())
 }
 
 fn ramp(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {

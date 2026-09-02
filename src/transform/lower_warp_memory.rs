@@ -510,15 +510,7 @@ impl WarpAccessRewriter {
         self.warp_group = group;
 
         let body: Stmt = structural_mutate(body, &mut *self)?.try_into()?;
-        Stmt::sequence(vec![
-            AllocBuffer::from_complete_fields(
-                allocation.span.clone(),
-                new_buffer,
-                allocation.annotations.clone(),
-            )
-            .into(),
-            body,
-        ])
+        Stmt::sequence(vec![allocation.copy_with(new_buffer).into(), body])
     }
 
     fn old_identity(&self) -> ObjectIdentity {
@@ -550,15 +542,9 @@ impl WarpAccessRewriter {
                 arguments[position + 1] = local_index.into();
             }
         }
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            value.op.clone(),
-            Array::new(arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(value.ty.clone(), value.op.clone(), Array::new(arguments))
+            .into())
     }
 
     fn split_index_by_group(&self, index: &PrimExpr) -> Result<(PrimExpr, PrimExpr)> {
@@ -648,23 +634,13 @@ impl WarpAccessRewriter {
             if stored.same_as(&value.value) && array_same_as(&indices, &value.indices) {
                 return Ok(value);
             }
-            return Ok(BufferStore::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                stored,
-                indices,
-            ));
+            return Ok(value.copy_with(value.buffer.clone(), stored, indices));
         }
         if indices.len() != 1 {
             return Err(value_error("warp memory requires a flat buffer store"));
         }
         let (local_index, _) = self.split_index_by_group(&indices.get(0)?)?;
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            self.new_buffer(),
-            stored,
-            Array::new(vec![local_index]),
-        ))
+        Ok(value.copy_with(self.new_buffer(), stored, Array::new(vec![local_index])))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<Expr> {
@@ -673,13 +649,7 @@ impl WarpAccessRewriter {
             if array_same_as(&indices, &value.indices) {
                 return Ok(value.into());
             }
-            return Ok(TensorLoad::from_complete_fields(
-                value.span.clone(),
-                value.ty.clone().try_cast()?,
-                value.source.clone(),
-                indices,
-            )
-            .into());
+            return Ok(value.copy_with(value.source.clone(), indices).into());
         }
         if indices.len() != 1 {
             return Err(value_error("warp memory requires a flat buffer load"));
@@ -766,27 +736,19 @@ fn collect_scope_variables(
                 let old_type = buffer.type_annotation();
                 rebuild_buffer(
                     &buffer,
-                    BufferType::from_complete_fields(
-                        old_type.span.clone(),
-                        old_type.dtype.clone(),
+                    old_type.copy_with(
                         scope.clone(),
+                        old_type.dtype.clone(),
                         old_type.shape.clone(),
-                        old_type.strides.clone(),
-                        old_type.elem_offset.clone(),
-                        old_type.data_alignment,
-                        old_type.offset_factor,
-                        old_type.layout.clone(),
-                        old_type.allocated_addr.clone(),
                     ),
                 )?
                 .as_var()
                 .clone()
             } else {
                 let pointer = variable.ty.clone().try_cast::<crate::ir::PointerType>()?;
-                Var::from_complete_fields(
-                    variable.span.clone(),
-                    crate::ir::PointerType::new(pointer.element_type()?, scope.as_str())?.into(),
+                variable.copy_with(
                     variable.name.clone(),
+                    crate::ir::PointerType::new(pointer.element_type()?, scope.as_str())?.into(),
                 )
             };
             remaps.insert(identity, replacement);
@@ -811,11 +773,7 @@ impl PointerScopeUpdater {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -828,11 +786,7 @@ impl PointerScopeUpdater {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -845,12 +799,7 @@ impl PointerScopeUpdater {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -922,11 +871,7 @@ fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        buffer.name.clone(),
-    ))
+    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn function_target(function: &PrimFunc) -> Result<Target> {

@@ -176,11 +176,7 @@ impl NoOpRemover {
         if bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            value.var.clone(),
-            bound_value,
-        ))
+        Ok(value.copy_with(value.var.clone(), bound_value))
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
@@ -192,13 +188,7 @@ impl NoOpRemover {
         if bound_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
         }
-        Ok(Let::from_complete_fields(
-            value.span.clone(),
-            body.type_annotation(),
-            value.var.clone(),
-            bound_value,
-            body,
-        ))
+        Ok(value.copy_with(value.var.clone(), bound_value, body))
     }
 
     fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
@@ -221,11 +211,7 @@ impl NoOpRemover {
                     if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
                         Ok(domain.clone())
                     } else {
-                        Ok(Range::from_complete_fields(
-                            minimum,
-                            extent,
-                            domain.span.clone(),
-                        ))
+                        Ok(domain.copy_with(minimum, extent))
                     }
                 })
                 .transpose()?;
@@ -270,8 +256,7 @@ impl NoOpRemover {
         if condition.same_as(&value.condition) {
             return Ok(value);
         }
-        Ok(AssertStmt::from_complete_fields(
-            value.span.clone(),
+        Ok(value.copy_with(
             condition,
             value.error_kind.clone(),
             value.message_parts.clone(),
@@ -304,14 +289,7 @@ impl NoOpRemover {
         {
             return Ok(value.into());
         }
-        Ok(Select::from_complete_fields(
-            value.span.clone(),
-            true_value.type_annotation(),
-            condition,
-            true_value,
-            false_value,
-        )
-        .into())
+        Ok(value.copy_with(condition, true_value, false_value).into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -320,15 +298,9 @@ impl NoOpRemover {
             if array_same_as(&args, &value.args) {
                 return Ok(value.into());
             }
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                value.ty.clone(),
-                value.op.clone(),
-                args,
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .copy_with(value.ty.clone(), value.op.clone(), args)
+                .into());
         }
 
         let original_condition = value.args.get(0).expect("condition argument is present");
@@ -357,15 +329,13 @@ impl NoOpRemover {
         {
             return Ok(value.into());
         }
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            value.op.clone(),
-            tvm_ffi::Array::new(vec![condition.into(), true_value, false_value]),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(
+                value.ty.clone(),
+                value.op.clone(),
+                tvm_ffi::Array::new(vec![condition.into(), true_value, false_value]),
+            )
+            .into())
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
@@ -409,13 +379,7 @@ impl NoOpRemover {
         let mutated = if attr_value.same_as(&value.value) && body.same_as(&value.body) {
             value
         } else {
-            AttrStmt::from_complete_fields(
-                value.span.clone(),
-                value.node.clone(),
-                value.attr_key.clone(),
-                attr_value,
-                body,
-            )
+            value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body)
         };
         if is_no_op(&mutated.body) {
             self.make_evaluate(mutated.value.clone())
@@ -595,12 +559,7 @@ impl NoOpRemover {
         if source.same_as(old_source.as_var()) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(TensorLoad::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone().try_cast()?,
-            source.into(),
-            indices,
-        ))
+        Ok(value.copy_with(source.into(), indices))
     }
 
     fn mutate_allocation(
@@ -612,11 +571,7 @@ impl NoOpRemover {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -629,11 +584,7 @@ impl NoOpRemover {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

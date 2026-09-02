@@ -562,21 +562,13 @@ impl StoragePlanRewriter {
             if data.same_as(&value.data) {
                 return Ok(value.into());
             }
-            return Ok(DeclBuffer::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                data,
-            )
-            .into());
+            return Ok(value.copy_with(value.buffer.clone(), data).into());
         };
         let (_, remap) = self.plan.remap(&value.buffer).expect("remapped buffer");
         let storage = &self.plan.storage[remap.storage];
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            buffer_data(&storage.backing)?,
-        )
-        .into())
+        Ok(value
+            .copy_with(buffer, buffer_data(&storage.backing)?)
+            .into())
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -603,19 +595,12 @@ impl StoragePlanRewriter {
             if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
                 return Ok(value.into());
             }
-            return Ok(BufferStore::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                stored_value,
-                indices,
-            )
-            .into());
+            return Ok(value
+                .copy_with(value.buffer.clone(), stored_value, indices)
+                .into());
         };
         let indices = self.remap_indices(&value.buffer, indices, bit_offset)?;
-        Ok(
-            BufferStore::from_complete_fields(value.span.clone(), buffer, stored_value, indices)
-                .into(),
-        )
+        Ok(value.copy_with(buffer, stored_value, indices).into())
     }
 
     fn mutate_variable(&mut self, value: Var) -> Result<Expr> {
@@ -712,11 +697,7 @@ fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType, name: &str) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        FfiString::from(name),
-    ))
+    BufferVar::try_from(buffer.copy_with(FfiString::from(name), ty.into()))
 }
 
 fn buffer_data(buffer: &BufferVar) -> Result<Expr> {

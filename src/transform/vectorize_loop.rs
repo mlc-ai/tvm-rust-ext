@@ -297,15 +297,9 @@ impl Vectorizer {
         if array_same_as(&arguments, &value.args) {
             return Ok(value.into());
         }
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            value.op.clone(),
-            arguments,
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(value.ty.clone(), value.op.clone(), arguments)
+            .into())
     }
 }
 
@@ -739,13 +733,13 @@ impl Vectorizer {
             total_lanes / other_index_lanes,
             is_scalable(&last),
         )?;
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            value.buffer.clone(),
-            broadcast_to(stored_value, total_lanes, is_scalable(&last))?,
-            Array::new(mapped_indices),
-        )
-        .into())
+        Ok(value
+            .copy_with(
+                value.buffer.clone(),
+                broadcast_to(stored_value, total_lanes, is_scalable(&last))?,
+                Array::new(mapped_indices),
+            )
+            .into())
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
@@ -765,18 +759,9 @@ impl Vectorizer {
         if extent.same_as(&value.extent) && body.same_as(&value.body) {
             return Ok(value.into());
         }
-        Ok(For::from_complete_fields(
-            value.span.clone(),
-            value.loop_var.clone(),
-            value.min.clone(),
-            extent,
-            value.kind,
-            body,
-            value.thread_binding.clone(),
-            value.annotations.clone(),
-            value.step.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(value.loop_var.clone(), value.min.clone(), extent, body)
+            .into())
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {

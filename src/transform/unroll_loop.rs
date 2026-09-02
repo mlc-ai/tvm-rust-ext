@@ -276,12 +276,7 @@ impl LoopUnroller {
         if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            value.buffer.clone(),
-            stored_value,
-            indices,
-        ))
+        Ok(value.copy_with(value.buffer.clone(), stored_value, indices))
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
@@ -290,10 +285,7 @@ impl LoopUnroller {
         if expression.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Evaluate::from_complete_fields(
-            value.span.clone(),
-            expression,
-        ))
+        Ok(value.copy_with(expression))
     }
 
     fn mutate_sequence(&mut self, value: SeqStmt, mutator: &mut Mutator) -> Result<SeqStmt> {
@@ -316,10 +308,7 @@ impl LoopUnroller {
             self.normal_loop_depth = self.normal_loop_depth.max(saved_normal_depth);
         }
         if changed {
-            Ok(SeqStmt::from_complete_fields(
-                value.span.clone(),
-                Array::new(sequence),
-            ))
+            Ok(value.copy_with(Array::new(sequence)))
         } else {
             Ok(value)
         }
@@ -340,13 +329,7 @@ fn rewrite_regular_attribute(
     if attr_value.same_as(&value.value) && body.same_as(&value.body) {
         return Ok(value);
     }
-    Ok(AttrStmt::from_complete_fields(
-        value.span.clone(),
-        value.node.clone(),
-        value.attr_key.clone(),
-        attr_value,
-        body,
-    ))
+    Ok(value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body))
 }
 
 fn rewrite_loop_children(

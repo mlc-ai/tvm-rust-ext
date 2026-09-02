@@ -79,10 +79,7 @@ impl AssumeRemover {
         if evaluated.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Evaluate::from_complete_fields(
-            value.span.clone(),
-            evaluated,
-        ))
+        Ok(value.copy_with(evaluated))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

@@ -321,11 +321,7 @@ impl BufferFlattener {
         if flattened.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            flattened,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(flattened))
     }
 
     fn mutate_declaration(
@@ -355,11 +351,7 @@ impl BufferFlattener {
         if flattened.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            flattened,
-            data,
-        ))
+        Ok(value.copy_with(flattened, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -368,12 +360,7 @@ impl BufferFlattener {
         self.mark_used(&value.buffer);
         let info = self.lookup(&value.buffer)?.clone();
         let indices = self.fold_indices(&info, indices)?;
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            info.flattened,
-            stored_value,
-            indices,
-        ))
+        Ok(value.copy_with(info.flattened, stored_value, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -438,13 +425,7 @@ impl BufferFlattener {
             if attr_value.same_as(&value.value) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(AttrStmt::from_complete_fields(
-                value.span.clone(),
-                value.node.clone(),
-                value.attr_key.clone(),
-                attr_value,
-                body,
-            ))
+            Ok(value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body))
         })
     }
 
@@ -502,14 +483,7 @@ impl BufferFlattener {
         {
             return Ok(value.into());
         }
-        Ok(Select::from_complete_fields(
-            value.span.clone(),
-            true_value.type_annotation(),
-            condition,
-            true_value,
-            false_value,
-        )
-        .into())
+        Ok(value.copy_with(condition, true_value, false_value).into())
     }
 
     fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
@@ -561,15 +535,13 @@ impl BufferFlattener {
             if is_zero(&condition) {
                 return Ok(false_value);
             }
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                value.ty.clone(),
-                value.op.clone(),
-                Array::new(vec![condition.into(), true_value, false_value]),
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .copy_with(
+                    value.ty.clone(),
+                    value.op.clone(),
+                    Array::new(vec![condition.into(), true_value, false_value]),
+                )
+                .into());
         }
 
         mutate_expr_default(self, mutator, value.into())
@@ -603,15 +575,9 @@ impl BufferFlattener {
         arguments.extend(indices.iter().map(Into::into));
         let mask = value.args.get(value.args.len() - 1)?;
         arguments.push(mutator.mutate(self, &mask)?.try_into()?);
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            value.op.clone(),
-            Array::new(arguments),
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        )
-        .into())
+        Ok(value
+            .copy_with(value.ty.clone(), value.op.clone(), Array::new(arguments))
+            .into())
     }
 }
 
@@ -634,11 +600,7 @@ fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        buffer.name.clone(),
-    ))
+    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn structural_equal(lhs: &BufferType, rhs: &BufferType) -> Result<bool> {

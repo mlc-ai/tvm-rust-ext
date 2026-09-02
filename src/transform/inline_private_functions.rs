@@ -250,12 +250,7 @@ impl PrimFuncInliner {
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(TensorLoad::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone().try_cast()?,
-            source.into(),
-            indices,
-        ))
+        Ok(value.copy_with(source.into(), indices))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -268,12 +263,7 @@ impl PrimFuncInliner {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored_value, indices))
     }
 
     fn mutate_allocation(
@@ -285,11 +275,7 @@ impl PrimFuncInliner {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -302,11 +288,7 @@ impl PrimFuncInliner {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Stmt> {
@@ -345,7 +327,7 @@ impl PrimFuncInliner {
         if evaluated.same_as(&value.value) {
             return Ok(value.into());
         }
-        Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
+        Ok(value.copy_with(evaluated).into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
@@ -361,14 +343,7 @@ impl PrimFuncInliner {
         if op.same_as(&value.op) && array_same_as(&args, &value.args) {
             return Ok(value);
         }
-        Ok(Call::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone(),
-            op,
-            args,
-            value.attrs.clone(),
-            value.ty_args.clone(),
-        ))
+        Ok(value.copy_with(value.ty.clone(), op, args))
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

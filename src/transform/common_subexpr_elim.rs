@@ -749,13 +749,7 @@ fn mutate_expression_children(
         if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
             return Ok(value);
         }
-        return Ok(TensorLoad::from_complete_fields(
-            load.span.clone(),
-            load.ty.clone().try_cast()?,
-            source.into(),
-            indices,
-        )
-        .into());
+        return Ok(load.copy_with(source.into(), indices).into());
     }
     mutate_expr_default(rewriter, mutator, value)
 }
@@ -770,12 +764,7 @@ fn mutate_statement_children(
         if buffer.same_as(&allocation.buffer) {
             return Ok(value);
         }
-        return Ok(AllocBuffer::from_complete_fields(
-            allocation.span.clone(),
-            buffer,
-            allocation.annotations.clone(),
-        )
-        .into());
+        return Ok(allocation.copy_with(buffer).into());
     }
     if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
         let data: Expr = mutator.mutate(rewriter, &declaration.data)?.try_into()?;
@@ -783,7 +772,7 @@ fn mutate_statement_children(
         if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
             return Ok(value);
         }
-        return Ok(DeclBuffer::from_complete_fields(declaration.span.clone(), buffer, data).into());
+        return Ok(declaration.copy_with(buffer, data).into());
     }
     if let Ok(store) = value.clone().try_cast::<BufferStore>() {
         let buffer = rewriter.buffer_remaps.use_buffer(&store.buffer);
@@ -795,13 +784,7 @@ fn mutate_statement_children(
         {
             return Ok(value);
         }
-        return Ok(BufferStore::from_complete_fields(
-            store.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        )
-        .into());
+        return Ok(store.copy_with(buffer, stored_value, indices).into());
     }
     mutate_stmt_default(rewriter, mutator, value)
 }

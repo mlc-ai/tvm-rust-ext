@@ -297,11 +297,7 @@ impl StmtSimplifier {
         if bound_value.same_as(&value.value) {
             return Ok(value);
         }
-        Ok(Bind::from_complete_fields(
-            value.span.clone(),
-            value.var.clone(),
-            bound_value,
-        ))
+        Ok(value.copy_with(value.var.clone(), bound_value))
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
@@ -371,13 +367,7 @@ impl StmtSimplifier {
             if attr_value.same_as(&value.value) && body.same_as(&value.body) {
                 return Ok(value);
             }
-            Ok(AttrStmt::from_complete_fields(
-                value.span.clone(),
-                value.node.clone(),
-                value.attr_key.clone(),
-                attr_value,
-                body,
-            ))
+            Ok(value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body))
         })
     }
 
@@ -387,8 +377,7 @@ impl StmtSimplifier {
         if condition.same_as(&value.condition) {
             return Ok(value);
         }
-        Ok(AssertStmt::from_complete_fields(
-            value.span.clone(),
+        Ok(value.copy_with(
             condition,
             value.error_kind.clone(),
             value.message_parts.clone(),
@@ -402,12 +391,7 @@ impl StmtSimplifier {
         {
             value
         } else {
-            BufferStore::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                stored_value,
-                indices,
-            )
+            value.copy_with(value.buffer.clone(), stored_value, indices)
         };
 
         if let Ok(load) = store.value.clone().try_cast::<TensorLoad>() {
@@ -455,15 +439,13 @@ impl StmtSimplifier {
             if int_value(&condition) == Some(0) {
                 return Ok(false_value);
             }
-            return Ok(Call::from_complete_fields(
-                value.span.clone(),
-                value.ty.clone(),
-                value.op.clone(),
-                Array::new(vec![condition.into(), true_value, false_value]),
-                value.attrs.clone(),
-                value.ty_args.clone(),
-            )
-            .into());
+            return Ok(value
+                .copy_with(
+                    value.ty.clone(),
+                    value.op.clone(),
+                    Array::new(vec![condition.into(), true_value, false_value]),
+                )
+                .into());
         }
         super::utils::mutate_expr_default(self, mutator, value.into())
     }

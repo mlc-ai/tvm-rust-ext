@@ -921,6 +921,15 @@ impl Range {
             }),
         }
     }
+
+    /// Copy this node with new `min`, `extent`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Range::from_min_extent`] and, like
+    /// [`Range::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, min: PrimExpr, extent: PrimExpr) -> Self {
+        Self::from_complete_fields(min, extent, self.span.clone())
+    }
 }
 
 fn require_primitive_expr(value: Expr, context: &str) -> Result<PrimExpr> {
@@ -982,6 +991,21 @@ impl TensorLoad {
                 indices,
             }),
         }
+    }
+
+    /// Copy this node with new `source`, `indices`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`TensorLoad::from_buffer`] and, like
+    /// [`TensorLoad::from_complete_fields`], runs no validation.
+    /// The result type is carried over unchanged.
+    pub fn copy_with(&self, source: Expr, indices: Array<PrimExpr>) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            PrimExpr::from(self).type_annotation(),
+            source,
+            indices,
+        )
     }
 }
 
@@ -1728,6 +1752,15 @@ impl Var {
             }),
         }
     }
+
+    /// Copy this node with new `name`, `ty`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Var::with_type`] and, like
+    /// [`Var::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, name: String, ty: Type) -> Self {
+        Self::from_complete_fields(self.span.clone(), ty, name)
+    }
 }
 
 impl GlobalVar {
@@ -1803,6 +1836,22 @@ impl Call {
                 ty_args,
             }),
         }
+    }
+
+    /// Copy this node with new `ty`, `op`, `args`; every other field, span
+    /// included, is carried over from `self`.
+    ///
+    /// Takes the same required fields as [`Call::new`] and, like
+    /// [`Call::from_complete_fields`], runs no validation.
+    pub fn copy_with(&self, ty: Type, op: Expr, args: Array<Expr>) -> Self {
+        Self::from_complete_fields(
+            self.span.clone(),
+            ty,
+            op,
+            args,
+            self.attrs.clone(),
+            self.ty_args.clone(),
+        )
     }
 }
 

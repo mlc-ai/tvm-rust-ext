@@ -189,14 +189,14 @@ impl TileDispatcher {
             if body.same_as(&entry.body) {
                 return Ok(entry.into());
             }
-            return Ok(AttrStmt::from_complete_fields(
-                entry.span.clone(),
-                entry.node.clone(),
-                entry.attr_key.clone(),
-                entry.value.clone(),
-                body,
-            )
-            .into());
+            return Ok(entry
+                .copy_with(
+                    entry.node.clone(),
+                    entry.attr_key.clone(),
+                    entry.value.clone(),
+                    body,
+                )
+                .into());
         }
 
         for initializer in self.device_initializers.drain(..).rev() {
@@ -939,13 +939,10 @@ impl TileDispatcher {
         if !changed {
             return Ok(predicate.clone());
         }
-        PrimExpr::try_from(Expr::from(Call::from_complete_fields(
-            call.span.clone(),
+        PrimExpr::try_from(Expr::from(call.copy_with(
             call.ty.clone(),
             call.op.clone(),
             Array::new(arguments),
-            call.attrs.clone(),
-            call.ty_args.clone(),
         )))
     }
 

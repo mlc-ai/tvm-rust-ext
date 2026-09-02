@@ -82,13 +82,7 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let mut remover = BufferOffsetRemover::new()?;
     body = structural_mutate(body, &mut remover)?.try_into()?;
 
-    PrimFunc::with_metadata(
-        parameters,
-        body,
-        function.ret_type.clone(),
-        function.attrs.clone(),
-        function.span.as_ref(),
-    )
+    function.copy_with(parameters, body)
 }
 
 /// Build TVM's `tirx.LowerTIRxCleanup` PrimFunc pass in Rust.
@@ -383,11 +377,7 @@ impl LayoutApplier {
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(AllocBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            value.annotations.clone(),
-        ))
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_declaration(
@@ -401,11 +391,7 @@ impl LayoutApplier {
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -415,21 +401,11 @@ impl LayoutApplier {
             if stored.same_as(&value.value) && indices_same(&indices, &value.indices) {
                 return Ok(value);
             }
-            return Ok(BufferStore::from_complete_fields(
-                value.span.clone(),
-                value.buffer.clone(),
-                stored,
-                indices,
-            ));
+            return Ok(value.copy_with(value.buffer.clone(), stored, indices));
         }
         let flat_indices = self.flattened_indices(&value.buffer, &indices)?;
         let buffer = self.flatten_buffer(&value.buffer, false)?;
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored,
-            flat_indices,
-        ))
+        Ok(value.copy_with(buffer, stored, flat_indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -537,11 +513,7 @@ impl BufferOffsetRemover {
         if buffer.same_as(&value.buffer) && data.same_as(&value.data) {
             return Ok(value);
         }
-        Ok(DeclBuffer::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            data,
-        ))
+        Ok(value.copy_with(buffer, data))
     }
 
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
@@ -554,12 +526,7 @@ impl BufferOffsetRemover {
         {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            buffer,
-            stored,
-            indices,
-        ))
+        Ok(value.copy_with(buffer, stored, indices))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
@@ -598,11 +565,7 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
 }
 
 fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(Var::from_complete_fields(
-        buffer.span.clone(),
-        ty.into(),
-        buffer.name.clone(),
-    ))
+    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn native_flatten_buffer(buffer: &BufferVar) -> Result<BufferVar> {
