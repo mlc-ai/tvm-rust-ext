@@ -25,8 +25,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, PrimExpr, TensorLoad, Var};
@@ -45,7 +44,7 @@ pub fn common_subexpr_elim_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
     let mut rewriter = CseRewriter::new(plan);
     let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
-    Ok(with_prim_func_body(function, body))
+    Ok(function.with_body(body))
 }
 
 /// Build TVM's `tirx.CommonSubexprElim` PrimFunc pass in Rust.
@@ -724,13 +723,7 @@ fn mutate_expression_children(
         if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
             return Ok(value);
         }
-        return Ok(TensorLoad::from_complete_fields(
-            load.span.clone(),
-            load.ty.clone().try_cast()?,
-            source.into(),
-            indices,
-        )
-        .into());
+        return Ok(load.with_children(source.into(), indices).into());
     }
     mutate_expr_default(rewriter, mutator, value)
 }
@@ -745,12 +738,7 @@ fn mutate_statement_children(
         if buffer.same_as(&allocation.buffer) {
             return Ok(value);
         }
-        return Ok(AllocBuffer::from_complete_fields(
-            allocation.span.clone(),
-            buffer,
-            allocation.annotations.clone(),
-        )
-        .into());
+        return Ok(allocation.with_buffer(buffer).into());
     }
     if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
         let data: Expr = mutator.mutate(rewriter, &declaration.data)?.try_into()?;
@@ -758,7 +746,7 @@ fn mutate_statement_children(
         if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
             return Ok(value);
         }
-        return Ok(DeclBuffer::from_complete_fields(declaration.span.clone(), buffer, data).into());
+        return Ok(declaration.with_children(buffer, data).into());
     }
     if let Ok(store) = value.clone().try_cast::<BufferStore>() {
         let buffer = rewriter.buffer_remaps.use_buffer(&store.buffer);
@@ -770,13 +758,7 @@ fn mutate_statement_children(
         {
             return Ok(value);
         }
-        return Ok(BufferStore::from_complete_fields(
-            store.span.clone(),
-            buffer,
-            stored_value,
-            indices,
-        )
-        .into());
+        return Ok(store.with_children(buffer, stored_value, indices).into());
     }
     mutate_stmt_default(rewriter, mutator, value)
 }

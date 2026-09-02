@@ -22,7 +22,7 @@ use tvm_ffi::{
     Result, String,
 };
 
-use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
+use super::utils::mutate_stmt_expr_default;
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
 use crate::ir::{Call, Expr};
 use crate::tirx::{Evaluate, PrimFunc};
@@ -40,7 +40,7 @@ fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
         assume_op: ObjectIdentity::of(&assume_op),
     };
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
-    Ok(with_prim_func_body(function, body))
+    Ok(function.with_body(body))
 }
 
 /// Build the callback pass used as the first stage of TVM's

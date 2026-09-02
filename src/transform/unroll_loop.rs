@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
+use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
@@ -129,7 +129,7 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
         return Ok(function);
     }
     let body = super::convert_ssa::convert_ssa_stmt(body)?;
-    Ok(with_prim_func_body(function, body))
+    Ok(function.with_body(body))
 }
 
 /// Build TVM's `tirx.UnrollLoop` PrimFunc pass in Rust.
@@ -240,18 +240,7 @@ impl LoopUnroller {
 
         if automatic && mutated.kind != ForKind::kUnrolled {
             self.changed = true;
-            return Ok(For::from_complete_fields(
-                mutated.span.clone(),
-                mutated.loop_var.clone(),
-                mutated.min.clone(),
-                mutated.extent.clone(),
-                ForKind::kUnrolled,
-                mutated.body.clone(),
-                mutated.thread_binding.clone(),
-                mutated.annotations.clone(),
-                mutated.step.clone(),
-            )
-            .into());
+            return Ok(mutated.with_kind(ForKind::kUnrolled).into());
         }
         Ok(mutated.into())
     }
@@ -276,12 +265,7 @@ impl LoopUnroller {
         if stored_value.same_as(&value.value) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
-        Ok(BufferStore::from_complete_fields(
-            value.span.clone(),
-            value.buffer.clone(),
-            stored_value,
-            indices,
-        ))
+        Ok(value.with_children(value.buffer.clone(), stored_value, indices))
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
@@ -340,13 +324,7 @@ fn rewrite_regular_attribute(
     if attr_value.same_as(&value.value) && body.same_as(&value.body) {
         return Ok(value);
     }
-    Ok(AttrStmt::from_complete_fields(
-        value.span.clone(),
-        value.node.clone(),
-        value.attr_key.clone(),
-        attr_value,
-        body,
-    ))
+    Ok(value.with_children(attr_value, body))
 }
 
 fn rewrite_loop_children(
@@ -365,17 +343,7 @@ fn rewrite_loop_children(
     {
         return Ok(value);
     }
-    Ok(For::from_complete_fields(
-        value.span.clone(),
-        value.loop_var.clone(),
-        minimum,
-        extent,
-        value.kind,
-        body,
-        value.thread_binding.clone(),
-        value.annotations.clone(),
-        step,
-    ))
+    Ok(value.with_children(minimum, extent, body, step))
 }
 
 impl LoopUnroller {

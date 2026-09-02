@@ -19,14 +19,14 @@
 
 use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, Result};
 
-use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
+use super::utils::mutate_stmt_expr_default;
 use super::{create_prim_func_pass, Pass};
 use crate::tirx::{AssertStmt, Evaluate, PrimFunc};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
     let body = structural_mutate(func.body.clone(), AssertSkipper)?.try_into()?;
-    Ok(with_prim_func_body(func, body))
+    Ok(func.with_body(body))
 }
 
 struct AssertSkipper;
