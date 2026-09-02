@@ -20,11 +20,10 @@
 use std::collections::HashMap;
 
 use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, MutateCallbacks, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    String as FfiString, RUNTIME_ERROR,
+    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, Mutator, ObjectArc,
+    ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    RUNTIME_ERROR,
 };
 
 use super::utils::{
@@ -112,16 +111,29 @@ pub fn remove_no_op_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> Result<PrimFunc> {
     let analyzer = Analyzer::new()?;
     analyzer.set_maximum_rewrite_steps(options.max_simplification_steps)?;
-    let state = NoOpState {
+    let profiler_operators = if options.ignore_profiler_call {
+        [
+            "tirx.timer_init_cuda",
+            "tirx.timer_start_cuda",
+            "tirx.timer_end_cuda",
+            "tirx.timer_finalize_cuda",
+        ]
+        .into_iter()
+        .map(get_operator)
+        .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let mut remover = NoOpRemover {
         analyzer,
         ignore_profiler_call: options.ignore_profiler_call,
+        profiler_operators,
         variable_domains: HashMap::new(),
         buffer_remaps: BufferRemaps::default(),
         likely_operator: get_operator("tirx.likely")?,
         if_then_else_operator: get_operator("tirx.if_then_else")?,
         bitwise_and_operator: get_operator("tirx.bitwise_and")?,
     };
-    let mut remover = MutateCallbacks::new(state, NoOpRemover);
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
@@ -140,9 +152,10 @@ pub fn remove_no_op() -> Result<Pass> {
     )
 }
 
-struct NoOpState {
+struct NoOpRemover {
     analyzer: Analyzer,
     ignore_profiler_call: bool,
+    profiler_operators: Vec<Expr>,
     variable_domains: HashMap<ObjectIdentity, (Var, IntSet)>,
     buffer_remaps: BufferRemaps,
     likely_operator: Expr,
@@ -150,19 +163,14 @@ struct NoOpState {
     bitwise_and_operator: Expr,
 }
 
-struct NoOpRemover;
-
 #[tvm_ffi::dispatch(mutate)]
 impl NoOpRemover {
-    fn mutate_bind(&self, value: Bind, mutator: &mut Mutator<NoOpState>) -> Result<Bind> {
+    fn mutate_bind(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
         // Bind.var is a definition, not a recursive use.
-        let bound_value: Expr = mutator.mutate(&value.value)?.try_into()?;
+        let bound_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         if let Ok(bound_value) = PrimExpr::try_from(&bound_value) {
             if side_effect(&bound_value)? <= CallEffectKind::kPure {
-                mutator
-                    .state()
-                    .analyzer
-                    .bind_expression(&value.var, &bound_value)?;
+                self.analyzer.bind_expression(&value.var, &bound_value)?;
             }
         }
         if bound_value.same_as(&value.value) {
@@ -175,15 +183,12 @@ impl NoOpRemover {
         ))
     }
 
-    fn mutate_let(&self, value: Let, mutator: &mut Mutator<NoOpState>) -> Result<Let> {
-        let bound_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
+    fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
+        let bound_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
         if side_effect(&bound_value)? <= CallEffectKind::kPure {
-            mutator
-                .state()
-                .analyzer
-                .bind_expression(&value.var, &bound_value)?;
+            self.analyzer.bind_expression(&value.var, &bound_value)?;
         }
-        let body: PrimExpr = mutator.mutate(&value.body)?.try_into()?;
+        let body: PrimExpr = mutator.mutate(self, &value.body)?.try_into()?;
         if bound_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
         }
@@ -196,15 +201,12 @@ impl NoOpRemover {
         ))
     }
 
-    fn mutate_reduce(&self, value: Reduce, mutator: &mut Mutator<NoOpState>) -> Result<Reduce> {
+    fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
         // IRMutatorWithAnalyzer binds every reduction axis before visiting any
         // reduction child.
         for axis in value.axis.iter() {
             if let Some(domain) = axis.dom()? {
-                mutator
-                    .state()
-                    .analyzer
-                    .bind(axis.var()?.as_var(), &domain)?;
+                self.analyzer.bind(axis.var()?.as_var(), &domain)?;
             }
         }
 
@@ -214,8 +216,8 @@ impl NoOpRemover {
             let domain = original_domain
                 .as_ref()
                 .map(|domain| -> Result<Range> {
-                    let minimum: PrimExpr = mutator.mutate(&domain.min)?.try_into()?;
-                    let extent: PrimExpr = mutator.mutate(&domain.extent)?.try_into()?;
+                    let minimum: PrimExpr = mutator.mutate(self, &domain.min)?.try_into()?;
+                    let extent: PrimExpr = mutator.mutate(self, &domain.extent)?.try_into()?;
                     if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
                         Ok(domain.clone())
                     } else {
@@ -240,9 +242,9 @@ impl NoOpRemover {
             }
         }
 
-        let source: Array<PrimExpr> = mutator.mutate(&value.source)?.try_into()?;
-        let init: Array<PrimExpr> = mutator.mutate(&value.init)?.try_into()?;
-        let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
+        let source: Array<PrimExpr> = mutator.mutate(self, &value.source)?.try_into()?;
+        let init: Array<PrimExpr> = mutator.mutate(self, &value.init)?.try_into()?;
+        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
         let axes = Array::new(axes);
         if array_same_as(&source, &value.source)
             && array_same_as(&init, &value.init)
@@ -263,12 +265,8 @@ impl NoOpRemover {
         ))
     }
 
-    fn mutate_assertion(
-        &self,
-        value: AssertStmt,
-        mutator: &mut Mutator<NoOpState>,
-    ) -> Result<AssertStmt> {
-        let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
+    fn mutate_assertion(&mut self, value: AssertStmt, mutator: &mut Mutator) -> Result<AssertStmt> {
+        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
         if condition.same_as(&value.condition) {
             return Ok(value);
         }
@@ -280,16 +278,19 @@ impl NoOpRemover {
         ))
     }
 
-    fn mutate_select(&self, value: Select, mutator: &mut Mutator<NoOpState>) -> Result<PrimExpr> {
-        let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
-        let true_value =
-            mutate_primitive_under_constraint_with_facts(mutator, &value.true_value, &condition)?;
-        let negative = mutator
-            .state()
+    fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
+        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
+        let true_value = mutate_primitive_under_constraint_with_facts(
+            self,
+            mutator,
+            &value.true_value,
+            &condition,
+        )?;
+        let negative = self
             .analyzer
             .simplify(&PrimExpr::from(Not::new(condition.clone())?))?;
         let false_value =
-            mutate_primitive_under_constraint(mutator, &value.false_value, &negative)?;
+            mutate_primitive_under_constraint(self, mutator, &value.false_value, &negative)?;
         if let Some(condition) = int_value(&condition) {
             return if condition != 0 {
                 Ok(true_value)
@@ -313,9 +314,9 @@ impl NoOpRemover {
         .into())
     }
 
-    fn mutate_call(&self, value: Call, mutator: &mut Mutator<NoOpState>) -> Result<Expr> {
-        if !value.op.same_as(&mutator.state().if_then_else_operator) || value.args.len() != 3 {
-            let args: Array<Expr> = mutator.mutate(&value.args)?.try_into()?;
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        if !value.op.same_as(&self.if_then_else_operator) || value.args.len() != 3 {
+            let args: Array<Expr> = mutator.mutate(self, &value.args)?.try_into()?;
             if array_same_as(&args, &value.args) {
                 return Ok(value.into());
             }
@@ -333,11 +334,16 @@ impl NoOpRemover {
         let original_condition = value.args.get(0).expect("condition argument is present");
         let original_true = value.args.get(1).expect("true argument is present");
         let original_false = value.args.get(2).expect("false argument is present");
-        let condition: PrimExpr = mutator.mutate(&original_condition)?.try_into()?;
-        let true_value =
-            mutate_expression_under_constraint_with_facts(mutator, &original_true, &condition)?;
+        let condition: PrimExpr = mutator.mutate(self, &original_condition)?.try_into()?;
+        let true_value = mutate_expression_under_constraint_with_facts(
+            self,
+            mutator,
+            &original_true,
+            &condition,
+        )?;
         let negative: PrimExpr = Not::new(condition.clone())?.into();
-        let false_value = mutate_expression_under_constraint(mutator, &original_false, &negative)?;
+        let false_value =
+            mutate_expression_under_constraint(self, mutator, &original_false, &negative)?;
         if let Some(condition) = int_value(&condition) {
             return if condition != 0 {
                 Ok(true_value)
@@ -362,7 +368,7 @@ impl NoOpRemover {
         .into())
     }
 
-    fn mutate_attribute(&self, value: AttrStmt, mutator: &mut Mutator<NoOpState>) -> Result<Stmt> {
+    fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
         if value.attr_key.as_str() == DEBUG_SKIP_REGION {
             return evaluate_zero();
         }
@@ -385,7 +391,7 @@ impl NoOpRemover {
             let zero = zero_like(&inner.value);
             let negative: PrimExpr = crate::tirx::LT::new(inner.value.clone(), zero)?.into();
             if Analyzer::new()?.can_prove(&negative)? {
-                return mutator.mutate(&inner.body)?.try_into();
+                return mutator.mutate(self, &inner.body)?.try_into();
             }
         }
 
@@ -393,13 +399,13 @@ impl NoOpRemover {
             let iteration = IterVar::try_from(value.node.clone())?;
             let variable = iteration.var()?;
             let domain = Range::from_min_extent(zero_like(&value.value), value.value.clone())?;
-            mutator.state().analyzer.bind(variable.as_var(), &domain)?;
+            self.analyzer.bind(variable.as_var(), &domain)?;
         }
 
         // Match StmtExprMutator: AttrStmt.node is metadata and must not be
         // recursively rewritten.
-        let attr_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
-        let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
+        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
         let mutated = if attr_value.same_as(&value.value) && body.same_as(&value.body) {
             value
         } else {
@@ -412,32 +418,27 @@ impl NoOpRemover {
             )
         };
         if is_no_op(&mutated.body) {
-            mutator.state().make_evaluate(mutated.value.clone())
+            self.make_evaluate(mutated.value.clone())
         } else {
             Ok(mutated.into())
         }
     }
 
-    fn mutate_conditional(
-        &self,
-        value: IfThenElse,
-        mutator: &mut Mutator<NoOpState>,
-    ) -> Result<Stmt> {
-        let condition: PrimExpr = mutator.mutate(&value.condition)?.try_into()?;
-        let real_condition = mutator.state().unwrap_likely(&condition)?;
+    fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
+        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
+        let real_condition = self.unwrap_likely(&condition)?;
         let then_case =
-            mutate_under_constraint_with_facts(mutator, &value.then_case, &real_condition)?;
-        let negative = mutator
-            .state()
+            mutate_under_constraint_with_facts(self, mutator, &value.then_case, &real_condition)?;
+        let negative = self
             .analyzer
             .simplify(&PrimExpr::from(Not::new(real_condition.clone())?))?;
         let else_case = value
             .else_case
             .as_ref()
-            .map(|branch| mutate_under_constraint(mutator, branch, &negative))
+            .map(|branch| mutate_under_constraint(self, mutator, branch, &negative))
             .transpose()?;
 
-        if let Some(condition) = int_value(&mutator.state().analyzer.simplify(&real_condition)?) {
+        if let Some(condition) = int_value(&self.analyzer.simplify(&real_condition)?) {
             return if condition != 0 {
                 Ok(then_case)
             } else {
@@ -451,7 +452,7 @@ impl NoOpRemover {
         let then_is_no_op = is_no_op(&conditional.then_case);
         match conditional.else_case.clone() {
             Some(else_case) if then_is_no_op && is_no_op(&else_case) => {
-                mutator.state().make_evaluate(conditional.condition.clone())
+                self.make_evaluate(conditional.condition.clone())
             }
             Some(else_case) if is_no_op(&else_case) => Ok(IfThenElse::new(
                 conditional.condition.clone(),
@@ -465,46 +466,42 @@ impl NoOpRemover {
                         .into(),
                 )
             }
-            None if then_is_no_op => mutator.state().make_evaluate(conditional.condition.clone()),
+            None if then_is_no_op => self.make_evaluate(conditional.condition.clone()),
             _ => Ok(conditional.into()),
         }
     }
 
-    fn mutate_loop(&self, value: For, mutator: &mut Mutator<NoOpState>) -> Result<Stmt> {
-        let domains: Map<Var, IntSet> = mutator
-            .state()
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+        let domains: Map<Var, IntSet> = self
             .variable_domains
             .values()
             .map(|(variable, domain)| (variable.clone(), domain.clone()))
             .collect();
-        let extent_set = mutator.state().analyzer.int_set(&value.extent, &domains)?;
+        let extent_set = self.analyzer.int_set(&value.extent, &domains)?;
         let maximum = extent_set.maximum()?;
         let non_positive: PrimExpr = LE::new(maximum.clone(), zero_like(&maximum))?.into();
-        if mutator.state().analyzer.can_prove(&non_positive)? {
+        if self.analyzer.can_prove(&non_positive)? {
             return evaluate_zero();
         }
 
         let domain = Range::from_min_extent(value.min.clone(), value.extent.clone())?;
-        mutator
-            .state()
-            .analyzer
-            .bind(value.loop_var.as_var(), &domain)?;
+        self.analyzer.bind(value.loop_var.as_var(), &domain)?;
 
         let one = one_like(&value.extent);
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
         let maximum: PrimExpr = crate::tirx::Add::new(value.min.clone(), extent_minus_one)?.into();
         let integer_domain = IntSet::interval(value.min.clone(), maximum)?;
         let identity = ObjectIdentity::of(&value.loop_var);
-        let previous = mutator.state_mut().variable_domains.insert(
+        let previous = self.variable_domains.insert(
             identity.clone(),
             (value.loop_var.as_var().clone(), integer_domain),
         );
         let mutated = (|| -> Result<For> {
-            let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
-            let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
-            let step: Option<PrimExpr> = mutator.mutate(&value.step)?.try_into()?;
+            let minimum: PrimExpr = mutator.mutate(self, &value.min)?.try_into()?;
+            let extent: PrimExpr = mutator.mutate(self, &value.extent)?.try_into()?;
+            let step: Option<PrimExpr> = mutator.mutate(self, &value.step)?.try_into()?;
             let positive: PrimExpr = GT::new(extent.clone(), zero_like(&extent))?.into();
-            let body = mutate_under_constraint_with_facts(mutator, &value.body, &positive)?;
+            let body = mutate_under_constraint_with_facts(self, mutator, &value.body, &positive)?;
             if minimum.same_as(&value.min)
                 && extent.same_as(&value.extent)
                 && option_same_as(&step, &value.step)
@@ -526,13 +523,10 @@ impl NoOpRemover {
         })();
         match previous {
             Some(previous) => {
-                mutator
-                    .state_mut()
-                    .variable_domains
-                    .insert(identity, previous);
+                self.variable_domains.insert(identity, previous);
             }
             None => {
-                mutator.state_mut().variable_domains.remove(&identity);
+                self.variable_domains.remove(&identity);
             }
         }
         let mutated = mutated?;
@@ -540,26 +534,20 @@ impl NoOpRemover {
             return evaluate_zero();
         }
         if is_no_op(&mutated.body) {
-            return mutator
-                .state()
-                .make_evaluate_values([mutated.min.clone(), mutated.extent.clone()]);
+            return self.make_evaluate_values([mutated.min.clone(), mutated.extent.clone()]);
         }
         Ok(mutated.into())
     }
 
-    fn mutate_evaluate(
-        &self,
-        value: Evaluate,
-        mutator: &mut Mutator<NoOpState>,
-    ) -> Result<Evaluate> {
-        if mutator.state().has_side_effect(&value.value)? {
+    fn mutate_evaluate(&mut self, value: Evaluate) -> Result<Evaluate> {
+        if self.has_side_effect(&value.value)? {
             Ok(value)
         } else {
             Evaluate::from_i64(0)
         }
     }
 
-    fn mutate_store(&self, value: BufferStore, mutator: &mut Mutator<NoOpState>) -> Result<Stmt> {
+    fn mutate_store(&mut self, value: BufferStore) -> Result<Stmt> {
         let load = TensorLoad::from_buffer(
             value.buffer.as_var().clone(),
             value.indices.iter().map(Expr::from).collect(),
@@ -567,38 +555,31 @@ impl NoOpRemover {
         let difference: PrimExpr = Sub::new(value.value.clone(), load)?.into();
         let equal_to_zero: PrimExpr =
             crate::tirx::EQ::new(difference.clone(), zero_like(&difference))?.into();
-        if int_value(&mutator.state().analyzer.simplify(&equal_to_zero)?) == Some(1) {
-            return mutator.state().store_side_effects(&value);
+        if int_value(&self.analyzer.simplify(&equal_to_zero)?) == Some(1) {
+            return self.store_side_effects(&value);
         }
 
         if let Ok(load) = value.value.clone().try_cast::<TensorLoad>() {
             let source: BufferVar = (&load.source).try_into()?;
             if source.same_as(&value.buffer)
-                && mutator
-                    .state()
-                    .buffer_geometry_equal(&source, &value.buffer)?
-                && mutator.state().array_equal(&load.indices, &value.indices)?
+                && self.buffer_geometry_equal(&source, &value.buffer)?
+                && self.array_equal(&load.indices, &value.indices)?
             {
-                return mutator.state().store_side_effects(&value);
+                return self.store_side_effects(&value);
             }
         }
 
         Ok(value.into())
     }
 
-    fn mutate_sequence(&self, value: SeqStmt, mutator: &mut Mutator<NoOpState>) -> Result<Stmt> {
+    fn mutate_sequence(&mut self, value: SeqStmt, mutator: &mut Mutator) -> Result<Stmt> {
         let mut exits = Vec::<Function>::new();
         let result = (|| -> Result<Stmt> {
             let mut statements = Vec::with_capacity(value.seq.len());
             for statement in value.seq.iter() {
-                let mutated: Stmt = mutator.mutate(&statement)?.try_into()?;
+                let mutated: Stmt = mutator.mutate(self, &statement)?.try_into()?;
                 if let Ok(assertion) = mutated.clone().try_cast::<AssertStmt>() {
-                    exits.push(
-                        mutator
-                            .state()
-                            .analyzer
-                            .enter_constraint(&assertion.condition)?,
-                    );
+                    exits.push(self.analyzer.enter_constraint(&assertion.condition)?);
                 }
                 statements.push(mutated);
             }
@@ -607,23 +588,14 @@ impl NoOpRemover {
         finish_constraint_contexts(result, exits)
     }
 
-    fn mutate_variable(&self, value: Var, mutator: &mut Mutator<NoOpState>) -> Var {
-        mutator.state().buffer_remaps.use_variable(&value)
+    fn mutate_variable(&mut self, value: Var) -> Var {
+        self.buffer_remaps.use_variable(&value)
     }
 
-    fn mutate_load(
-        &self,
-        value: TensorLoad,
-        mutator: &mut Mutator<NoOpState>,
-    ) -> Result<TensorLoad> {
+    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
         let old_source: BufferVar = (&value.source).try_into()?;
-        let source = mutator
-            .state()
-            .buffer_remaps
-            .use_buffer(&old_source)
-            .as_var()
-            .clone();
-        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
+        let source = self.buffer_remaps.use_buffer(&old_source).as_var().clone();
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         if source.same_as(old_source.as_var()) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
@@ -636,11 +608,11 @@ impl NoOpRemover {
     }
 
     fn mutate_alloc_buffer(
-        &self,
+        &mut self,
         value: AllocBuffer,
-        mutator: &mut Mutator<NoOpState>,
+        mutator: &mut Mutator,
     ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -652,12 +624,12 @@ impl NoOpRemover {
     }
 
     fn mutate_decl_buffer(
-        &self,
+        &mut self,
         value: DeclBuffer,
-        mutator: &mut Mutator<NoOpState>,
+        mutator: &mut Mutator,
     ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(&value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -668,16 +640,12 @@ impl NoOpRemover {
         ))
     }
 
-    fn mutate_stmt_expr_default(
-        &self,
-        value: &MapValue,
-        mutator: &mut Mutator<NoOpState>,
-    ) -> Result<Any> {
-        mutate_stmt_expr_default(mutator, value)
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutate_stmt_expr_default(self, mutator, value)
     }
 }
 
-impl NoOpState {
+impl NoOpRemover {
     fn unwrap_likely(&self, condition: &PrimExpr) -> Result<PrimExpr> {
         let Ok(call) = condition.clone().try_cast::<Call>() else {
             return Ok(condition.clone());
@@ -690,7 +658,7 @@ impl NoOpState {
 
     fn has_side_effect(&self, value: &Expr) -> Result<bool> {
         if let Ok(primitive) = PrimExpr::try_from(value) {
-            if self.ignore_profiler_call && is_profiler_call(&primitive)? {
+            if self.ignore_profiler_call && is_profiler_call(&primitive, &self.profiler_operators) {
                 return Ok(false);
             }
             return Ok(side_effect(&primitive)? > CallEffectKind::kReadState);
@@ -763,92 +731,85 @@ impl NoOpState {
     }
 }
 
-fn mutate_buffer_definition<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_buffer_definition(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     buffer: &BufferVar,
-) -> Result<BufferVar>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let mut remaps = std::mem::take(&mut mutator.state_mut().buffer_remaps);
-    let result =
-        remaps.mutate_definition(buffer, |expression| mutator.mutate(expression)?.try_into());
-    mutator.state_mut().buffer_remaps = remaps;
+) -> Result<BufferVar> {
+    let mut remaps = std::mem::take(&mut remover.buffer_remaps);
+    let result = remaps.mutate_definition(buffer, |expression| {
+        mutator.mutate(remover, expression)?.try_into()
+    });
+    remover.buffer_remaps = remaps;
     result
 }
 
-fn mutate_under_constraint<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_under_constraint(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     statement: &Stmt,
     constraint: &PrimExpr,
-) -> Result<Stmt>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let analyzer = mutator.state().analyzer.clone();
-    analyzer.with_constraint(constraint, || mutator.mutate(statement)?.try_into())
+) -> Result<Stmt> {
+    let analyzer = remover.analyzer.clone();
+    analyzer.with_constraint(constraint, || {
+        mutator.mutate(remover, statement)?.try_into()
+    })
 }
 
-fn mutate_under_constraint_with_facts<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_under_constraint_with_facts(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     statement: &Stmt,
     constraint: &PrimExpr,
-) -> Result<Stmt>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let exits = mutator.state().enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(statement)?.try_into();
+) -> Result<Stmt> {
+    let exits = remover.enter_constraint_facts(constraint)?;
+    let result = mutator.mutate(remover, statement)?.try_into();
     finish_constraint_contexts(result, exits)
 }
 
-fn mutate_expression_under_constraint<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_expression_under_constraint(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     expression: &Expr,
     constraint: &PrimExpr,
-) -> Result<Expr>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let analyzer = mutator.state().analyzer.clone();
-    analyzer.with_constraint(constraint, || mutator.mutate(expression)?.try_into())
+) -> Result<Expr> {
+    let analyzer = remover.analyzer.clone();
+    analyzer.with_constraint(constraint, || {
+        mutator.mutate(remover, expression)?.try_into()
+    })
 }
 
-fn mutate_expression_under_constraint_with_facts<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_expression_under_constraint_with_facts(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     expression: &Expr,
     constraint: &PrimExpr,
-) -> Result<Expr>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let exits = mutator.state().enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(expression)?.try_into();
+) -> Result<Expr> {
+    let exits = remover.enter_constraint_facts(constraint)?;
+    let result = mutator.mutate(remover, expression)?.try_into();
     finish_constraint_contexts(result, exits)
 }
 
-fn mutate_primitive_under_constraint<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_primitive_under_constraint(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     expression: &PrimExpr,
     constraint: &PrimExpr,
-) -> Result<PrimExpr>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let analyzer = mutator.state().analyzer.clone();
-    analyzer.with_constraint(constraint, || mutator.mutate(expression)?.try_into())
+) -> Result<PrimExpr> {
+    let analyzer = remover.analyzer.clone();
+    analyzer.with_constraint(constraint, || {
+        mutator.mutate(remover, expression)?.try_into()
+    })
 }
 
-fn mutate_primitive_under_constraint_with_facts<Driver>(
-    mutator: &mut Mutator<NoOpState, Driver>,
+fn mutate_primitive_under_constraint_with_facts(
+    remover: &mut NoOpRemover,
+    mutator: &mut Mutator,
     expression: &PrimExpr,
     constraint: &PrimExpr,
-) -> Result<PrimExpr>
-where
-    Driver: MutateContextDriver<NoOpState> + ?Sized,
-{
-    let exits = mutator.state().enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(expression)?.try_into();
+) -> Result<PrimExpr> {
+    let exits = remover.enter_constraint_facts(constraint)?;
+    let result = mutator.mutate(remover, expression)?.try_into();
     finish_constraint_contexts(result, exits)
 }
 
@@ -984,24 +945,13 @@ fn get_operator(name: &str) -> Result<Expr> {
         .try_into()
 }
 
-fn is_profiler_call(value: &PrimExpr) -> Result<bool> {
+fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {
     let Ok(call) = value.clone().try_cast::<Call>() else {
-        return Ok(false);
+        return false;
     };
-    for name in [
-        "tirx.timer_init_cuda",
-        "tirx.timer_start_cuda",
-        "tirx.timer_end_cuda",
-        "tirx.timer_finalize_cuda",
-    ] {
-        let operator: Expr = tvm_ffi::cached_global_func!("ir.GetOp")
-            .call_tuple((FfiString::from(name),))?
-            .try_into()?;
-        if call.op.same_as(&operator) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    profiler_operators
+        .iter()
+        .any(|operator| call.op.same_as(operator))
 }
 
 fn evaluate_zero() -> Result<Stmt> {

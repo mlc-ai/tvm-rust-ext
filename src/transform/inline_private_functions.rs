@@ -19,11 +19,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, Error, Map, MapValue, MutateCallbacks,
-    Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue, VALUE_ERROR,
+    structural_mutate, structural_visit, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    VALUE_ERROR,
 };
 
 use super::utils::{
@@ -51,24 +50,21 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
         return Ok(module);
     }
 
-    let state = PrimFuncInlineState {
+    let mut inliner = PrimFuncInliner {
         removable: inlinable.keys().cloned().collect(),
         inlinable,
         current_target: None,
         buffer_remaps: BufferRemaps::default(),
     };
-    let mut inliner = MutateCallbacks::new(state, PrimFuncInliner);
     let mut changed = false;
     let mut updated_functions = Vec::with_capacity(module.functions.len());
     for (global, base_function) in module.functions.iter() {
         let updated = if let Ok(function) = base_function.clone().try_cast::<PrimFunc>() {
-            let previous = std::mem::replace(
-                &mut inliner.state_mut().current_target,
-                function_target(&function)?,
-            );
+            let previous =
+                std::mem::replace(&mut inliner.current_target, function_target(&function)?);
             let body =
                 structural_mutate(function.body.clone(), &mut inliner).and_then(Stmt::try_from);
-            inliner.state_mut().current_target = previous;
+            inliner.current_target = previous;
             let body = body?;
             let updated = if body.same_as(&function.body) {
                 function
@@ -86,12 +82,8 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
         return Ok(module);
     }
 
-    updated_functions.retain(|(global, _)| {
-        !inliner
-            .state()
-            .removable
-            .contains(&ObjectIdentity::of(global))
-    });
+    updated_functions
+        .retain(|(global, _)| !inliner.removable.contains(&ObjectIdentity::of(global)));
     let updated = IRModule::with_metadata(
         Map::from_iter(updated_functions),
         module.source_map.clone(),
@@ -230,14 +222,14 @@ fn is_inlinable(
     Ok(true)
 }
 
-struct PrimFuncInlineState {
+struct PrimFuncInliner {
     inlinable: FunctionTable,
     removable: HashSet<ObjectIdentity>,
     current_target: Option<Any>,
     buffer_remaps: BufferRemaps,
 }
 
-impl PrimFuncInlineState {
+impl PrimFuncInliner {
     fn targets_match(&self, callee: &PrimFunc) -> Result<bool> {
         let callee_target = function_target(callee)?;
         match (&self.current_target, callee_target) {
@@ -249,22 +241,16 @@ impl PrimFuncInlineState {
     }
 }
 
-struct PrimFuncInliner;
-
 #[tvm_ffi::dispatch(mutate)]
 impl PrimFuncInliner {
-    fn mutate_variable(&self, value: Var, mutator: &mut Mutator<PrimFuncInlineState>) -> Var {
-        mutator.state().buffer_remaps.use_variable(&value)
+    fn mutate_variable(&mut self, value: Var) -> Var {
+        self.buffer_remaps.use_variable(&value)
     }
 
-    fn mutate_load(
-        &self,
-        value: TensorLoad,
-        mutator: &mut Mutator<PrimFuncInlineState>,
-    ) -> Result<TensorLoad> {
+    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
         let source: BufferVar = (&value.source).try_into()?;
-        let source = mutator.state().buffer_remaps.use_buffer(&source);
-        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
+        let source = self.buffer_remaps.use_buffer(&source);
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
@@ -276,14 +262,10 @@ impl PrimFuncInliner {
         ))
     }
 
-    fn mutate_store(
-        &self,
-        value: BufferStore,
-        mutator: &mut Mutator<PrimFuncInlineState>,
-    ) -> Result<BufferStore> {
-        let buffer = mutator.state().buffer_remaps.use_buffer(&value.buffer);
-        let stored_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
-        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
+    fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        let stored_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         if buffer.same_as(&value.buffer)
             && stored_value.same_as(&value.value)
             && array_same_as(&indices, &value.indices)
@@ -299,11 +281,11 @@ impl PrimFuncInliner {
     }
 
     fn mutate_alloc_buffer(
-        &self,
+        &mut self,
         value: AllocBuffer,
-        mutator: &mut Mutator<PrimFuncInlineState>,
+        mutator: &mut Mutator,
     ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -315,12 +297,12 @@ impl PrimFuncInliner {
     }
 
     fn mutate_decl_buffer(
-        &self,
+        &mut self,
         value: DeclBuffer,
-        mutator: &mut Mutator<PrimFuncInlineState>,
+        mutator: &mut Mutator,
     ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(&value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -331,16 +313,12 @@ impl PrimFuncInliner {
         ))
     }
 
-    fn mutate_evaluate(
-        &self,
-        value: Evaluate,
-        mutator: &mut Mutator<PrimFuncInlineState>,
-    ) -> Result<Stmt> {
+    fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Stmt> {
         if let Ok(call) = value.value.clone().try_cast::<Call>() {
             if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
                 let identity = ObjectIdentity::of(&global);
-                if let Some((_, callee)) = mutator.state().inlinable.get(&identity).cloned() {
-                    if mutator.state().targets_match(&callee)? {
+                if let Some((_, callee)) = self.inlinable.get(&identity).cloned() {
+                    if self.targets_match(&callee)? {
                         if callee.params.len() != call.args.len() {
                             return Err(Error::new(
                                 VALUE_ERROR,
@@ -362,31 +340,28 @@ impl PrimFuncInliner {
                         let specialized: PrimFunc = tvm_ffi::cached_global_func!("tirx.Specialize")
                             .call_tuple((callee, parameters))?
                             .try_into()?;
-                        return mutator.mutate(&specialized.body)?.try_into();
+                        return mutator.mutate(self, &specialized.body)?.try_into();
                     }
                 }
             }
         }
-        let evaluated: Expr = mutator.mutate(&value.value)?.try_into()?;
+        let evaluated: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         if evaluated.same_as(&value.value) {
             return Ok(value.into());
         }
         Ok(Evaluate::from_complete_fields(value.span.clone(), evaluated).into())
     }
 
-    fn mutate_call(&self, value: Call, mutator: &mut Mutator<PrimFuncInlineState>) -> Result<Call> {
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
         if let Ok(global) = value.op.clone().try_cast::<GlobalVar>() {
-            mutator
-                .state_mut()
-                .removable
-                .remove(&ObjectIdentity::of(&global));
+            self.removable.remove(&ObjectIdentity::of(&global));
         }
         let op = if value.op.clone().try_cast::<OpaqueExpr>().is_ok() {
-            mutator.mutate(&value.op)?.try_into()?
+            mutator.mutate(self, &value.op)?.try_into()?
         } else {
             value.op.clone()
         };
-        let args: Array<Expr> = mutator.mutate(&value.args)?.try_into()?;
+        let args: Array<Expr> = mutator.mutate(self, &value.args)?.try_into()?;
         if op.same_as(&value.op) && array_same_as(&args, &value.args) {
             return Ok(value);
         }
@@ -400,26 +375,21 @@ impl PrimFuncInliner {
         ))
     }
 
-    fn mutate_stmt_expr_default(
-        &self,
-        value: &MapValue,
-        mutator: &mut Mutator<PrimFuncInlineState>,
-    ) -> Result<Any> {
-        mutate_stmt_expr_default(mutator, value)
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutate_stmt_expr_default(self, mutator, value)
     }
 }
 
-fn mutate_buffer_definition<Driver>(
-    mutator: &mut Mutator<PrimFuncInlineState, Driver>,
+fn mutate_buffer_definition(
+    inliner: &mut PrimFuncInliner,
+    mutator: &mut Mutator,
     buffer: &BufferVar,
-) -> Result<BufferVar>
-where
-    Driver: MutateContextDriver<PrimFuncInlineState> + ?Sized,
-{
-    let mut remaps = std::mem::take(&mut mutator.state_mut().buffer_remaps);
-    let result =
-        remaps.mutate_definition(buffer, |expression| mutator.mutate(expression)?.try_into());
-    mutator.state_mut().buffer_remaps = remaps;
+) -> Result<BufferVar> {
+    let mut remaps = std::mem::take(&mut inliner.buffer_remaps);
+    let result = remaps.mutate_definition(buffer, |expression| {
+        mutator.mutate(inliner, expression)?.try_into()
+    });
+    inliner.buffer_remaps = remaps;
     result
 }
 
