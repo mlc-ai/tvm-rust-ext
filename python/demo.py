@@ -68,7 +68,7 @@ def before(A: T.Buffer((16,), "int32"), B: T.Buffer((16,), "int32")):
 @T.prim_func
 def expected(A: T.Buffer((16,), "int32"), B: T.Buffer((16,), "int32")):
     for i in T.serial(16):
-        B[i] = A[i] + 3
+        B[i] = A[i]
 
 
 def main() -> None:

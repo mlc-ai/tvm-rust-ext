@@ -19,7 +19,6 @@
 
 use tvm_ffi::{ObjectRefCast, Result, String};
 
-use super::utils::with_prim_func_attr;
 use super::{create_module_pass, Pass};
 use crate::ir::{BaseFunc, IRModule};
 use crate::tirx::PrimFunc;
@@ -40,7 +39,7 @@ fn annotate_entry_func_module(module: IRModule) -> Result<IRModule> {
             .expect("a one-function module has one entry");
         if !has_nonzero_attr(&function, IS_ENTRY_FUNC)? {
             if let Ok(prim_func) = function.try_cast::<PrimFunc>() {
-                let annotated = with_prim_func_attr(prim_func, IS_ENTRY_FUNC, true);
+                let annotated = prim_func.with_attr(IS_ENTRY_FUNC, true);
                 return module.with_updated_function(&global, &BaseFunc::from(annotated));
             }
         }
@@ -65,7 +64,7 @@ fn annotate_entry_func_module(module: IRModule) -> Result<IRModule> {
 
     if external_prim_func_count == 1 && !has_external_non_prim_func {
         let (global, function) = external_prim_func.expect("one external PrimFunc was counted");
-        let annotated = with_prim_func_attr(function, IS_ENTRY_FUNC, true);
+        let annotated = function.with_attr(IS_ENTRY_FUNC, true);
         module.with_updated_function(&global, &BaseFunc::from(annotated))
     } else {
         Ok(module)
