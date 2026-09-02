@@ -19,10 +19,9 @@
 
 use std::collections::HashMap;
 
-use tvm_ffi::extra::structural_mutate::MutateContextDriver;
 use tvm_ffi::{
-    structural_mutate, Any, Array, Error, Map, MapValue, MutateCallbacks, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String as FfiString, TYPE_ERROR,
+    structural_mutate, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String as FfiString, TYPE_ERROR,
 };
 
 use super::utils::{
@@ -44,7 +43,7 @@ const VIRTUAL_THREAD: &str = "virtual_thread";
 /// Lower opaque loop constructs using the same algorithm as TVM's
 /// `tirx::TIRxOpaqueLower`.
 pub fn lower_tirx_opaque_prim_func(function: PrimFunc) -> Result<PrimFunc> {
-    let mut lowerer = MutateCallbacks::new(TIRxOpaqueLowerState::default(), TIRxOpaqueLower);
+    let mut lowerer = TIRxOpaqueLower::default();
     let body = structural_mutate(function.body.clone(), &mut lowerer)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
@@ -61,28 +60,24 @@ pub fn lower_tirx_opaque() -> Result<Pass> {
 }
 
 #[derive(Default)]
-struct TIRxOpaqueLowerState {
+struct TIRxOpaqueLower {
     unit_loop_values: HashMap<ObjectIdentity, PrimExpr>,
     buffer_remaps: BufferRemaps,
 }
 
-struct TIRxOpaqueLower;
-
 #[tvm_ffi::dispatch(mutate)]
 impl TIRxOpaqueLower {
-    fn mutate_for(&self, value: For, mutator: &mut Mutator<TIRxOpaqueLowerState>) -> Result<Stmt> {
-        let minimum: PrimExpr = mutator.mutate(&value.min)?.try_into()?;
-        let extent: PrimExpr = mutator.mutate(&value.extent)?.try_into()?;
+    fn mutate_for(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+        let minimum: PrimExpr = mutator.mutate(self, &value.min)?.try_into()?;
+        let extent: PrimExpr = mutator.mutate(self, &value.extent)?.try_into()?;
         let is_unit_loop = int_value(&extent) == Some(1);
 
         if is_unit_loop && value.annotations.is_empty() {
-            mutator
-                .state_mut()
-                .unit_loop_values
+            self.unit_loop_values
                 .insert(ObjectIdentity::of(&value.loop_var), minimum.clone());
         }
 
-        let body: Stmt = mutator.mutate(&value.body)?.try_into()?;
+        let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
         let LoweredAnnotations {
             preserved: annotations,
             mut pragmas,
@@ -133,18 +128,13 @@ impl TIRxOpaqueLower {
         Ok(lowered)
     }
 
-    fn mutate_variable(
-        &self,
-        value: Var,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
-    ) -> Result<Expr> {
-        let Some(replacement) = mutator
-            .state()
+    fn mutate_variable(&mut self, value: Var) -> Result<Expr> {
+        let Some(replacement) = self
             .unit_loop_values
             .get(&ObjectIdentity::of(&value))
             .cloned()
         else {
-            return Ok(mutator.state().buffer_remaps.use_variable(&value).into());
+            return Ok(self.buffer_remaps.use_variable(&value).into());
         };
 
         let variable_type = value.ty.clone().try_cast::<PrimType>()?;
@@ -156,14 +146,10 @@ impl TIRxOpaqueLower {
         }
     }
 
-    fn mutate_load(
-        &self,
-        value: TensorLoad,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
-    ) -> Result<TensorLoad> {
+    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
         let source: BufferVar = (&value.source).try_into()?;
-        let source = mutator.state().buffer_remaps.use_buffer(&source);
-        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
+        let source = self.buffer_remaps.use_buffer(&source);
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
             return Ok(value);
         }
@@ -175,14 +161,10 @@ impl TIRxOpaqueLower {
         ))
     }
 
-    fn mutate_store(
-        &self,
-        value: BufferStore,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
-    ) -> Result<BufferStore> {
-        let buffer = mutator.state().buffer_remaps.use_buffer(&value.buffer);
-        let stored_value: PrimExpr = mutator.mutate(&value.value)?.try_into()?;
-        let indices: Array<PrimExpr> = mutator.mutate(&value.indices)?.try_into()?;
+    fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        let stored_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         if buffer.same_as(&value.buffer)
             && stored_value.same_as(&value.value)
             && array_same_as(&indices, &value.indices)
@@ -198,11 +180,11 @@ impl TIRxOpaqueLower {
     }
 
     fn mutate_alloc_buffer(
-        &self,
+        &mut self,
         value: AllocBuffer,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
+        mutator: &mut Mutator,
     ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -214,12 +196,12 @@ impl TIRxOpaqueLower {
     }
 
     fn mutate_decl_buffer(
-        &self,
+        &mut self,
         value: DeclBuffer,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
+        mutator: &mut Mutator,
     ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(&value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(mutator, &value.buffer)?;
+        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
+        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
         if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
             return Ok(value);
         }
@@ -230,26 +212,21 @@ impl TIRxOpaqueLower {
         ))
     }
 
-    fn mutate_stmt_expr_default(
-        &self,
-        value: &MapValue,
-        mutator: &mut Mutator<TIRxOpaqueLowerState>,
-    ) -> Result<Any> {
-        mutate_stmt_expr_default(mutator, value)
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutate_stmt_expr_default(self, mutator, value)
     }
 }
 
-fn mutate_buffer_definition<Driver>(
-    mutator: &mut Mutator<TIRxOpaqueLowerState, Driver>,
+fn mutate_buffer_definition(
+    lowerer: &mut TIRxOpaqueLower,
+    mutator: &mut Mutator,
     buffer: &BufferVar,
-) -> Result<BufferVar>
-where
-    Driver: MutateContextDriver<TIRxOpaqueLowerState> + ?Sized,
-{
-    let mut remaps = std::mem::take(&mut mutator.state_mut().buffer_remaps);
-    let result =
-        remaps.mutate_definition(buffer, |expression| mutator.mutate(expression)?.try_into());
-    mutator.state_mut().buffer_remaps = remaps;
+) -> Result<BufferVar> {
+    let mut remaps = std::mem::take(&mut lowerer.buffer_remaps);
+    let result = remaps.mutate_definition(buffer, |expression| {
+        mutator.mutate(lowerer, expression)?.try_into()
+    });
+    lowerer.buffer_remaps = remaps;
     result
 }
 

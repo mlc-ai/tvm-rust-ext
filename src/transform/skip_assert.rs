@@ -33,12 +33,12 @@ struct AssertSkipper;
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssertSkipper {
-    fn mutate_assert(&self, _value: AssertStmt, _mutator: &mut Mutator) -> Result<Evaluate> {
+    fn mutate_assert(&mut self, _value: AssertStmt) -> Result<Evaluate> {
         Evaluate::from_i64(0)
     }
 
-    fn mutate_stmt_expr_default(&self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
-        mutate_stmt_expr_default(mutator, value)
+    fn mutate_stmt_expr_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutate_stmt_expr_default(self, mutator, value)
     }
 }
 

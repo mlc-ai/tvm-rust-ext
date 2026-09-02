@@ -64,7 +64,7 @@ dependencies = [
 [[package]]
 name = "tvm-ffi"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/apache/tvm-ffi.git?rev=796979744f8ec4dc7c72238f493be7acd00f89e9#796979744f8ec4dc7c72238f493be7acd00f89e9"
+source = "git+https://github.com/apache/tvm-ffi.git?rev=7b85be0949a29f56dfb5ebeeec5c609e058e10dd#7b85be0949a29f56dfb5ebeeec5c609e058e10dd"
 dependencies = [
  "paste",
  "tvm-ffi-macros",
@@ -74,7 +74,7 @@ dependencies = [
 [[package]]
 name = "tvm-ffi-macros"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/apache/tvm-ffi.git?rev=796979744f8ec4dc7c72238f493be7acd00f89e9#796979744f8ec4dc7c72238f493be7acd00f89e9"
+source = "git+https://github.com/apache/tvm-ffi.git?rev=7b85be0949a29f56dfb5ebeeec5c609e058e10dd#7b85be0949a29f56dfb5ebeeec5c609e058e10dd"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "tvm-ffi-sys"
 version = "0.1.0-alpha.0"
-source = "git+https://github.com/apache/tvm-ffi.git?rev=796979744f8ec4dc7c72238f493be7acd00f89e9#796979744f8ec4dc7c72238f493be7acd00f89e9"
+source = "git+https://github.com/apache/tvm-ffi.git?rev=7b85be0949a29f56dfb5ebeeec5c609e058e10dd#7b85be0949a29f56dfb5ebeeec5c609e058e10dd"
 
 [[package]]
 name = "tvm-rust"
