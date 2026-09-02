@@ -30,7 +30,7 @@ name = "tvm"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-tvm-ffi = { git = "https://github.com/apache/tvm-ffi.git", rev = "7b85be0949a29f56dfb5ebeeec5c609e058e10dd" }
+tvm-ffi = { git = "https://github.com/apache/tvm-ffi.git", rev = "c62b07c2b27ec09a2616eb314a0ef2acc006d55d" }
 
 # Keep this crate independent from any Cargo workspace above the checkout.
 [workspace]
