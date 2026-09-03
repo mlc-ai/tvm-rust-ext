@@ -26,7 +26,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default,
+    array_same_as, int_value, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
@@ -1021,14 +1021,6 @@ fn insert_unique_dtype(values: &mut Vec<DLDataType>, value: DLDataType) {
     if !values.contains(&value) {
         values.push(value);
     }
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
 }
 
 fn divide_by_factor(value: PrimExpr, factor: u16) -> Result<PrimExpr> {

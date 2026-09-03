@@ -27,15 +27,16 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
+    array_same_as, int_value, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
+    BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
 use crate::tirx::{
     Add, AllocBuffer, And, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
-    Evaluate, FloorDiv, For, IfThenElse, IterVar, Let, Mul, Not, PrimFunc, Reduce, Select, SeqStmt,
-    Stmt, Sub, EQ, GE, GT, LE, LT,
+    Evaluate, EvaluateObj, FloorDiv, For, IfThenElse, IterVar, Let, Mul, Not, PrimFunc, Reduce,
+    Select, SeqStmt, Stmt, Sub, EQ, GE, GT, LE, LT,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
@@ -907,19 +908,8 @@ fn evaluate_zero() -> Result<Stmt> {
 
 fn is_no_op(statement: &Stmt) -> bool {
     statement
-        .clone()
-        .try_cast::<Evaluate>()
-        .ok()
-        .and_then(|evaluate| evaluate.value.clone().try_cast::<IntImm>().ok())
-        .is_some_and(|literal| literal.value == 0)
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
+        .as_node::<EvaluateObj>()
+        .is_some_and(|evaluate| int_value(&evaluate.value) == Some(0))
 }
 
 fn zero_like(value: &PrimExpr) -> PrimExpr {

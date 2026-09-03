@@ -20,12 +20,12 @@
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map, ObjectArc, ObjectRefCast,
-    Result, String, TYPE_ERROR, VALUE_ERROR,
+    ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
 use crate::ir::{
-    BaseFuncObj, DictAttrs, Expr, ExprObj, IntImm, PointerType, PrimExpr, PrimType, Span,
-    TupleType, Type, TypedVar, Var,
+    BaseFuncObj, DictAttrs, Expr, ExprObj, IntImm, IntImmObj, PointerType, PrimExpr, PrimType,
+    Span, TupleType, Type, TypedVar, Var,
 };
 
 mod buffer;
@@ -1778,7 +1778,7 @@ impl SeqStmt {
     pub fn with_span(statements: Vec<Stmt>, span: Option<&Span>) -> Result<Self> {
         let requires_flattening = statements
             .iter()
-            .any(|statement| statement.clone().try_cast::<SeqStmt>().is_ok());
+            .any(|statement| statement.as_node::<SeqStmtObj>().is_some());
         let flattened = if requires_flattening {
             let mut flattened = Vec::new();
             for statement in statements {
@@ -1826,23 +1826,19 @@ impl SeqStmt {
 }
 
 fn flatten_statement(statement: Stmt, output: &mut Vec<Stmt>) {
-    match statement.clone().try_cast::<SeqStmt>() {
-        Ok(sequence) => {
-            for child in sequence.seq.iter() {
-                flatten_statement(child, output);
-            }
+    if let Some(sequence) = statement.as_node::<SeqStmtObj>() {
+        for child in sequence.seq.iter() {
+            flatten_statement(child, output);
         }
-        Err(_) if !is_evaluate_zero(&statement) => output.push(statement),
-        Err(_) => {}
+    } else if !is_evaluate_zero(&statement) {
+        output.push(statement);
     }
 }
 
 fn is_evaluate_zero(statement: &Stmt) -> bool {
     statement
-        .clone()
-        .try_cast::<Evaluate>()
-        .ok()
-        .and_then(|evaluate| evaluate.value.clone().try_cast::<IntImm>().ok())
+        .as_node::<EvaluateObj>()
+        .and_then(|evaluate| evaluate.value.as_node::<IntImmObj>())
         .is_some_and(|literal| literal.value == 0)
 }
 
@@ -2388,7 +2384,7 @@ fn normalize_loop_bound(value: &Expr, loop_dtype: DLDataType, field: &str) -> Re
     if value_dtype == loop_dtype {
         return PrimExpr::try_from(value);
     }
-    if let Ok(literal) = value.clone().try_cast::<IntImm>() {
+    if let Some(literal) = value.as_node::<IntImmObj>() {
         return PrimExpr::try_from(Expr::from(IntImm::from_dtype(loop_dtype, literal.value)?));
     }
     if value_dtype.bits > loop_dtype.bits {
@@ -2739,7 +2735,7 @@ fn cast_index_to_i64(value: Expr) -> Result<Expr> {
     if primitive_type(&value, "buffer shape")?.dtype == target.dtype {
         return Ok(value);
     }
-    if let Ok(literal) = value.clone().try_cast::<IntImm>() {
+    if let Some(literal) = value.as_node::<IntImmObj>() {
         return Ok(
             IntImm::from_complete_fields(literal.span.clone(), target, literal.value).into(),
         );

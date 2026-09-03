@@ -23,7 +23,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body,
+    int_value, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
+    with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
@@ -1136,15 +1137,6 @@ fn constant_allocation_size(shape: &Array<PrimExpr>) -> Option<i64> {
     shape.iter().try_fold(1_i64, |size, extent| {
         int_value(&extent).and_then(|extent| size.checked_mul(extent))
     })
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .as_expr()
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
 }
 
 fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {

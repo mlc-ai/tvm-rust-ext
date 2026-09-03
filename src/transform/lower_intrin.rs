@@ -22,7 +22,7 @@ use tvm_ffi::{
     ObjectRefCore, Result, String,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_default, with_prim_func_body};
+use super::utils::{int_value, mutate_expr_default, mutate_stmt_default, with_prim_func_body};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -701,15 +701,6 @@ fn bitwise_and(operator: &Expr, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr
 fn constant_power_of_two(value: &PrimExpr) -> Option<u32> {
     let value = int_value(value)?;
     (value > 0 && (value as u64).is_power_of_two()).then(|| (value as u64).trailing_zeros())
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .as_expr()
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|value| value.value)
 }
 
 fn int_like(value: &PrimExpr, literal: i64) -> Result<PrimExpr> {

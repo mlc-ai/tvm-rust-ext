@@ -25,7 +25,7 @@ use tvm_ffi::{
 };
 
 use crate::ir::{
-    Call, DictAttrs, Expr, IntImm, OpaqueExpr, PrimExpr, PrimType, Range, TensorLoad, Var,
+    Call, DictAttrs, Expr, IntImmObj, OpaqueExpr, PrimExpr, PrimType, Range, TensorLoad, Var,
 };
 use crate::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
@@ -33,11 +33,8 @@ use crate::tirx::{
     StringImm, TileLayout, While,
 };
 
-pub(super) fn int_value(expr: &Expr) -> Option<i64> {
-    expr.clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|value| value.value)
+pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
+    expr.as_node::<IntImmObj>().map(|value| value.value)
 }
 
 pub(super) fn with_prim_func_body(function: PrimFunc, body: Stmt) -> PrimFunc {

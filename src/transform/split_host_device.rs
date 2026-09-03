@@ -25,7 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr, with_prim_func_body,
+    int_value, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr,
+    with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
 use crate::ir::{
@@ -330,12 +331,8 @@ impl LaunchBoundsExtractor {
         let Some((slot, must_equal_one)) = slot else {
             return mutate_stmt_default(self, mutator, value.into());
         };
-        let integer = value
-            .value
-            .clone()
-            .try_cast::<IntImm>()
-            .map_err(|_| value_error("launch bound expects an integer value"))?
-            .value;
+        let integer = int_value(&value.value)
+            .ok_or_else(|| value_error("launch bound expects an integer value"))?;
         if (must_equal_one && integer != 1) || (!must_equal_one && integer <= 0) {
             return Err(value_error("invalid launch-bound value"));
         }
@@ -594,11 +591,8 @@ impl KernelInfoCollector {
                     "only one tirx.dyn_smem_bytes declaration is allowed per kernel",
                 ));
             }
-            value
-                .value
-                .clone()
-                .try_cast::<IntImm>()
-                .map_err(|_| value_error("tirx.dyn_smem_bytes must be an IntImm"))?;
+            int_value(&value.value)
+                .ok_or_else(|| value_error("tirx.dyn_smem_bytes must be an IntImm"))?;
             self.dynamic_shared_bytes = Some(value.value.clone());
         }
         if value.attr_key.as_str() == THREAD_EXTENT {
@@ -649,12 +643,7 @@ impl KernelInfoCollector {
         if !self.bindings.is_empty() {
             size = substitute_prim(&size, &self.bindings)?;
         }
-        if size
-            .clone()
-            .try_cast::<IntImm>()
-            .is_ok_and(|value| value.value == 0)
-            && self.dynamic_shared_bytes.is_none()
-        {
+        if int_value(&size) == Some(0) && self.dynamic_shared_bytes.is_none() {
             return Err(value_error(
                 "a placeholder shared.dyn allocation requires tirx.dyn_smem_bytes",
             ));
@@ -766,12 +755,9 @@ struct KernelReturnRewriter {
 #[tvm_ffi::dispatch(mutate)]
 impl KernelReturnRewriter {
     fn mutate_return(&mut self, value: Return) -> Result<Stmt> {
-        let returned = value
-            .value
-            .clone()
-            .try_cast::<IntImm>()
-            .map_err(|_| value_error("device kernel may only return 0"))?;
-        if returned.value != 0 {
+        let returned = int_value(&value.value)
+            .ok_or_else(|| value_error("device kernel may only return 0"))?;
+        if returned != 0 {
             return Err(value_error("device kernel may only return 0"));
         }
         if self.remove {

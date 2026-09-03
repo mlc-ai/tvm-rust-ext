@@ -24,7 +24,9 @@ use tvm_ffi::{
     ObjectRefCast, ObjectRefCore, Result,
 };
 
-use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
+use super::utils::{
+    array_same_as, int_value, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -1014,14 +1016,6 @@ fn get_operator(name: &str) -> Result<Expr> {
 
 fn operator_identity(name: &str) -> Result<ObjectIdentity> {
     Ok(ObjectIdentity::of(&get_operator(name)?))
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
 }
 
 fn value_error(message: &str) -> tvm_ffi::Error {

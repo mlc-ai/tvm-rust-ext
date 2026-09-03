@@ -25,7 +25,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    mutate_expr_default, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
+    int_value, mutate_expr_default, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
@@ -610,19 +610,11 @@ fn structural_equal(lhs: &BufferType, rhs: &BufferType) -> Result<bool> {
 }
 
 fn is_zero(value: &PrimExpr) -> bool {
-    value
-        .as_expr()
-        .clone()
-        .try_cast::<IntImm>()
-        .is_ok_and(|literal| literal.value == 0)
+    int_value(value) == Some(0)
 }
 
 fn is_one(value: &PrimExpr) -> bool {
-    value
-        .as_expr()
-        .clone()
-        .try_cast::<IntImm>()
-        .is_ok_and(|literal| literal.value == 1)
+    int_value(value) == Some(1)
 }
 
 fn get_operator(name: &str) -> Result<Expr> {
