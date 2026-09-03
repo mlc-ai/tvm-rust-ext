@@ -24,7 +24,10 @@ use tvm_ffi::{
     ObjectRefCore, Result, String as FfiString, TypeIndex,
 };
 
-use super::utils::{cast_prim_expr, mutate_stmt_expr_default, with_prim_func_body};
+use super::utils::{
+    cast_prim_expr, int_dtype_and_value, int_value, mutate_stmt_expr_default, variable_name,
+    with_prim_func_body,
+};
 use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::{
@@ -737,9 +740,9 @@ impl PackedAbiBinder {
             )?
             .try_cast()?;
         let data_bytes = storage_bytes(ty.dtype.dtype);
-        if let Ok(offset) = ty.elem_offset.clone().try_cast::<IntImm>() {
+        if let Some(offset) = int_value(&ty.elem_offset) {
             let expected: PrimExpr =
-                IntImm::new("uint64", offset.value.saturating_mul(data_bytes))?.into();
+                IntImm::new("uint64", offset.saturating_mul(data_bytes))?.into();
             self.bind_expected(
                 &expected,
                 byte_offset,
@@ -1010,8 +1013,8 @@ impl PackedAbiBinder {
             let loaded = cast_prim_expr(loaded, index_type.clone())?;
             let shape = ty.shape.get(axis)?;
             let stride_matches = equal(expected.clone(), loaded)?;
-            let condition = if let Ok(constant) = shape.clone().try_cast::<IntImm>() {
-                if constant.value == 1 {
+            let condition = if let Some(constant) = int_value(&shape) {
+                if constant == 1 {
                     IntImm::new("bool", 1)?.into()
                 } else {
                     stride_matches
@@ -1214,33 +1217,27 @@ fn function_signature(name: &str, parameters: &Array<Var>) -> Result<String> {
 }
 
 fn render_signature_expression(expression: PrimExpr) -> String {
-    if let Ok(variable) = expression.clone().try_cast::<Var>() {
-        return if variable.name.is_empty() {
+    if let Some(name) = variable_name(&expression) {
+        return if name.is_empty() {
             "v".to_owned()
         } else {
-            variable.name.as_str().to_owned()
+            name.to_owned()
         };
     }
-    if let Ok(literal) = expression.clone().try_cast::<IntImm>() {
-        let dtype = literal
-            .ty
-            .clone()
-            .try_cast::<PrimType>()
-            .expect("IntImm always has a primitive type")
-            .dtype
-            .to_string();
+    if let Some((dtype, value)) = int_dtype_and_value(&expression) {
+        let dtype = dtype.to_string();
         return if dtype.as_str() == "int32" {
-            literal.value.to_string()
+            value.to_string()
         } else {
-            format!("T.{}({})", dtype.as_str(), literal.value)
+            format!("T.{}({value})", dtype.as_str())
         };
     }
     "?".to_owned()
 }
 
 fn render_expected_expression(expression: PrimExpr) -> String {
-    if let Ok(literal) = expression.clone().try_cast::<IntImm>() {
-        return literal.value.to_string();
+    if let Some(value) = int_value(&expression) {
+        return value.to_string();
     }
     render_signature_expression(expression)
 }

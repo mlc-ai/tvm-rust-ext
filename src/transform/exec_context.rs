@@ -19,8 +19,9 @@
 
 use std::collections::HashMap;
 
-use tvm_ffi::{Array, Map, ObjectRefCast, Result, String as FfiString};
+use tvm_ffi::{Array, Map, Result, String as FfiString};
 
+use super::utils::int_value as integer_value;
 use crate::ir::{IntImm, PrimExpr};
 use crate::tirx::{ScopeBinding, ScopeKind};
 
@@ -504,14 +505,6 @@ fn add_cta_axes(active: &ActiveSet, target: &mut HashMap<String, AxisRange>) {
 
 fn integer(value: i64) -> Result<PrimExpr> {
     Ok(IntImm::new("int64", value)?.into())
-}
-
-fn integer_value(expression: &PrimExpr) -> Option<i64> {
-    expression
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|value| value.value)
 }
 
 fn same_integer_range(lhs: &AxisRange, rhs: &AxisRange) -> bool {

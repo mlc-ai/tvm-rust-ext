@@ -19,7 +19,10 @@
 
 use std::collections::HashSet;
 
-use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body};
+use super::utils::{
+    array_same_as, int_value as literal_value, mutate_stmt_expr_default, option_same_as,
+    with_prim_func_body,
+};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
@@ -29,8 +32,8 @@ use crate::tirx::{
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     structural_mutate, structural_walk, Any, Array, Error, FieldGetter, Map, MapValue, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String, WalkOrder,
-    WalkResult, VALUE_ERROR,
+    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCore, Result, String, WalkOrder, WalkResult,
+    VALUE_ERROR,
 };
 
 const AUTO_UNROLL_MAX_STEP: &str = "pragma_auto_unroll_max_step";
@@ -412,14 +415,6 @@ impl LoopUnroller {
         }
         Ok(())
     }
-}
-
-fn literal_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
 }
 
 fn checked_i32_config(value: i64, field: &str) -> Result<i32> {

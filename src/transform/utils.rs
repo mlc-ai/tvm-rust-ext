@@ -20,24 +20,39 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    Any, Array, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity, ObjectRefCast,
+    Any, Array, DLDataType, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity, ObjectRefCast,
     ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
 };
 
 use crate::ir::{
-    Call, DictAttrs, Expr, IntImm, OpaqueExpr, PrimExpr, PrimType, Range, TensorLoad, Var,
+    Call, DictAttrs, Expr, IntImmObj, OpaqueExpr, PrimExpr, PrimType, PrimTypeObj, Range,
+    TensorLoad, Var, VarObj,
 };
 use crate::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
-    Evaluate, For, IfThenElse, Iter, IterVar, Layout, Let, PrimFunc, Reduce, Select, SeqStmt, Stmt,
-    StringImm, TileLayout, While,
+    Evaluate, EvaluateObj, For, IfThenElse, Iter, IterVar, Layout, Let, PrimFunc, Reduce, Select,
+    SeqStmt, Stmt, StringImm, TileLayout, While,
 };
 
-pub(super) fn int_value(expr: &Expr) -> Option<i64> {
-    expr.clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|value| value.value)
+pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
+    expr.as_node::<IntImmObj>().map(|value| value.value)
+}
+
+pub(super) fn int_dtype_and_value<T: ObjectRefCore>(expr: &T) -> Option<(DLDataType, i64)> {
+    let literal = expr.as_node::<IntImmObj>()?;
+    let dtype = literal.ty.as_node::<PrimTypeObj>()?.dtype;
+    Some((dtype, literal.value))
+}
+
+pub(super) fn variable_name<T: ObjectRefCore>(expr: &T) -> Option<&str> {
+    expr.as_node::<VarObj>()
+        .map(|variable| variable.name.as_str())
+}
+
+pub(super) fn is_evaluate_zero(statement: &Stmt) -> bool {
+    statement
+        .as_node::<EvaluateObj>()
+        .is_some_and(|evaluate| int_value(&evaluate.value) == Some(0))
 }
 
 pub(super) fn with_prim_func_body(function: PrimFunc, body: Stmt) -> PrimFunc {

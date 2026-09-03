@@ -26,8 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_expr_default, mutate_stmt_expr_default, visit_stmt_expr_default,
-    with_prim_func_body,
+    array_same_as, int_value as optional_int_value, mutate_expr_default, mutate_stmt_expr_default,
+    visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
@@ -894,11 +894,7 @@ fn int_expr_value(value: &Expr) -> Result<i64> {
 }
 
 fn int_value(value: &PrimExpr) -> Result<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .map(|literal| literal.value)
-        .map_err(|_| value_error("expected a constant integer expression"))
+    optional_int_value(value).ok_or_else(|| value_error("expected a constant integer expression"))
 }
 
 fn value_error(message: &str) -> tvm_ffi::Error {

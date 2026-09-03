@@ -29,7 +29,9 @@ use super::exec_context::{encode_split, ExecContext};
 use super::scope_id::{
     compute_warp_id_in_cta, resolve_scope_id, LaunchParams, ScopeDefinition, ScopeIdSet,
 };
-use super::utils::{mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body};
+use super::utils::{
+    int_value as integer_value, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body,
+};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, Var};
@@ -1262,14 +1264,6 @@ fn get_operator(name: &str) -> Result<Expr> {
     tvm_ffi::cached_global_func!("ir.GetOp")
         .call_tuple((FfiString::from(name),))?
         .try_into()
-}
-
-fn integer_value(expression: &PrimExpr) -> Option<i64> {
-    expression
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|value| value.value)
 }
 
 fn axis_name(dimension: usize) -> char {

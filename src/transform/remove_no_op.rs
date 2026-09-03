@@ -27,7 +27,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
+    array_same_as, int_value, is_evaluate_zero as is_no_op, mutate_stmt_expr_default,
+    option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
@@ -903,23 +904,6 @@ fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {
 
 fn evaluate_zero() -> Result<Stmt> {
     Ok(Evaluate::from_i64(0)?.into())
-}
-
-fn is_no_op(statement: &Stmt) -> bool {
-    statement
-        .clone()
-        .try_cast::<Evaluate>()
-        .ok()
-        .and_then(|evaluate| evaluate.value.clone().try_cast::<IntImm>().ok())
-        .is_some_and(|literal| literal.value == 0)
-}
-
-fn int_value(value: &PrimExpr) -> Option<i64> {
-    value
-        .clone()
-        .try_cast::<IntImm>()
-        .ok()
-        .map(|literal| literal.value)
 }
 
 fn zero_like(value: &PrimExpr) -> PrimExpr {

@@ -27,7 +27,8 @@ use tvm_ffi::{
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, int_value, mutate_stmt_expr_default, visit_stmt_expr_default,
+    with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
@@ -675,11 +676,7 @@ fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
     let ty = buffer.type_annotation();
     let mut elements = 1_u64;
     for extent in ty.shape.iter() {
-        let Some(extent) = extent
-            .clone()
-            .try_cast::<IntImm>()
-            .ok()
-            .and_then(|literal| u64::try_from(literal.value).ok())
+        let Some(extent) = int_value(&extent).and_then(|literal| u64::try_from(literal).ok())
         else {
             return Ok(None);
         };
