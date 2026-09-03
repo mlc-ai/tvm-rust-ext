@@ -30,6 +30,10 @@ use crate::tirx::{
     SeqStmtObj, StmtObj, SubObj,
 };
 
+mod analyzer_mutator;
+
+pub use analyzer_mutator::{AnalyzerMutator, AnalyzerMutatorState};
+
 /// Opaque Rust view of TVM's stateful arithmetic analyzer.
 ///
 /// Unlike an IR node, the analyzer has private C++ implementation state, so

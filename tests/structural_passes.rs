@@ -19,7 +19,8 @@
 
 use tvm::analysis::{
     contains_int, expression_trace, first_int, loop_nesting, memory_access_statistics,
-    node_statistics, CallEffectKind, ExprTraceEvent,
+    node_statistics, Analyzer, AnalyzerMutator, AnalyzerMutatorState, CallEffectKind,
+    ExprTraceEvent,
 };
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
@@ -31,13 +32,14 @@ use tvm::tirx::{
     BufferRegion, BufferStore, BufferType, DeclBuffer, DispatchContext, Evaluate, EvaluateObj,
     ExecScope, FloorDiv, FloorMod, For, ForKind, IfThenElse, Iter, IterVar, IterVarType, Layout,
     Let, MatchBufferRegion, Mul, Not, PrimFunc, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
-    ScopeKind, Select, SeqStmt, Stmt, StringImm, TileLayout, TilePrimitiveCall, While, EQ, GE, GT,
-    LE, LT, NE,
+    ScopeKind, Select, SeqStmt, Stmt, StringImm, Sub, TileLayout, TilePrimitiveCall, While, EQ, GE,
+    GT, LE, LT, NE,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
-    dispatch, structural_map, structural_walk, Any, AnyView, Array, DefRegionKind, Function, Map,
-    ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
+    dispatch, structural_map, structural_mutate, structural_walk, Any, AnyView, Array,
+    DefRegionKind, Function, Map, MapValue, Mutator, ObjectRefCast, ObjectRefCore, Result,
+    WalkOrder, WalkResult,
 };
 
 mod common;
@@ -101,6 +103,54 @@ fn cpp_pass(name: &str) -> transform::Pass {
         .unwrap()
         .try_into()
         .unwrap()
+}
+
+struct AnalyzerMutationProbe {
+    analysis: AnalyzerMutatorState,
+    old_variable: Option<Var>,
+    new_variable: Option<Var>,
+}
+
+impl AnalyzerMutationProbe {
+    fn new(old_variable: Option<Var>, new_variable: Option<Var>) -> Self {
+        Self {
+            analysis: AnalyzerMutatorState::new(Analyzer::new().unwrap()).unwrap(),
+            old_variable,
+            new_variable,
+        }
+    }
+}
+
+impl AnalyzerMutator for AnalyzerMutationProbe {
+    fn analyzer_state(&self) -> &AnalyzerMutatorState {
+        &self.analysis
+    }
+
+    fn analyzer_state_mut(&mut self) -> &mut AnalyzerMutatorState {
+        &mut self.analysis
+    }
+}
+
+#[dispatch(mutate)]
+impl AnalyzerMutationProbe {
+    fn mutate_variable(&mut self, value: Var) -> Var {
+        match (&self.old_variable, &self.new_variable) {
+            (Some(old), Some(new)) if value.same_as(old) => new.clone(),
+            _ => value,
+        }
+    }
+
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        self.default_mutate_call(mutator, value)
+    }
+
+    fn mutate_assertion(&mut self, value: AssertStmt, mutator: &mut Mutator) -> Result<AssertStmt> {
+        self.default_mutate_assertion(mutator, value)
+    }
+
+    fn mutate_default(&mut self, _value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+        mutator.default_mutate(self)
+    }
 }
 
 fn has_nonzero_function_attr(function: &BaseFunc, key: &str) -> bool {
@@ -1955,6 +2005,93 @@ fn rust_remove_no_op_uses_branch_constraints_like_cpp() {
     let cpp_result = cpp_pass("tirx.transform.RemoveNoOp").run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_remove_no_op_keeps_nested_sequence_facts_like_cpp() {
+    load_tvm_compiler();
+    let value = Var::new("value", "int32").unwrap();
+    let condition = EQ::new(value.clone(), int_expression(8)).unwrap();
+    let assertion: Stmt = AssertStmt::new(condition, "ValueError", "value must be in range")
+        .unwrap()
+        .into();
+    // Keep a physical nested sequence: the canonical constructor would flatten it.
+    let nested = SeqStmt::from_complete_fields(None, Array::new(vec![assertion]));
+
+    let buffer_type = BufferType::new("global", "int32", vec![int_expression(1)]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let load = TensorLoad::from_buffer(&buffer, vec![int_expression(0)]).unwrap();
+    let difference = Sub::new(value.clone(), int_expression(8)).unwrap();
+    let stored_value = Add::new(load, difference).unwrap();
+    let store = BufferStore::new(&buffer, stored_value, vec![int_expression(0)]).unwrap();
+    let body = SeqStmt::from_complete_fields(None, Array::new(vec![nested.into(), store.into()]));
+    let function = PrimFunc::new(vec![buffer.as_var().clone(), value], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::remove_no_op_prim_func(function).unwrap();
+    assert!(rust_function.body.clone().try_cast::<AssertStmt>().is_ok());
+    let rust_result = IRModule::from_expr(rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.RemoveNoOp").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn analyzer_mutator_recomputes_buffer_data_type_after_variable_remap() {
+    load_tvm_compiler();
+    let old_buffer = BufferType::new("global", "int32", vec![int_expression(4)])
+        .unwrap()
+        .new_var("old_buffer");
+    let new_buffer = BufferType::new("shared", "float32", vec![int_expression(4)])
+        .unwrap()
+        .new_var("new_buffer");
+    let data: Expr = Function::get_global("tirx.BufferData")
+        .unwrap()
+        .call_packed(&[AnyView::from(&old_buffer)])
+        .unwrap()
+        .try_into()
+        .unwrap();
+
+    let mut probe = AnalyzerMutationProbe::new(
+        Some(old_buffer.as_var().clone()),
+        Some(new_buffer.as_var().clone()),
+    );
+    let rewritten = probe
+        .mutate_root(data)
+        .and_then(Expr::try_from)
+        .unwrap()
+        .try_cast::<Call>()
+        .unwrap();
+
+    let source = rewritten.args.get(0).unwrap().try_cast::<Var>().unwrap();
+    assert!(source.same_as(new_buffer.as_var()));
+    let pointer = rewritten.ty.clone().try_cast::<PointerType>().unwrap();
+    assert_eq!(pointer.storage_scope().unwrap().as_str(), "shared");
+    let element_type = pointer
+        .element_type()
+        .unwrap()
+        .try_cast::<PrimType>()
+        .unwrap();
+    assert_eq!(element_type.dtype, new_buffer.type_annotation().dtype.dtype);
+}
+
+#[test]
+fn analyzer_mutator_reports_missing_root_scope_without_panicking() {
+    load_tvm_compiler();
+    let assertion = AssertStmt::new(
+        EQ::new(int_expression(1), int_expression(1)).unwrap(),
+        "ValueError",
+        "condition must hold",
+    )
+    .unwrap();
+    let mut probe = AnalyzerMutationProbe::new(None, None);
+
+    let Err(error) = structural_mutate(assertion, &mut probe) else {
+        panic!("mutation without an analyzer root scope unexpectedly succeeded");
+    };
+    assert!(error
+        .to_string()
+        .contains("must start with AnalyzerMutator::mutate_root"));
 }
 
 #[test]

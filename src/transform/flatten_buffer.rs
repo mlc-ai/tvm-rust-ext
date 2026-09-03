@@ -20,23 +20,18 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, Function, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result,
+    structural_mutate, Any, Array, MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore,
+    Result,
 };
 
-use super::utils::{
-    mutate_expr_default, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
-};
+use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
-use crate::analysis::Analyzer;
-use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::analysis::{Analyzer, AnalyzerMutator, AnalyzerMutatorState};
+use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
-    PrimFunc, PrimVar, Reduce, Select, Stmt,
+    PrimFunc, Reduce, Select, Stmt,
 };
-
-const THREAD_EXTENT: &str = "thread_extent";
-const VIRTUAL_THREAD: &str = "virtual_thread";
 
 #[derive(Clone)]
 struct FlatInfo {
@@ -46,40 +41,28 @@ struct FlatInfo {
 
 /// Flatten all non-SBlock buffer accesses in one PrimFunc.
 pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
-    let analyzer = Analyzer::new()?;
     let mut flattener = BufferFlattener {
-        analyzer,
+        analysis: AnalyzerMutatorState::new(Analyzer::new()?)?,
         flat_map: HashMap::new(),
         buffers_used: HashSet::new(),
         extern_buffers: HashSet::new(),
-        iter_vars: Map::new(),
-        iter_predicates: Vec::new(),
-        persistent_constraints: Vec::new(),
-        buffer_data_operator: get_operator("tirx.buffer_data")?,
-        if_then_else_operator: get_operator("tirx.if_then_else")?,
         masked_load_operator: get_operator("tirx.masked_load")?,
         masked_store_operator: get_operator("tirx.masked_store")?,
     };
 
-    let result = (|| {
+    flattener.with_analyzer_scope(|flattener| {
+        flattener.mark_buffer_parameter_shapes(&function)?;
         for parameter in function.params.iter() {
             if let Ok(buffer) = BufferVar::try_from(&parameter) {
                 flattener
                     .extern_buffers
                     .insert(ObjectIdentity::of(buffer.as_var()));
-                for shape in buffer.type_annotation().shape.iter() {
-                    let zero = IntImm::from_dtype(shape.type_annotation().dtype, 0)?;
-                    let condition: PrimExpr = crate::tirx::GE::new(shape, zero)?.into();
-                    flattener
-                        .persistent_constraints
-                        .push(flattener.analyzer.enter_constraint(&condition)?);
-                }
                 flattener.define(&buffer)?;
             }
         }
 
         let mut body: Stmt =
-            structural_mutate(function.body.clone(), &mut flattener)?.try_into()?;
+            structural_mutate(function.body.clone(), &mut *flattener)?.try_into()?;
 
         // PrimFunc parameters retain their public N-D contract.  The flattened
         // view used by the body aliases each parameter through a DeclBuffer.
@@ -101,11 +84,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         }
 
         Ok(with_prim_func_body(function, body))
-    })();
-    finish_constraints(
-        result,
-        std::mem::take(&mut flattener.persistent_constraints),
-    )
+    })
 }
 
 /// Build TVM's `tirx.FlattenBuffer` PrimFunc pass in Rust.
@@ -120,17 +99,22 @@ pub fn flatten_buffer() -> Result<Pass> {
 }
 
 struct BufferFlattener {
-    analyzer: Analyzer,
+    analysis: AnalyzerMutatorState,
     flat_map: HashMap<ObjectIdentity, FlatInfo>,
     buffers_used: HashSet<ObjectIdentity>,
     extern_buffers: HashSet<ObjectIdentity>,
-    iter_vars: Map<PrimVar, Range>,
-    iter_predicates: Vec<PrimExpr>,
-    persistent_constraints: Vec<Function>,
-    buffer_data_operator: Expr,
-    if_then_else_operator: Expr,
     masked_load_operator: Expr,
     masked_store_operator: Expr,
+}
+
+impl AnalyzerMutator for BufferFlattener {
+    fn analyzer_state(&self) -> &AnalyzerMutatorState {
+        &self.analysis
+    }
+
+    fn analyzer_state_mut(&mut self) -> &mut AnalyzerMutatorState {
+        &mut self.analysis
+    }
 }
 
 impl BufferFlattener {
@@ -167,7 +151,7 @@ impl BufferFlattener {
         let shape = flat_type
             .shape
             .iter()
-            .map(|extent| self.analyzer.canonical_simplify(&extent))
+            .map(|extent| self.analysis.canonical_simplify(&extent))
             .collect::<Result<Vec<_>>>()?;
         let elem_offset = if is_zero(&flat_type.elem_offset) {
             flat_type.elem_offset.clone()
@@ -235,71 +219,7 @@ impl BufferFlattener {
 
     fn fold_indices(&self, info: &FlatInfo, indices: Array<PrimExpr>) -> Result<Array<PrimExpr>> {
         let offsets = buffer_offset_of(&info.fold_view, indices)?;
-        let predicate = self.iter_predicate()?;
-        tvm_ffi::cached_global_func!("arith.IterMapSimplify")
-            .call_tuple((
-                offsets,
-                self.iter_vars.clone(),
-                predicate,
-                1_i32,
-                false,
-                Some(self.analyzer.clone()),
-            ))?
-            .try_into()
-    }
-
-    fn iter_predicate(&self) -> Result<PrimExpr> {
-        let mut predicate: PrimExpr = IntImm::new("bool", 1)?.into();
-        for condition in &self.iter_predicates {
-            predicate = crate::tirx::And::new(predicate, condition.clone())?.into();
-        }
-        Ok(predicate)
-    }
-
-    fn with_iter_var<T>(
-        &mut self,
-        variable: PrimVar,
-        domain: Range,
-        operation: impl FnOnce(&mut Self) -> Result<T>,
-    ) -> Result<T> {
-        self.analyzer.bind(variable.as_var(), &domain)?;
-        let old = self.iter_vars.clone();
-        let mut entries = old.iter().collect::<Vec<_>>();
-        entries.retain(|(existing, _)| !existing.same_as(&variable));
-        entries.push((variable, domain));
-        self.iter_vars = Map::from_iter(entries);
-        let result = operation(self);
-        self.iter_vars = old;
-        result
-    }
-
-    fn condition_uses_iter_var(&self, condition: &PrimExpr) -> Result<bool> {
-        if self.iter_vars.is_empty() {
-            return Ok(false);
-        }
-        let undefined: Array<Var> = tvm_ffi::cached_global_func!("tirx.analysis.UndefinedVars")
-            .call_tuple((condition, Array::<Var>::new(Vec::new())))?
-            .try_into()?;
-        Ok(undefined.iter().any(|variable| {
-            self.iter_vars
-                .iter()
-                .any(|(iterator, _)| iterator.as_var().same_as(&variable))
-        }))
-    }
-
-    fn with_predicate<T>(
-        &mut self,
-        condition: PrimExpr,
-        operation: impl FnOnce(&mut Self) -> Result<T>,
-    ) -> Result<T> {
-        if !self.condition_uses_iter_var(&condition)? {
-            return operation(self);
-        }
-        let analyzer = self.analyzer.clone();
-        self.iter_predicates.push(condition.clone());
-        let result = analyzer.with_constraint(&condition, || operation(self));
-        self.iter_predicates.pop();
-        result
+        self.iter_map_simplify_with_context(&offsets, false)
     }
 }
 
@@ -334,7 +254,9 @@ impl BufferFlattener {
             .clone()
             .try_cast::<Call>()
             .ok()
-            .filter(|call| call.op.same_as(&self.buffer_data_operator) && call.args.len() == 1)
+            .filter(|call| {
+                call.op.same_as(self.analysis.buffer_data_operator()) && call.args.len() == 1
+            })
             .and_then(|call| call.args.get(0).ok())
             .and_then(|argument| argument.try_cast::<Var>().ok())
             .and_then(|variable| BufferVar::try_from(variable).ok())
@@ -377,136 +299,27 @@ impl BufferFlattener {
     }
 
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {
-        let domain = Range::from_min_extent(value.min.clone(), value.extent.clone())?;
-        self.with_iter_var(value.loop_var.clone(), domain, |flattener| {
-            let minimum: PrimExpr = mutator.mutate(flattener, &value.min)?.try_into()?;
-            let extent: PrimExpr = mutator.mutate(flattener, &value.extent)?.try_into()?;
-            let step: Option<PrimExpr> = mutator.mutate(flattener, &value.step)?.try_into()?;
-            let zero = IntImm::from_dtype(extent.type_annotation().dtype, 0)?;
-            let positive: PrimExpr = crate::tirx::GT::new(extent.clone(), zero)?.into();
-            let analyzer = flattener.analyzer.clone();
-            let body: Stmt = analyzer.with_constraint(&positive, || {
-                mutator.mutate(flattener, &value.body)?.try_into()
-            })?;
-            if minimum.same_as(&value.min)
-                && extent.same_as(&value.extent)
-                && option_same_as(&step, &value.step)
-                && body.same_as(&value.body)
-            {
-                return Ok(value);
-            }
-            Ok(For::from_complete_fields(
-                value.span.clone(),
-                value.loop_var.clone(),
-                minimum,
-                extent,
-                value.kind,
-                body,
-                value.thread_binding.clone(),
-                value.annotations.clone(),
-                step,
-            ))
-        })
+        self.default_mutate_loop(mutator, value)
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
-        let is_thread_scope = matches!(value.attr_key.as_str(), THREAD_EXTENT | VIRTUAL_THREAD);
-        if !is_thread_scope {
-            return super::utils::mutate_stmt_default(self, mutator, value.into())?
-                .try_cast::<AttrStmt>();
-        }
-        let iteration = crate::tirx::IterVar::try_from(value.node.clone())?;
-        let variable = iteration.var()?;
-        let zero = IntImm::from_dtype(value.value.type_annotation().dtype, 0)?;
-        let domain = Range::from_min_extent(zero, value.value.clone())?;
-        self.with_iter_var(variable, domain, |flattener| {
-            let attr_value: PrimExpr = mutator.mutate(flattener, &value.value)?.try_into()?;
-            let body: Stmt = mutator.mutate(flattener, &value.body)?.try_into()?;
-            if attr_value.same_as(&value.value) && body.same_as(&value.body) {
-                return Ok(value);
-            }
-            Ok(value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body))
-        })
+        self.default_mutate_attribute(mutator, value)
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let then_case: Stmt = self.with_predicate(condition.clone(), |flattener| {
-            mutator.mutate(flattener, &value.then_case)?.try_into()
-        })?;
-        let else_case = value
-            .else_case
-            .as_ref()
-            .map(|branch| {
-                let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
-                self.with_predicate(negative, |flattener| {
-                    mutator.mutate(flattener, branch)?.try_into()
-                })
-            })
-            .transpose()?;
-        if is_one(&condition) {
-            return Ok(then_case);
-        }
-        if is_zero(&condition) {
-            return Ok(else_case.unwrap_or(crate::tirx::Evaluate::from_i64(0)?.into()));
-        }
-        if condition.same_as(&value.condition)
-            && then_case.same_as(&value.then_case)
-            && option_same_as(&else_case, &value.else_case)
-        {
-            return Ok(value.into());
-        }
-        Ok(
-            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case)
-                .into(),
-        )
+        self.default_mutate_conditional(mutator, value)
     }
 
     fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let true_value: PrimExpr = self.with_predicate(condition.clone(), |flattener| {
-            mutator.mutate(flattener, &value.true_value)?.try_into()
-        })?;
-        let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
-        let false_value: PrimExpr = self.with_predicate(negative, |flattener| {
-            mutator.mutate(flattener, &value.false_value)?.try_into()
-        })?;
-        if is_one(&condition) {
-            return Ok(true_value);
-        }
-        if is_zero(&condition) {
-            return Ok(false_value);
-        }
-        if condition.same_as(&value.condition)
-            && true_value.same_as(&value.true_value)
-            && false_value.same_as(&value.false_value)
-        {
-            return Ok(value.into());
-        }
-        Ok(value.copy_with(condition, true_value, false_value).into())
+        self.default_mutate_select(mutator, value)
     }
 
     fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
-        // Keep reduction domains visible to IterMapSimplify while visiting the
-        // reduction body, matching IRMutatorWithAnalyzer.
-        let old = self.iter_vars.clone();
-        for axis in value.axis.iter() {
-            if let Some(domain) = axis.dom()? {
-                let variable = axis.var()?;
-                self.analyzer.bind(variable.as_var(), &domain)?;
-                let mut entries = self.iter_vars.iter().collect::<Vec<_>>();
-                entries.push((variable, domain));
-                self.iter_vars = Map::from_iter(entries);
-            }
-        }
-        let result = super::utils::mutate_expr_default(self, mutator, value.clone().into())
-            .and_then(|expression| expression.try_cast::<Reduce>());
-        self.iter_vars = old;
-        result
+        self.default_mutate_reduce(mutator, value)
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        if value.op.same_as(&self.buffer_data_operator) && value.args.len() == 1 {
+        if value.op.same_as(self.analysis.buffer_data_operator()) && value.args.len() == 1 {
             let variable = value.args.get(0)?.try_cast::<Var>()?;
             if let Ok(buffer) = BufferVar::try_from(variable) {
                 self.mark_used(&buffer);
@@ -520,31 +333,7 @@ impl BufferFlattener {
             return self.mutate_masked_access(value, mutator);
         }
 
-        if value.op.same_as(&self.if_then_else_operator) && value.args.len() == 3 {
-            let condition: PrimExpr = mutator.mutate(self, &value.args.get(0)?)?.try_into()?;
-            let true_value: Expr = self.with_predicate(condition.clone(), |flattener| {
-                mutator.mutate(flattener, &value.args.get(1)?)?.try_into()
-            })?;
-            let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
-            let false_value: Expr = self.with_predicate(negative, |flattener| {
-                mutator.mutate(flattener, &value.args.get(2)?)?.try_into()
-            })?;
-            if is_one(&condition) {
-                return Ok(true_value);
-            }
-            if is_zero(&condition) {
-                return Ok(false_value);
-            }
-            return Ok(value
-                .copy_with(
-                    value.ty.clone(),
-                    value.op.clone(),
-                    Array::new(vec![condition.into(), true_value, false_value]),
-                )
-                .into());
-        }
-
-        mutate_expr_default(self, mutator, value.into())
+        self.default_mutate_call(mutator, value)
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -617,28 +406,8 @@ fn is_zero(value: &PrimExpr) -> bool {
         .is_ok_and(|literal| literal.value == 0)
 }
 
-fn is_one(value: &PrimExpr) -> bool {
-    value
-        .as_expr()
-        .clone()
-        .try_cast::<IntImm>()
-        .is_ok_and(|literal| literal.value == 1)
-}
-
 fn get_operator(name: &str) -> Result<Expr> {
     tvm_ffi::cached_global_func!("ir.GetOp")
         .call_tuple((tvm_ffi::String::from(name),))?
         .try_into()
-}
-
-fn finish_constraints<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
-    let mut result = result;
-    for exit in exits.into_iter().rev() {
-        if let Err(error) = exit.call_tuple(()) {
-            if result.is_ok() {
-                result = Err(error);
-            }
-        }
-    }
-    result
 }

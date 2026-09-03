@@ -21,29 +21,24 @@ use std::collections::HashMap;
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, Mutator, ObjectArc,
-    ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
-    RUNTIME_ERROR,
+    Any, Array, FieldGetter, Map, MapValue, Mutator, ObjectArc, ObjectCore, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, RUNTIME_ERROR,
 };
 
-use super::utils::{
-    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
-};
+use super::utils::{array_same_as, mutate_stmt_expr_default, with_prim_func_body, BufferRemaps};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
-use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::analysis::{
+    side_effect, Analyzer, AnalyzerMutator, AnalyzerMutatorState, CallEffectKind, IntSet,
+};
+use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    Add, AllocBuffer, And, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
-    Evaluate, FloorDiv, For, IfThenElse, IterVar, Let, Mul, Not, PrimFunc, Reduce, Select, SeqStmt,
-    Stmt, Sub, EQ, GE, GT, LE, LT,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
+    IfThenElse, Let, Not, PrimFunc, Reduce, Select, SeqStmt, Stmt, Sub, LE,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
 const ASYNC_WAIT_QUEUE_SCOPE: &str = "async_wait_queue_scope";
 const ASYNC_WAIT_INFLIGHT_COUNT: &str = "async_wait_inflight_count";
-const THREAD_EXTENT: &str = "thread_extent";
-const VIRTUAL_THREAD: &str = "virtual_thread";
-
 /// Opaque read-only view of TVM's `tirx.transform.RemoveNoOpConfig`.
 #[repr(C)]
 #[derive(Object)]
@@ -125,16 +120,15 @@ fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> 
         Vec::new()
     };
     let mut remover = NoOpRemover {
-        analyzer,
+        analysis: AnalyzerMutatorState::new(analyzer)?,
         ignore_profiler_call: options.ignore_profiler_call,
         profiler_operators,
         variable_domains: HashMap::new(),
         buffer_remaps: BufferRemaps::default(),
-        likely_operator: get_operator("tirx.likely")?,
-        if_then_else_operator: get_operator("tirx.if_then_else")?,
-        bitwise_and_operator: get_operator("tirx.bitwise_and")?,
     };
-    let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
+    let body = remover
+        .mutate_root(function.body.clone())
+        .and_then(Stmt::try_from)?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -153,189 +147,47 @@ pub fn remove_no_op() -> Result<Pass> {
 }
 
 struct NoOpRemover {
-    analyzer: Analyzer,
+    analysis: AnalyzerMutatorState,
     ignore_profiler_call: bool,
     profiler_operators: Vec<Expr>,
     variable_domains: HashMap<ObjectIdentity, (Var, IntSet)>,
     buffer_remaps: BufferRemaps,
-    likely_operator: Expr,
-    if_then_else_operator: Expr,
-    bitwise_and_operator: Expr,
+}
+
+impl AnalyzerMutator for NoOpRemover {
+    fn analyzer_state(&self) -> &AnalyzerMutatorState {
+        &self.analysis
+    }
+
+    fn analyzer_state_mut(&mut self) -> &mut AnalyzerMutatorState {
+        &mut self.analysis
+    }
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl NoOpRemover {
     fn mutate_bind(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
-        // Bind.var is a definition, not a recursive use.
-        let bound_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
-        if let Ok(bound_value) = PrimExpr::try_from(&bound_value) {
-            if side_effect(&bound_value)? <= CallEffectKind::kPure {
-                self.analyzer.bind_expression(&value.var, &bound_value)?;
-            }
-        }
-        if bound_value.same_as(&value.value) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(value.var.clone(), bound_value))
+        self.default_mutate_bind(mutator, value)
     }
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
-        let bound_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        if side_effect(&bound_value)? <= CallEffectKind::kPure {
-            self.analyzer.bind_expression(&value.var, &bound_value)?;
-        }
-        let body: PrimExpr = mutator.mutate(self, &value.body)?.try_into()?;
-        if bound_value.same_as(&value.value) && body.same_as(&value.body) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(value.var.clone(), bound_value, body))
+        self.default_mutate_let(mutator, value)
     }
 
     fn mutate_reduce(&mut self, value: Reduce, mutator: &mut Mutator) -> Result<Reduce> {
-        // IRMutatorWithAnalyzer binds every reduction axis before visiting any
-        // reduction child.
-        for axis in value.axis.iter() {
-            if let Some(domain) = axis.dom()? {
-                self.analyzer.bind(axis.var()?.as_var(), &domain)?;
-            }
-        }
-
-        let mut axes = Vec::with_capacity(value.axis.len());
-        for axis in value.axis.iter() {
-            let original_domain = axis.dom()?;
-            let domain = original_domain
-                .as_ref()
-                .map(|domain| -> Result<Range> {
-                    let minimum: PrimExpr = mutator.mutate(self, &domain.min)?.try_into()?;
-                    let extent: PrimExpr = mutator.mutate(self, &domain.extent)?.try_into()?;
-                    if minimum.same_as(&domain.min) && extent.same_as(&domain.extent) {
-                        Ok(domain.clone())
-                    } else {
-                        Ok(domain.copy_with(minimum, extent))
-                    }
-                })
-                .transpose()?;
-            if option_same_as(&domain, &original_domain) {
-                axes.push(axis);
-            } else {
-                axes.push(IterVar::with_metadata(
-                    domain,
-                    axis.var()?.as_var().clone(),
-                    axis.iter_type()?,
-                    axis.thread_tag()?.as_str(),
-                    axis.span()?.as_ref(),
-                )?);
-            }
-        }
-
-        let source: Array<PrimExpr> = mutator.mutate(self, &value.source)?.try_into()?;
-        let init: Array<PrimExpr> = mutator.mutate(self, &value.init)?.try_into()?;
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let axes = Array::new(axes);
-        if array_same_as(&source, &value.source)
-            && array_same_as(&init, &value.init)
-            && array_same_as(&axes, &value.axis)
-            && condition.same_as(&value.condition)
-        {
-            return Ok(value);
-        }
-        Ok(Reduce::from_complete_fields(
-            value.span.clone(),
-            value.ty.clone().try_cast()?,
-            value.combiner.clone(),
-            source,
-            init,
-            axes,
-            condition,
-            value.value_index,
-        ))
+        self.default_mutate_reduce(mutator, value)
     }
 
     fn mutate_assertion(&mut self, value: AssertStmt, mutator: &mut Mutator) -> Result<AssertStmt> {
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        if condition.same_as(&value.condition) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(
-            condition,
-            value.error_kind.clone(),
-            value.message_parts.clone(),
-        ))
+        self.default_mutate_assertion(mutator, value)
     }
 
     fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let true_value = mutate_primitive_under_constraint_with_facts(
-            self,
-            mutator,
-            &value.true_value,
-            &condition,
-        )?;
-        let negative = self
-            .analyzer
-            .simplify(&PrimExpr::from(Not::new(condition.clone())?))?;
-        let false_value =
-            mutate_primitive_under_constraint(self, mutator, &value.false_value, &negative)?;
-        if let Some(condition) = int_value(&condition) {
-            return if condition != 0 {
-                Ok(true_value)
-            } else {
-                Ok(false_value)
-            };
-        }
-        if condition.same_as(&value.condition)
-            && true_value.same_as(&value.true_value)
-            && false_value.same_as(&value.false_value)
-        {
-            return Ok(value.into());
-        }
-        Ok(value.copy_with(condition, true_value, false_value).into())
+        self.default_mutate_select(mutator, value)
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        if !value.op.same_as(&self.if_then_else_operator) || value.args.len() != 3 {
-            let args: Array<Expr> = mutator.mutate(self, &value.args)?.try_into()?;
-            if array_same_as(&args, &value.args) {
-                return Ok(value.into());
-            }
-            return Ok(value
-                .copy_with(value.ty.clone(), value.op.clone(), args)
-                .into());
-        }
-
-        let original_condition = value.args.get(0).expect("condition argument is present");
-        let original_true = value.args.get(1).expect("true argument is present");
-        let original_false = value.args.get(2).expect("false argument is present");
-        let condition: PrimExpr = mutator.mutate(self, &original_condition)?.try_into()?;
-        let true_value = mutate_expression_under_constraint_with_facts(
-            self,
-            mutator,
-            &original_true,
-            &condition,
-        )?;
-        let negative: PrimExpr = Not::new(condition.clone())?.into();
-        let false_value =
-            mutate_expression_under_constraint(self, mutator, &original_false, &negative)?;
-        if let Some(condition) = int_value(&condition) {
-            return if condition != 0 {
-                Ok(true_value)
-            } else {
-                Ok(false_value)
-            };
-        }
-        if condition.same_as(&PrimExpr::try_from(original_condition)?)
-            && true_value.same_as(&original_true)
-            && false_value.same_as(&original_false)
-        {
-            return Ok(value.into());
-        }
-        Ok(value
-            .copy_with(
-                value.ty.clone(),
-                value.op.clone(),
-                tvm_ffi::Array::new(vec![condition.into(), true_value, false_value]),
-            )
-            .into())
+        self.default_mutate_call(mutator, value)
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
@@ -365,22 +217,7 @@ impl NoOpRemover {
             }
         }
 
-        if matches!(value.attr_key.as_str(), THREAD_EXTENT | VIRTUAL_THREAD) {
-            let iteration = IterVar::try_from(value.node.clone())?;
-            let variable = iteration.var()?;
-            let domain = Range::from_min_extent(zero_like(&value.value), value.value.clone())?;
-            self.analyzer.bind(variable.as_var(), &domain)?;
-        }
-
-        // Match StmtExprMutator: AttrStmt.node is metadata and must not be
-        // recursively rewritten.
-        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
-        let mutated = if attr_value.same_as(&value.value) && body.same_as(&value.body) {
-            value
-        } else {
-            value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body)
-        };
+        let mutated = self.default_mutate_attribute(mutator, value)?;
         if is_no_op(&mutated.body) {
             self.make_evaluate(mutated.value.clone())
         } else {
@@ -389,29 +226,10 @@ impl NoOpRemover {
     }
 
     fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
-        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let real_condition = self.unwrap_likely(&condition)?;
-        let then_case =
-            mutate_under_constraint_with_facts(self, mutator, &value.then_case, &real_condition)?;
-        let negative = self
-            .analyzer
-            .simplify(&PrimExpr::from(Not::new(real_condition.clone())?))?;
-        let else_case = value
-            .else_case
-            .as_ref()
-            .map(|branch| mutate_under_constraint(self, mutator, branch, &negative))
-            .transpose()?;
-
-        if let Some(condition) = int_value(&self.analyzer.simplify(&real_condition)?) {
-            return if condition != 0 {
-                Ok(then_case)
-            } else {
-                else_case.map_or_else(evaluate_zero, Ok)
-            };
-        }
-
-        let conditional =
-            IfThenElse::from_complete_fields(value.span.clone(), condition, then_case, else_case);
+        let statement = self.default_mutate_conditional(mutator, value)?;
+        let Ok(conditional) = statement.clone().try_cast::<IfThenElse>() else {
+            return Ok(statement);
+        };
 
         let then_is_no_op = is_no_op(&conditional.then_case);
         match conditional.else_case.clone() {
@@ -437,15 +255,12 @@ impl NoOpRemover {
             .values()
             .map(|(variable, domain)| (variable.clone(), domain.clone()))
             .collect();
-        let extent_set = self.analyzer.int_set(&value.extent, &domains)?;
+        let extent_set = self.analysis.int_set(&value.extent, &domains)?;
         let maximum = extent_set.maximum()?;
         let non_positive: PrimExpr = LE::new(maximum.clone(), zero_like(&maximum))?.into();
-        if self.analyzer.can_prove(&non_positive)? {
+        if self.analysis.can_prove(&non_positive)? {
             return evaluate_zero();
         }
-
-        let domain = Range::from_min_extent(value.min.clone(), value.extent.clone())?;
-        self.analyzer.bind(value.loop_var.as_var(), &domain)?;
 
         let one = one_like(&value.extent);
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
@@ -456,31 +271,7 @@ impl NoOpRemover {
             identity.clone(),
             (value.loop_var.as_var().clone(), integer_domain),
         );
-        let mutated = (|| -> Result<For> {
-            let minimum: PrimExpr = mutator.mutate(self, &value.min)?.try_into()?;
-            let extent: PrimExpr = mutator.mutate(self, &value.extent)?.try_into()?;
-            let step: Option<PrimExpr> = mutator.mutate(self, &value.step)?.try_into()?;
-            let positive: PrimExpr = GT::new(extent.clone(), zero_like(&extent))?.into();
-            let body = mutate_under_constraint_with_facts(self, mutator, &value.body, &positive)?;
-            if minimum.same_as(&value.min)
-                && extent.same_as(&value.extent)
-                && option_same_as(&step, &value.step)
-                && body.same_as(&value.body)
-            {
-                return Ok(value.clone());
-            }
-            Ok(For::from_complete_fields(
-                value.span.clone(),
-                value.loop_var.clone(),
-                minimum,
-                extent,
-                value.kind,
-                body,
-                value.thread_binding.clone(),
-                value.annotations.clone(),
-                step,
-            ))
-        })();
+        let mutated = self.default_mutate_loop(mutator, value);
         match previous {
             Some(previous) => {
                 self.variable_domains.insert(identity, previous);
@@ -515,7 +306,7 @@ impl NoOpRemover {
         let difference: PrimExpr = Sub::new(value.value.clone(), load)?.into();
         let equal_to_zero: PrimExpr =
             crate::tirx::EQ::new(difference.clone(), zero_like(&difference))?.into();
-        if int_value(&self.analyzer.simplify(&equal_to_zero)?) == Some(1) {
+        if int_value(&self.analysis.simplify(&equal_to_zero)?) == Some(1) {
             return self.store_side_effects(&value);
         }
 
@@ -533,19 +324,7 @@ impl NoOpRemover {
     }
 
     fn mutate_sequence(&mut self, value: SeqStmt, mutator: &mut Mutator) -> Result<Stmt> {
-        let mut exits = Vec::<Function>::new();
-        let result = (|| -> Result<Stmt> {
-            let mut statements = Vec::with_capacity(value.seq.len());
-            for statement in value.seq.iter() {
-                let mutated: Stmt = mutator.mutate(self, &statement)?.try_into()?;
-                if let Ok(assertion) = mutated.clone().try_cast::<AssertStmt>() {
-                    exits.push(self.analyzer.enter_constraint(&assertion.condition)?);
-                }
-                statements.push(mutated);
-            }
-            Stmt::sequence(statements)
-        })();
-        finish_constraint_contexts(result, exits)
+        self.default_mutate_sequence(mutator, value)
     }
 
     fn mutate_variable(&mut self, value: Var) -> Var {
@@ -593,16 +372,6 @@ impl NoOpRemover {
 }
 
 impl NoOpRemover {
-    fn unwrap_likely(&self, condition: &PrimExpr) -> Result<PrimExpr> {
-        let Ok(call) = condition.clone().try_cast::<Call>() else {
-            return Ok(condition.clone());
-        };
-        if !call.op.same_as(&self.likely_operator) || call.args.len() != 1 {
-            return Ok(condition.clone());
-        }
-        PrimExpr::try_from(call.args.get(0).expect("one likely argument is present"))
-    }
-
     fn has_side_effect(&self, value: &Expr) -> Result<bool> {
         if let Ok(primitive) = PrimExpr::try_from(value) {
             if self.ignore_profiler_call && is_profiler_call(&primitive, &self.profiler_operators) {
@@ -638,24 +407,11 @@ impl NoOpRemover {
         self.make_evaluate_values(std::iter::once(store.value.clone()).chain(store.indices.iter()))
     }
 
-    fn enter_constraint_facts(&self, constraint: &PrimExpr) -> Result<Vec<Function>> {
-        let mut constraints = vec![constraint.clone()];
-        collect_derived_constraint_facts(constraint, &self.bitwise_and_operator, &mut constraints)?;
-        let mut exits = Vec::with_capacity(constraints.len());
-        for constraint in constraints {
-            match self.analyzer.enter_constraint(&constraint) {
-                Ok(exit) => exits.push(exit),
-                Err(error) => return finish_constraint_contexts(Err(error), exits),
-            }
-        }
-        Ok(exits)
-    }
-
     fn buffer_geometry_equal(&self, lhs: &BufferVar, rhs: &BufferVar) -> Result<bool> {
         let lhs_type = lhs.type_annotation();
         let rhs_type = rhs.type_annotation();
         Ok(self
-            .analyzer
+            .analysis
             .can_prove_equal(&lhs_type.elem_offset, &rhs_type.elem_offset)?
             && self.array_equal(&lhs_type.shape, &rhs_type.shape)?
             && self.array_equal(&lhs_type.strides, &rhs_type.strides)?)
@@ -670,7 +426,7 @@ impl NoOpRemover {
             return Ok(false);
         }
         for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
-            if !self.analyzer.can_prove_equal(&lhs, &rhs)? {
+            if !self.analysis.can_prove_equal(&lhs, &rhs)? {
                 return Ok(false);
             }
         }
@@ -689,201 +445,6 @@ fn mutate_buffer_definition(
     });
     remover.buffer_remaps = remaps;
     result
-}
-
-fn mutate_under_constraint(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    statement: &Stmt,
-    constraint: &PrimExpr,
-) -> Result<Stmt> {
-    let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, statement)?.try_into()
-    })
-}
-
-fn mutate_under_constraint_with_facts(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    statement: &Stmt,
-    constraint: &PrimExpr,
-) -> Result<Stmt> {
-    let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, statement)?.try_into();
-    finish_constraint_contexts(result, exits)
-}
-
-fn mutate_expression_under_constraint(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &Expr,
-    constraint: &PrimExpr,
-) -> Result<Expr> {
-    let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, expression)?.try_into()
-    })
-}
-
-fn mutate_expression_under_constraint_with_facts(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &Expr,
-    constraint: &PrimExpr,
-) -> Result<Expr> {
-    let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, expression)?.try_into();
-    finish_constraint_contexts(result, exits)
-}
-
-fn mutate_primitive_under_constraint(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &PrimExpr,
-    constraint: &PrimExpr,
-) -> Result<PrimExpr> {
-    let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, expression)?.try_into()
-    })
-}
-
-fn mutate_primitive_under_constraint_with_facts(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &PrimExpr,
-    constraint: &PrimExpr,
-) -> Result<PrimExpr> {
-    let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, expression)?.try_into();
-    finish_constraint_contexts(result, exits)
-}
-
-#[derive(Clone, Copy)]
-enum CompareKind {
-    Equal,
-    LessThan,
-    LessEqual,
-    GreaterThan,
-    GreaterEqual,
-}
-
-fn collect_derived_constraint_facts(
-    condition: &PrimExpr,
-    bitwise_and_operator: &Expr,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    if let Ok(and) = condition.clone().try_cast::<And>() {
-        collect_derived_constraint_facts(&and.a, bitwise_and_operator, output)?;
-        collect_derived_constraint_facts(&and.b, bitwise_and_operator, output)?;
-        return Ok(());
-    }
-    if let Ok(call) = condition.clone().try_cast::<Call>() {
-        if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
-            let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
-            let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
-            if is_bool8(&lhs) && is_bool8(&rhs) {
-                collect_derived_constraint_facts(&lhs, bitwise_and_operator, output)?;
-                collect_derived_constraint_facts(&rhs, bitwise_and_operator, output)?;
-                return Ok(());
-            }
-        }
-    }
-
-    if let Ok(compare) = condition.clone().try_cast::<EQ>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::Equal, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<LT>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessThan, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<LE>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessEqual, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<GT>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterThan, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<GE>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterEqual, output)?;
-    }
-    Ok(())
-}
-
-fn collect_floor_div_constraints(
-    lhs: &PrimExpr,
-    rhs: &PrimExpr,
-    kind: CompareKind,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    if let (Ok(div), Some(value)) = (lhs.clone().try_cast::<FloorDiv>(), int_value(rhs)) {
-        append_floor_div_constraints(&div, value, kind, output)?;
-    }
-    if let (Ok(div), Some(value)) = (rhs.clone().try_cast::<FloorDiv>(), int_value(lhs)) {
-        append_floor_div_constraints(&div, value, invert_compare(kind), output)?;
-    }
-    Ok(())
-}
-
-fn append_floor_div_constraints(
-    division: &FloorDiv,
-    value: i64,
-    kind: CompareKind,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    let Some(divisor_value) = int_value(&division.b) else {
-        return Ok(());
-    };
-    if divisor_value <= 0 {
-        return Ok(());
-    }
-    let dtype = division
-        .a
-        .ty
-        .clone()
-        .try_cast::<crate::ir::PrimType>()?
-        .dtype;
-    let divisor: PrimExpr = IntImm::from_dtype(dtype, divisor_value)?.into();
-    let k: PrimExpr = IntImm::from_dtype(dtype, value)?.into();
-    let one: PrimExpr = IntImm::from_dtype(dtype, 1)?.into();
-    let lower: PrimExpr = Mul::new(k.clone(), divisor.clone())?.into();
-    let next: PrimExpr = Add::new(k, one)?.into();
-    let upper: PrimExpr = Mul::new(next, divisor)?.into();
-
-    match kind {
-        CompareKind::Equal => {
-            output.push(GE::new(division.a.clone(), lower)?.into());
-            output.push(LT::new(division.a.clone(), upper)?.into());
-        }
-        CompareKind::LessThan => output.push(LT::new(division.a.clone(), lower)?.into()),
-        CompareKind::LessEqual => output.push(LT::new(division.a.clone(), upper)?.into()),
-        CompareKind::GreaterThan => output.push(GE::new(division.a.clone(), upper)?.into()),
-        CompareKind::GreaterEqual => output.push(GE::new(division.a.clone(), lower)?.into()),
-    }
-    Ok(())
-}
-
-fn invert_compare(kind: CompareKind) -> CompareKind {
-    match kind {
-        CompareKind::Equal => CompareKind::Equal,
-        CompareKind::LessThan => CompareKind::GreaterThan,
-        CompareKind::LessEqual => CompareKind::GreaterEqual,
-        CompareKind::GreaterThan => CompareKind::LessThan,
-        CompareKind::GreaterEqual => CompareKind::LessEqual,
-    }
-}
-
-fn is_bool8(value: &PrimExpr) -> bool {
-    let dtype = value.type_annotation().dtype;
-    dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8
-}
-
-fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
-    let mut exit_error = None;
-    for exit in exits.into_iter().rev() {
-        if let Err(error) = exit.call_tuple(()) {
-            exit_error.get_or_insert(error);
-        }
-    }
-    match (result, exit_error) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
-        (Ok(value), None) => Ok(value),
-    }
 }
 
 fn get_operator(name: &str) -> Result<Expr> {
