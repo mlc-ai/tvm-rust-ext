@@ -34,7 +34,7 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
         .unwrap();
     let span = Span::new(&source_name, 2, 4, 3, 5).unwrap();
 
-    assert_eq!(source_name.name().unwrap().as_str(), "contract-test.tvm");
+    assert_eq!(source_name.name.as_str(), "contract-test.tvm");
     assert_eq!(
         object_pointer(&source_name),
         object_pointer(&same_source_name)
@@ -96,10 +96,7 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
         object_pointer(&sources.get(&cpp_lookup_name).unwrap().unwrap()),
         object_pointer(&source)
     );
-    assert_eq!(
-        source.source_name().unwrap().name().unwrap().as_str(),
-        "module.tvm"
-    );
+    assert_eq!(source.source_name().unwrap().name.as_str(), "module.tvm");
     assert_eq!(source.text().unwrap().as_str(), "first line\nsecond line");
 
     let dictionary: Map<tvm::tvm_ffi::String, Any> = [
@@ -151,6 +148,118 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
         object_pointer(&group.get(0).unwrap()),
         object_pointer(&dummy)
     );
+}
+
+#[test]
+fn complete_tile_metadata_layouts_cross_the_native_abi() {
+    load_tvm_compiler();
+
+    let variable = Var::new("x", "int32").unwrap();
+    let predicate: PrimExpr = PrimVar::try_from(&variable).unwrap().into();
+    let lambda = LambdaExpr::new(vec![variable.clone()], predicate.clone());
+    let native_lambda: LambdaExpr = Function::get_global("tirx.LambdaExpr")
+        .unwrap()
+        .call_tuple((Array::new(vec![variable]), predicate))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(lambda.vars.len(), 1);
+    assert_structural_equal(&lambda, &native_lambda);
+    let replacement: PrimExpr = IntImm::new("int32", 7).unwrap().into();
+    assert_structural_equal(
+        &lambda.apply(vec![replacement.clone()]).unwrap(),
+        &replacement,
+    );
+
+    let scope = ExecScope::new(ScopeKind::THREAD).unwrap();
+    let native_scope: ExecScope = Function::get_global("tirx.ExecScope")
+        .unwrap()
+        .call_tuple((tvm::tvm_ffi::String::from("thread"),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(scope.kind, ScopeKind::THREAD);
+    assert_eq!(native_scope.kind, ScopeKind::THREAD);
+    assert_structural_equal(&scope, &native_scope);
+
+    let context = DispatchContext::new(tvm::target::Target::new("llvm").unwrap(), scope.clone());
+    let scratch = BufferType::new("global", "int32", Vec::new())
+        .unwrap()
+        .new_var("scratch");
+    let empty_callbacks = context.callbacks();
+    context.add_alloc_buffer(scratch.clone()).unwrap();
+    assert!(empty_callbacks.is_empty());
+    let callbacks = context.callbacks();
+    let allocations = callbacks
+        .get(&tvm::tvm_ffi::String::from("private_alloc"))
+        .unwrap()
+        .unwrap()
+        .try_cast::<Array<BufferVar>>()
+        .unwrap();
+    assert_eq!(allocations.len(), 1);
+    assert!(allocations.get(0).unwrap().same_as(&scratch));
+    context.clone().add_alloc_buffer(scratch).unwrap();
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(
+        context
+            .callbacks()
+            .get(&tvm::tvm_ffi::String::from("private_alloc"))
+            .unwrap()
+            .unwrap()
+            .try_cast::<Array<BufferVar>>()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let shared_value = Array::new(vec![replacement.clone()]);
+    let empty_state = context.shared_state();
+    context
+        .set_shared_state("example", &Any::from(shared_value.clone()))
+        .unwrap();
+    assert!(empty_state.is_empty());
+    let state = context.shared_state();
+    context
+        .clone()
+        .set_shared_state("example", &Any::from(Array::<PrimExpr>::new(vec![])))
+        .unwrap();
+    let previous = state
+        .get(&tvm::tvm_ffi::String::from("example"))
+        .unwrap()
+        .unwrap()
+        .try_cast::<Array<PrimExpr>>()
+        .unwrap();
+    assert!(previous.same_as(&shared_value));
+    let recovered =
+        Array::<PrimExpr>::try_from(context.get_shared_state("example").unwrap().unwrap()).unwrap();
+    assert!(recovered.is_empty());
+
+    let constructor = Function::get_global("tirx.TilePrimitiveCall").unwrap();
+    for name in ["tirx.tile.zero", "tirx.tvm_storage_sync"] {
+        let operator = tvm::ir::Op::get(name).unwrap();
+        let args = Array::new(vec![Any::from(replacement.clone())]);
+        let workspace = Map::<tvm::tvm_ffi::String, BufferVar>::new();
+        let config = Map::<tvm::tvm_ffi::String, Any>::new();
+        let dispatch = Some(tvm::tvm_ffi::String::from(
+            "custom_dispatch_with_heap_storage",
+        ));
+        let native =
+            constructor.call_tuple((&operator, &args, &workspace, &config, &dispatch, &scope));
+        let rust = TilePrimitiveCall::new(
+            operator,
+            args.iter().collect(),
+            workspace,
+            config,
+            dispatch,
+            scope.clone(),
+        );
+        assert_eq!(rust.is_ok(), name == "tirx.tile.zero");
+        assert_eq!(rust.is_ok(), native.is_ok());
+        if let Ok(rust) = rust {
+            let native = TilePrimitiveCall::try_from(native.unwrap()).unwrap();
+            assert_structural_equal(&rust, &native);
+        }
+    }
 }
 
 #[test]

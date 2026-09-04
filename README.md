@@ -38,15 +38,22 @@ a convenience `new()`: the latter additionally needs validation, defaults,
 normalization, and derived-field logic. A packed C++ constructor is
 not considered a final stubgen implementation. Polymorphic `Layout` and
 `PrimExprConvertible` objects remain opaque, preserving
-their native virtual ABI; registry-owned `Axis`, interned `SourceName`, the
-STL-backed `Source`, and the `Type::Missing` singleton likewise reuse their
-existing native operations. Reflected fields and existing registered functions provide Rust
-access without changing those C++ semantics. Semantic constructors whose logic
-stubgen cannot derive are maintained as reviewed Rust code; they may reuse existing
-registered compiler services and then allocate the final node in Rust. Public direct-layout fields are borrowed
-through each reference wrapper's read-only `Deref`; callers write `.clone()` explicitly
-when they need an owning handle. Recursion and rebuilding use `tvm-ffi`'s
+their native virtual ABI; registry-owned `Axis` and the STL-backed `Source`
+also remain opaque. Interned `SourceName` has a complete layout but deliberately
+exposes only its canonical native lookup, while the `Type::Missing` singleton
+likewise reuses its existing native operation. Reflected fields and existing
+registered functions provide Rust access without changing those C++ semantics.
+Semantic constructors whose logic stubgen cannot derive are maintained as
+reviewed Rust code; they may reuse existing registered compiler services and
+then allocate the final node in Rust. Public immutable fields are borrowed
+through each reference wrapper's read-only `Deref`; callers write `.clone()`
+explicitly when they need an owning handle. Recursion and rebuilding use `tvm-ffi`'s
 language-independent structural protocol.
+
+`DispatchContext` also has a complete layout, but its native methods modify
+`callbacks` and `shared_state`. These fields use private `UnsafeCell` storage;
+Rust reads them through `callbacks()` and `shared_state()` snapshots so a
+native update cannot invalidate an outstanding Rust field borrow.
 
 Constructor signatures also expose where work can actually fail. Lossless
 complete-field allocation takes exact stored field types by value, moves them

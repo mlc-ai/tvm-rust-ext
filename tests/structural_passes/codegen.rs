@@ -683,8 +683,8 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_scope_ids() {
     )
     .unwrap();
     let body = Stmt::sequence(vec![
-        ScopeIdDefStmt::new(blocks, None).unwrap().into(),
-        ScopeIdDefStmt::new(threads, None).unwrap().into(),
+        ScopeIdDefStmt::new(blocks, None).into(),
+        ScopeIdDefStmt::new(threads, None).into(),
         Evaluate::new(lane).unwrap().into(),
     ])
     .unwrap();
@@ -723,7 +723,7 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
         Function::from_typed(
             |_call: TilePrimitiveCall, context: DispatchContext| -> Result<PrimFunc> {
                 let lane = context
-                    .inter()?
+                    .inter
                     .get(&tvm::tvm_ffi::String::from("laneid"))?
                     .expect("thread dispatch exposes laneid");
                 PrimFunc::from_body(Evaluate::new(lane.get(1)?)?)
@@ -760,8 +760,8 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
     let filtered_call =
         IfThenElse::new(EQ::new(lane, prim_int_expression(3)).unwrap(), call).unwrap();
     let body = Stmt::sequence(vec![
-        ScopeIdDefStmt::new(blocks, None).unwrap().into(),
-        ScopeIdDefStmt::new(threads, None).unwrap().into(),
+        ScopeIdDefStmt::new(blocks, None).into(),
+        ScopeIdDefStmt::new(threads, None).into(),
         filtered_call.into(),
     ])
     .unwrap();

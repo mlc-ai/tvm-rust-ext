@@ -35,9 +35,10 @@ semantics. For an ordinary data node, generated Rust should therefore:
    and field offsets against authoritative build-time layout input before
    emitting direct `ObjectArc::new` allocation;
 4. initialize the same defaults and validate the same invariants as C++; and
-5. expose physical fields directly through the reference wrapper's `Deref`, so
+5. expose immutable data fields through the reference wrapper's `Deref`, so
    reading borrows and callers explicitly `clone()` only when they need an
-   owning handle.
+   owning handle. Native-mutable fields require private interior-mutable
+   storage and accessors that return owned snapshots.
 
 This lets Rust construct `AddObj { a, b, ... }` without a packed global call
 while C++ reflection, structural traversal, reference counting, and destruction
@@ -133,18 +134,19 @@ Broader pass behavior is in
 
 | Pattern | Representative types | Owner/status |
 | --- | --- | --- |
-| Complete ordinary data layout | `Expr`, `Var`, `IntImm`, `Add`, `Stmt`, `Evaluate`, `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin` | **GENERATE / verified** |
+| Complete ordinary data layout | `Expr`, `Var`, `IntImm`, `Add`, `Stmt`, `Evaluate`, `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin`, `ExecScope`, `ScopeIdDef`, `ScopeIdDefStmt`, `LambdaExpr`, `TilePrimitiveCall` | **GENERATE / verified** |
 | Owning object reference and checked casts | all reference wrappers | **GENERATE / verified** |
 | Direct scalar/object/optional/array/map fields | `IntImm`, `Call`, `For` | **GENERATE / verified** |
 | Heterogeneous `Array<Any>` / `Map<K, Any>` | schedule values, `DictAttrs`, annotations | **RUNTIME / verified via shared container-element support** |
 | Direct construction with validation | `IntImm`, binary arithmetic, `SeqStmt` | **GENERATE or reviewed template** |
 | Complete layout, build-dependent defaults | `BufferType` | **handwritten Rust semantics + Rust allocation / verified** |
 | Native registry identity | `Axis` | **opaque wrapper + existing `tirx.AxisGet` singleton lookup / verified** |
-| Native interned identity | `SourceName` | **opaque wrapper + existing `ir.SourceName` lookup / verified** |
+| Native interned identity | `SourceName` | **complete layout + existing `ir.SourceName` lookup, without a Rust allocator / verified** |
 | Native polymorphic behavior | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | **opaque wrapper + native allocation + reflected Rust access / verified** |
 | Typed ordinary expression | `BufferRegion` | **complete `Expr` layout + singleton `BufferRegionType` + Rust allocation / verified** |
 | Native STL storage | `Source` | **opaque wrapper + existing `SourceMapAdd` construction / verified** |
-| Non-object optional ABI | `TilePrimitiveCall` (`Optional<String>`) | **opaque wrapper + existing constructor; Rust `Option<String>` is not layout-compatible** |
+| Non-object optional ABI | `TilePrimitiveCall::dispatch` | **complete layout using `tvm_ffi::Optional<String>`; registry category check + Rust allocation / verified** |
+| Native mutable fields | `DispatchContext::callbacks`, `DispatchContext::shared_state` | **private ABI-compatible `UnsafeCell` fields + owned snapshots / verified** |
 | Complex semantic constructor | `BufferType`, `PrimFunc`, match buffer | **handwritten Rust semantics + complete-field Rust allocation / verified** |
 | Derived mutable indexes | `IRModule` construction/update | **GENERATE rebuild logic / verified** |
 | Consuming `RValueRef<T>` packed argument | pass boundaries | **RUNTIME / verified without an extra reference-count increment** |
@@ -161,9 +163,10 @@ a separately reviewed C++ ABI migration removes that blocker.
   known to require a defined handle uses the non-optional wrapper.
 - Do not infer a field's optionality from the referenced C++ `ObjectRef`
   class's `_type_is_nullable` flag alone. Stubgen must combine the declared
-  field type with constructor behavior. An explicit `ffi::Optional<T>` maps to
-  `Option<T>`, while a plain handle normally stays non-optional. A derived
-  constructor may prove an exception: `SequentialSpan` intentionally leaves
+  field type with constructor behavior. An explicit `ffi::Optional<T>` uses
+  `Option<T>` for object-pointer types and `tvm_ffi::Optional<T>` for non-object
+  types such as strings and scalars. A plain handle normally stays non-optional.
+  A derived constructor may prove an exception: `SequentialSpan` intentionally leaves
   its inherited `SpanNode::source_name` undefined, so the physical Rust base
   field must be `Option<SourceName>` even though ordinary `Span::new` requires
   a source name.
@@ -204,17 +207,25 @@ a separately reviewed C++ ABI migration removes that blocker.
   Registry identity, interning, sentinels, and
   native resource ownership are constructor semantics. `Axis`, `SourceName`,
   `Source`, and `Type::Missing` therefore use their existing native operations
-  and expose no direct Rust allocator.
+  and expose no direct Rust allocator. This does not require an opaque layout
+  when every physical field is known, as `SourceName` demonstrates.
 - Generated object references must not implement unconditional `DerefMut`.
   Handles can share one allocation, so mutation requires structural mutation
   or an explicit uniqueness/COW mechanism.
+- A context whose native methods mutate shared fields needs a separate borrowing
+  policy. `DispatchContext` stores its two mutable maps in private `UnsafeCell`
+  fields, preserving their C++ layout. Snapshot accessors clone the map handles
+  without lending references to the mutable slots; native Map COW then preserves
+  those snapshots. The context is not `Send` or `Sync`. Its complete constructor
+  still accepts native field values and wraps them internally in `UnsafeCell`.
 - A polymorphic behavior base remains opaque. Additional reflected methods let
   Rust call behavior without changing the native virtual interface, but do not
   authorize Rust to manufacture a vptr or allocate a concrete subclass.
 - Stubgen may emit `ObjectArc::new` only for a concrete type that passed its
   complete-layout and constructor-semantics classification. Layout-only bases,
   polymorphic objects, registry-owned identities, interned objects, and
-  STL-backed objects receive no generated allocator.
+  STL-backed objects receive no generated allocator even when a subset has a
+  complete generated layout.
 - A Rust-created node carries a Rust deleter. C++ must release it through the
   header rather than assuming a C++ `delete` expression.
 - This target-code demo is generated for the same TVM build that supplies its
@@ -224,8 +235,9 @@ a separately reviewed C++ ABI migration removes that blocker.
 - A C++-created node keeps its C++ deleter; the same Rust wrapper can reference
   either origin.
 - Reflection describes structural fields, not necessarily all physical fields.
-- A field stored in an ABI-complete Rust struct is public and directly
-  borrowable; stubgen must not emit one cloning getter per field.
+- Immutable data fields in an ABI-complete Rust struct are public and directly
+  borrowable; stubgen must not emit one cloning getter per field. Native-mutable
+  fields use the interior-mutability and snapshot policy above.
 - Convenience constructors should delegate to a complete constructor that
   exposes optional metadata such as `Span`; they must not silently make that
   metadata impossible to preserve.

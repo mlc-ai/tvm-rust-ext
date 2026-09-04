@@ -17,10 +17,12 @@
  * under the License.
  */
 
+use std::cell::UnsafeCell;
+
 use tvm_ffi::derive::{Object, ObjectRef};
+use tvm_ffi::object::ObjectRef as AnyObjectRef;
 use tvm_ffi::{
-    Any, AnyView, Array, Error, FieldGetter, Map, ObjectArc, ObjectCore, ObjectRefCore, Result,
-    String as FfiString, VALUE_ERROR,
+    Any, Array, Error, Map, ObjectArc, Optional, Result, String as FfiString, VALUE_ERROR,
 };
 
 use super::{BufferVar, PrimVar, Stmt, StmtObj};
@@ -138,12 +140,13 @@ impl TryFrom<i64> for ScopeBinding {
     }
 }
 
-/// Native execution scope. Its C++ layout is intentionally opaque.
+/// ABI-complete Rust representation of a native execution scope.
 #[repr(C)]
 #[derive(Object)]
 #[type_key = "tirx.ExecScope"]
 pub struct ExecScopeObj {
     base: tvm_ffi::Object,
+    pub kind: ScopeKind,
 }
 
 #[repr(C)]
@@ -162,31 +165,40 @@ impl std::ops::Deref for ExecScope {
 
 impl ExecScope {
     pub fn new(kind: ScopeKind) -> Result<Self> {
-        Self::from_name(kind.name()?)
+        kind.name()?;
+        Ok(Self::from_complete_fields(kind))
     }
 
     pub fn from_name(name: &str) -> Result<Self> {
-        tvm_ffi::cached_global_func!("tirx.ExecScope")
-            .call_tuple((FfiString::from(name),))?
-            .try_into()
+        ScopeKind::from_name(name).map(Self::from_complete_fields)
     }
 
-    pub fn kind(&self) -> Result<ScopeKind> {
-        ScopeKind::try_from(field::<i64, _>(self, "kind")?)
+    /// Construct an execution scope from its complete physical state.
+    pub fn from_complete_fields(kind: ScopeKind) -> Self {
+        Self {
+            data: ObjectArc::new(ExecScopeObj {
+                base: tvm_ffi::Object::new(),
+                kind,
+            }),
+        }
     }
 
     pub fn name(&self) -> Result<&'static str> {
-        self.kind()?.name()
+        self.kind.name()
     }
 }
 
-/// Native scope-id definition. Its fields are read through reflection.
+/// ABI-complete Rust representation of a scope-id definition.
 #[repr(C)]
 #[derive(Object)]
 #[type_key = "tirx.ScopeIdDef"]
 #[type_final]
 pub struct ScopeIdDefObj {
     base: tvm_ffi::Object,
+    pub def_ids: Array<PrimVar>,
+    pub extents: Option<Array<PrimExpr>>,
+    pub scope: ScopeBinding,
+    pub preferred_extents: Option<Array<PrimExpr>>,
 }
 
 #[repr(C)]
@@ -210,41 +222,64 @@ impl ScopeIdDef {
         scope: ScopeBinding,
         preferred_extents: Option<Vec<PrimExpr>>,
     ) -> Result<Self> {
-        let (parent, child) = scope.name_pair()?;
-        tvm_ffi::cached_global_func!("tirx.ScopeIdDef")
-            .call_tuple((
-                Array::new(def_ids),
-                extents.map(Array::new),
-                FfiString::from(parent),
-                FfiString::from(child),
-                preferred_extents.map(Array::new),
-            ))?
-            .try_into()
+        scope.name_pair()?;
+        let def_ids = Array::new(def_ids);
+        let extents = extents.map(Array::new);
+        let preferred_extents = preferred_extents.map(Array::new);
+        match &extents {
+            Some(extents) if def_ids.len() != extents.len() => {
+                return Err(value_error(&format!(
+                    "number of ScopeIdDef variables ({}) does not match its extents ({})",
+                    def_ids.len(),
+                    extents.len()
+                )));
+            }
+            None if def_ids.len() != 1 => {
+                return Err(value_error(
+                    "a deferred ScopeIdDef must define exactly one variable",
+                ));
+            }
+            None if preferred_extents.is_some() => {
+                return Err(value_error(
+                    "a deferred ScopeIdDef cannot carry preferred extents",
+                ));
+            }
+            _ => {}
+        }
+        Ok(Self::from_complete_fields(
+            def_ids,
+            extents,
+            scope,
+            preferred_extents,
+        ))
     }
 
-    pub fn def_ids(&self) -> Result<Array<PrimVar>> {
-        field(self, "def_ids")
+    /// Construct a scope-id definition from its complete physical state after validation.
+    pub fn from_complete_fields(
+        def_ids: Array<PrimVar>,
+        extents: Option<Array<PrimExpr>>,
+        scope: ScopeBinding,
+        preferred_extents: Option<Array<PrimExpr>>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(ScopeIdDefObj {
+                base: tvm_ffi::Object::new(),
+                def_ids,
+                extents,
+                scope,
+                preferred_extents,
+            }),
+        }
     }
 
-    pub fn extents(&self) -> Result<Option<Array<PrimExpr>>> {
-        field(self, "extents")
-    }
-
-    pub fn scope(&self) -> Result<ScopeBinding> {
-        ScopeBinding::try_from(field::<i64, _>(self, "scope")?)
-    }
-
-    pub fn preferred_extents(&self) -> Result<Option<Array<PrimExpr>>> {
-        field(self, "preferred_extents")
-    }
-
-    pub fn is_deferred(&self) -> Result<bool> {
-        Ok(self.extents()?.is_none())
+    pub fn is_deferred(&self) -> bool {
+        self.extents.is_none()
     }
 
     pub fn fused_extent(&self) -> Result<PrimExpr> {
         let extents = self
-            .extents()?
+            .extents
+            .as_ref()
             .ok_or_else(|| value_error("a deferred ScopeIdDef has no fused extent"))?;
         let mut values = extents.iter();
         let mut result = values
@@ -263,6 +298,7 @@ impl ScopeIdDef {
 #[type_final]
 pub struct ScopeIdDefStmtObj {
     base: StmtObj,
+    pub def: ScopeIdDef,
 }
 
 #[repr(C)]
@@ -288,14 +324,18 @@ impl std::ops::Deref for ScopeIdDefStmtObj {
 }
 
 impl ScopeIdDefStmt {
-    pub fn new(definition: ScopeIdDef, span: Option<&Span>) -> Result<Self> {
-        tvm_ffi::cached_global_func!("tirx.ScopeIdDefStmt")
-            .call_tuple((definition, span.cloned()))?
-            .try_into()
+    pub fn new(def: ScopeIdDef, span: Option<&Span>) -> Self {
+        Self::from_complete_fields(span.cloned(), def)
     }
 
-    pub fn definition(&self) -> Result<ScopeIdDef> {
-        field(self, "def")
+    /// Construct a scope-id statement from its complete physical state.
+    pub fn from_complete_fields(span: Option<Span>, def: ScopeIdDef) -> Self {
+        Self {
+            data: ObjectArc::new(ScopeIdDefStmtObj {
+                base: StmtObj::new(span),
+                def,
+            }),
+        }
     }
 }
 
@@ -305,6 +345,8 @@ impl ScopeIdDefStmt {
 #[type_final]
 pub struct LambdaExprObj {
     base: tvm_ffi::Object,
+    pub vars: Array<Var>,
+    pub pred: PrimExpr,
 }
 
 #[repr(C)]
@@ -322,18 +364,19 @@ impl std::ops::Deref for LambdaExpr {
 }
 
 impl LambdaExpr {
-    pub fn new(vars: Vec<Var>, pred: PrimExpr) -> Result<Self> {
-        tvm_ffi::cached_global_func!("tirx.LambdaExpr")
-            .call_tuple((Array::new(vars), pred))?
-            .try_into()
+    pub fn new(vars: Vec<Var>, pred: PrimExpr) -> Self {
+        Self::from_complete_fields(Array::new(vars), pred)
     }
 
-    pub fn vars(&self) -> Result<Array<Var>> {
-        field(self, "vars")
-    }
-
-    pub fn pred(&self) -> Result<PrimExpr> {
-        field(self, "pred")
+    /// Construct a lambda expression from its complete physical state.
+    pub fn from_complete_fields(vars: Array<Var>, pred: PrimExpr) -> Self {
+        Self {
+            data: ObjectArc::new(LambdaExprObj {
+                base: tvm_ffi::Object::new(),
+                vars,
+                pred,
+            }),
+        }
     }
 
     pub fn apply(&self, indices: Vec<PrimExpr>) -> Result<PrimExpr> {
@@ -349,6 +392,18 @@ impl LambdaExpr {
 #[type_final]
 pub struct DispatchContextObj {
     base: tvm_ffi::Object,
+    pub target: Target,
+    pub exec_scope: ExecScope,
+    pub launch_params: Map<FfiString, super::IterVar>,
+    pub var_range_map: Map<Var, Range>,
+    pub alloc_only: bool,
+    // Native methods replace these maps even through a shared context handle.
+    // Keep their ABI layout, but never lend out a reference to either slot.
+    callbacks: UnsafeCell<Map<FfiString, AnyObjectRef>>,
+    shared_state: UnsafeCell<Map<FfiString, AnyObjectRef>>,
+    pub inter: Map<FfiString, Array<PrimExpr>>,
+    pub intra: Map<FfiString, Array<PrimExpr>>,
+    pub scope_kind: FfiString,
 }
 
 #[repr(C)]
@@ -366,7 +421,7 @@ impl std::ops::Deref for DispatchContext {
 }
 
 impl DispatchContext {
-    pub fn new(target: Target, exec_scope: ExecScope) -> Result<Self> {
+    pub fn new(target: Target, exec_scope: ExecScope) -> Self {
         Self::with_metadata(
             target,
             exec_scope,
@@ -388,66 +443,69 @@ impl DispatchContext {
         launch_params: Map<FfiString, super::IterVar>,
         var_range_map: Map<Var, Range>,
         alloc_only: bool,
-        callbacks: Map<FfiString, Any>,
-        shared_state: Map<FfiString, Any>,
+        callbacks: Map<FfiString, AnyObjectRef>,
+        shared_state: Map<FfiString, AnyObjectRef>,
         inter: Map<FfiString, Array<PrimExpr>>,
         intra: Map<FfiString, Array<PrimExpr>>,
         scope_kind: FfiString,
-    ) -> Result<Self> {
-        tvm_ffi::cached_global_func!("tirx.DispatchContext")
-            .call_packed(&[
-                AnyView::from(&target),
-                AnyView::from(&exec_scope),
-                AnyView::from(&launch_params),
-                AnyView::from(&var_range_map),
-                AnyView::from(&alloc_only),
-                AnyView::from(&callbacks),
-                AnyView::from(&shared_state),
-                AnyView::from(&inter),
-                AnyView::from(&intra),
-                AnyView::from(&scope_kind),
-            ])?
-            .try_into()
+    ) -> Self {
+        Self::from_complete_fields(
+            target,
+            exec_scope,
+            launch_params,
+            var_range_map,
+            alloc_only,
+            callbacks,
+            shared_state,
+            inter,
+            intra,
+            scope_kind,
+        )
     }
 
-    pub fn target(&self) -> Result<Target> {
-        field(self, "target")
+    /// Construct a dispatch context from its complete physical state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_complete_fields(
+        target: Target,
+        exec_scope: ExecScope,
+        launch_params: Map<FfiString, super::IterVar>,
+        var_range_map: Map<Var, Range>,
+        alloc_only: bool,
+        callbacks: Map<FfiString, AnyObjectRef>,
+        shared_state: Map<FfiString, AnyObjectRef>,
+        inter: Map<FfiString, Array<PrimExpr>>,
+        intra: Map<FfiString, Array<PrimExpr>>,
+        scope_kind: FfiString,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(DispatchContextObj {
+                base: tvm_ffi::Object::new(),
+                target,
+                exec_scope,
+                launch_params,
+                var_range_map,
+                alloc_only,
+                callbacks: UnsafeCell::new(callbacks),
+                shared_state: UnsafeCell::new(shared_state),
+                inter,
+                intra,
+                scope_kind,
+            }),
+        }
     }
 
-    pub fn exec_scope(&self) -> Result<ExecScope> {
-        field(self, "exec_scope")
+    /// Snapshot the callbacks. Later native updates leave this map unchanged.
+    pub fn callbacks(&self) -> Map<FfiString, AnyObjectRef> {
+        // SAFETY: This context cannot be shared across threads, and Map::clone
+        // only increments the reference count, without calling user code.
+        // The native writer uses Map's copy-on-write after this clone.
+        unsafe { (&*self.callbacks.get()).clone() }
     }
 
-    pub fn launch_params(&self) -> Result<Map<FfiString, super::IterVar>> {
-        field(self, "launch_params")
-    }
-
-    pub fn var_range_map(&self) -> Result<Map<Var, Range>> {
-        field(self, "var_range_map")
-    }
-
-    pub fn alloc_only(&self) -> Result<bool> {
-        field(self, "alloc_only")
-    }
-
-    pub fn callbacks(&self) -> Result<Map<FfiString, Any>> {
-        field(self, "callbacks")
-    }
-
-    pub fn shared_state(&self) -> Result<Map<FfiString, Any>> {
-        field(self, "shared_state")
-    }
-
-    pub fn inter(&self) -> Result<Map<FfiString, Array<PrimExpr>>> {
-        field(self, "inter")
-    }
-
-    pub fn intra(&self) -> Result<Map<FfiString, Array<PrimExpr>>> {
-        field(self, "intra")
-    }
-
-    pub fn scope_kind(&self) -> Result<FfiString> {
-        field(self, "scope_kind")
+    /// Snapshot the shared state. Later native updates leave this map unchanged.
+    pub fn shared_state(&self) -> Map<FfiString, AnyObjectRef> {
+        // SAFETY: As in callbacks(), the borrow ends before any native mutation.
+        unsafe { (&*self.shared_state.get()).clone() }
     }
 
     pub fn add_alloc_buffer(&self, buffer: BufferVar) -> Result<()> {
@@ -496,6 +554,12 @@ impl DispatchContext {
 #[type_final]
 pub struct TilePrimitiveCallObj {
     base: StmtObj,
+    pub op: Op,
+    pub args: Array<Any>,
+    pub workspace: Map<FfiString, BufferVar>,
+    pub config: Map<FfiString, Any>,
+    pub dispatch: Optional<FfiString>,
+    pub scope: ExecScope,
 }
 
 #[repr(C)]
@@ -530,15 +594,47 @@ impl TilePrimitiveCall {
         scope: ExecScope,
         span: Option<Span>,
     ) -> Result<Self> {
-        let mut result: Self = tvm_ffi::cached_global_func!("tirx.TilePrimitiveCall")
-            .call_tuple((op, args, workspace, config, dispatch, scope))?
+        let category: Option<FfiString> = tvm_ffi::cached_global_func!("ir.OpGetAttr")
+            .call_tuple((&op, FfiString::from("TIRxOpCategory")))?
             .try_into()?;
-        // The native constructor does not accept source metadata.  It always
-        // returns a fresh object, and Rust knows the complete StmtObj prefix,
-        // so initialize that inherited field before the handle is shared.
-        debug_assert_eq!(ObjectArc::strong_count(&result.data), 1);
-        result.data.base.span = span;
-        Ok(result)
+        if category.as_ref().map(FfiString::as_str) != Some("tile_primitive") {
+            return Err(value_error(
+                "only tile primitive ops can be used in tirx.TilePrimitiveCall",
+            ));
+        }
+        Ok(Self::from_complete_fields(
+            span,
+            op,
+            args,
+            workspace,
+            config,
+            dispatch.into(),
+            scope,
+        ))
+    }
+
+    /// Construct a tile-primitive call from its complete physical state after validation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        op: Op,
+        args: Array<Any>,
+        workspace: Map<FfiString, BufferVar>,
+        config: Map<FfiString, Any>,
+        dispatch: Optional<FfiString>,
+        scope: ExecScope,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(TilePrimitiveCallObj {
+                base: StmtObj::new(span),
+                op,
+                args,
+                workspace,
+                config,
+                dispatch,
+                scope,
+            }),
+        }
     }
 
     pub fn new(
@@ -573,49 +669,17 @@ impl TilePrimitiveCall {
         )
     }
 
-    pub fn scope(&self) -> Result<ExecScope> {
-        field(self, "scope")
-    }
-
-    pub fn op(&self) -> Result<Op> {
-        field(self, "op")
-    }
-
-    pub fn args(&self) -> Result<Array<Any>> {
-        field(self, "args")
-    }
-
-    pub fn workspace(&self) -> Result<Map<FfiString, BufferVar>> {
-        field(self, "workspace")
-    }
-
-    pub fn config(&self) -> Result<Map<FfiString, Any>> {
-        field(self, "config")
-    }
-
-    pub fn dispatch(&self) -> Result<Option<FfiString>> {
-        field(self, "dispatch")
-    }
-
     pub fn copy_with(&self, args: Array<Any>, config: Map<FfiString, Any>) -> Result<Self> {
         Self::from_fields(
-            self.op()?,
+            self.op.clone(),
             args,
-            self.workspace()?,
+            self.workspace.clone(),
             config,
-            self.dispatch()?,
-            self.scope()?,
+            Option::from(self.dispatch.clone()),
+            self.scope.clone(),
             self.span.clone(),
         )
     }
-}
-
-fn field<T, O>(object: &O, name: &str) -> Result<T>
-where
-    T: TryFrom<Any, Error = Error>,
-    O: ObjectRefCore,
-{
-    FieldGetter::new(O::ContainerType::type_index(), name)?.get(&**O::data(object))
 }
 
 fn value_error(message: &str) -> Error {

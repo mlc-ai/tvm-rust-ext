@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use tvm_ffi::object::ObjectRef as AnyObjectRef;
 use tvm_ffi::{
     structural_map, structural_mutate, structural_walk, Any, Array, DLDataTypeCode, Function, Map,
     MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
@@ -26,9 +27,7 @@ use tvm_ffi::{
 };
 
 use super::exec_context::{encode_split, ExecContext};
-use super::scope_id::{
-    compute_warp_id_in_cta, resolve_scope_id, LaunchParams, ScopeDefinition, ScopeIdSet,
-};
+use super::scope_id::{compute_warp_id_in_cta, resolve_scope_id, LaunchParams, ScopeIdSet};
 use super::utils::{
     get_operator, int_value as integer_value, mutate_stmt_default, mutate_stmt_expr_default,
     value_error, with_prim_func_body,
@@ -106,14 +105,14 @@ struct TileDispatcher {
     analyzer: Analyzer,
     launch_params: LaunchParams,
     variable_ranges: HashMap<ObjectIdentity, (Var, Range)>,
-    scope_levels: Vec<Vec<ScopeDefinition>>,
+    scope_levels: Vec<Vec<ScopeIdDef>>,
     execution_contexts: Vec<ExecContext>,
     cluster_axes: Vec<(String, i64)>,
     allocations: Vec<BufferVar>,
     device_initializers: Vec<Stmt>,
     host_initializers: Vec<Stmt>,
     post_buffer_definitions: HashMap<ObjectIdentity, PendingBufferStatements>,
-    shared_state: Map<FfiString, Any>,
+    shared_state: Map<FfiString, AnyObjectRef>,
     storage_roots: HashMap<ObjectIdentity, BufferVar>,
     device_depth: usize,
     filter_operator: Expr,
@@ -290,7 +289,7 @@ impl TileDispatcher {
 
     fn add_launch_parameters(
         &mut self,
-        definition: Option<&ScopeDefinition>,
+        definition: Option<&ScopeIdDef>,
         prefix: &str,
     ) -> Result<()> {
         let Some(definition) = definition else {
@@ -321,10 +320,7 @@ impl TileDispatcher {
         Ok(())
     }
 
-    fn add_preferred_cluster_parameters(
-        &mut self,
-        definition: Option<&ScopeDefinition>,
-    ) -> Result<()> {
+    fn add_preferred_cluster_parameters(&mut self, definition: Option<&ScopeIdDef>) -> Result<()> {
         let Some(extents) = definition.and_then(|definition| definition.preferred_extents.as_ref())
         else {
             return Ok(());
@@ -419,9 +415,9 @@ impl TileDispatcher {
     }
 
     fn dispatch_tile_call(&mut self, call: TilePrimitiveCall) -> Result<Stmt> {
-        let scope = call.scope()?;
+        let scope = call.scope.clone();
         let split = match self.execution_contexts.last() {
-            Some(context) => context.split(scope.kind()?)?,
+            Some(context) => context.split(scope.kind)?,
             None => None,
         };
         let (inter, intra) = split
@@ -446,25 +442,25 @@ impl TileDispatcher {
             inter,
             intra,
             FfiString::from(scope.name()?),
-        )?;
+        );
         let dispatcher = Function::get_global("tirx.f_op_dispatcher")?;
         let implementation: PrimFunc = dispatcher.call_tuple((&call, &context))?.try_into()?;
 
-        let callbacks = context.callbacks()?;
+        let callbacks = context.callbacks();
         if let Some(value) = callbacks.get(&FfiString::from(PRIVATE_ALLOC))? {
             self.allocations
-                .extend(Array::<BufferVar>::try_from(value)?.iter());
+                .extend(value.try_cast::<Array<BufferVar>>()?.iter());
         }
         if let Some(value) = callbacks.get(&FfiString::from(DEVICE_INIT))? {
             self.device_initializers
-                .extend(Array::<Stmt>::try_from(value)?.iter());
+                .extend(value.try_cast::<Array<Stmt>>()?.iter());
         }
         if let Some(value) = callbacks.get(&FfiString::from(HOST_INIT))? {
             self.host_initializers
-                .extend(Array::<Stmt>::try_from(value)?.iter());
+                .extend(value.try_cast::<Array<Stmt>>()?.iter());
         }
         if let Some(value) = callbacks.get(&FfiString::from(POST_BUFFER_DEF))? {
-            for (buffer, statements) in Map::<BufferVar, Array<Stmt>>::try_from(value)?.iter() {
+            for (buffer, statements) in value.try_cast::<Map<BufferVar, Array<Stmt>>>()?.iter() {
                 let identity = ObjectIdentity::of(buffer.as_var());
                 self.post_buffer_definitions
                     .entry(identity)
@@ -476,7 +472,7 @@ impl TileDispatcher {
                     .extend(statements.iter());
             }
         }
-        self.shared_state = context.shared_state()?;
+        self.shared_state = context.shared_state();
         Ok(implementation.body.clone())
     }
 
@@ -992,7 +988,7 @@ impl TileDispatcher {
         mutator: &mut Mutator,
     ) -> Result<Stmt> {
         if let Some(level) = self.scope_levels.last_mut() {
-            level.push(ScopeDefinition::read(value.definition()?)?);
+            level.push(value.def.clone());
         }
         mutate_stmt_default(self, mutator, value.into())
     }
@@ -1121,7 +1117,7 @@ fn gather_scope_defs(statement: &Stmt) -> Result<Vec<ScopeIdDef>> {
     structural_walk(
         statement,
         |value: ScopeIdDefStmt| -> Result<WalkResult> {
-            definitions.push(value.definition()?);
+            definitions.push(value.def.clone());
             Ok(WalkResult::Advance)
         },
         WalkOrder::PreOrder,

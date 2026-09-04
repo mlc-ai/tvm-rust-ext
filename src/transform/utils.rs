@@ -532,15 +532,15 @@ pub(super) fn visit_stmt_expr_default<State>(
         return visitor.visit(&evaluate.value);
     }
     if let Some(scope_definition) = value.cast::<ScopeIdDefStmt>() {
-        return visit_scope_id_definition(visitor, &scope_definition.definition()?);
+        return visit_scope_id_definition(visitor, &scope_definition.def);
     }
     if let Some(tile_call) = value.cast::<TilePrimitiveCall>() {
-        for argument in tile_call.args()?.iter() {
+        for argument in tile_call.args.iter() {
             if let Some(interrupt) = visit_tile_value(visitor, &argument)? {
                 return Ok(Some(interrupt));
             }
         }
-        for (_, configured) in tile_call.config()?.iter() {
+        for (_, configured) in tile_call.config.iter() {
             if let Some(interrupt) = visit_tile_value(visitor, &configured)? {
                 return Ok(Some(interrupt));
             }
@@ -555,14 +555,14 @@ fn visit_scope_id_definition<State>(
     visitor: &mut VisitContext<'_, State>,
     definition: &ScopeIdDef,
 ) -> Result<Option<VisitInterrupt>> {
-    if let Some(extents) = definition.extents()? {
+    if let Some(extents) = &definition.extents {
         for extent in extents.iter() {
             if let Some(interrupt) = visitor.visit(&extent)? {
                 return Ok(Some(interrupt));
             }
         }
     }
-    if let Some(extents) = definition.preferred_extents()? {
+    if let Some(extents) = &definition.preferred_extents {
         for extent in extents.iter() {
             if let Some(interrupt) = visitor.visit(&extent)? {
                 return Ok(Some(interrupt));
@@ -1005,9 +1005,9 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         return Ok(evaluate.copy_with(evaluated).into());
     }
     if let Some(scope_statement) = clone_downcast::<ScopeIdDefStmt>(&value)? {
-        let definition = scope_statement.definition()?;
-        let old_extents = definition.extents()?;
-        let old_preferred_extents = definition.preferred_extents()?;
+        let definition = &scope_statement.def;
+        let old_extents = definition.extents.clone();
+        let old_preferred_extents = definition.preferred_extents.clone();
         let extents = mutate_optional_prim_exprs(dispatch, mutator, old_extents.clone())?;
         let preferred_extents =
             mutate_optional_prim_exprs(dispatch, mutator, old_preferred_extents.clone())?;
@@ -1017,16 +1017,16 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
             return Ok(value);
         }
         let definition = ScopeIdDef::new(
-            definition.def_ids()?.iter().collect(),
+            definition.def_ids.iter().collect(),
             extents.map(|values| values.iter().collect()),
-            definition.scope()?,
+            definition.scope,
             preferred_extents.map(|values| values.iter().collect()),
         )?;
-        return Ok(ScopeIdDefStmt::new(definition, scope_statement.span.as_ref())?.into());
+        return Ok(ScopeIdDefStmt::new(definition, scope_statement.span.as_ref()).into());
     }
     if let Some(tile_call) = clone_downcast::<TilePrimitiveCall>(&value)? {
-        let old_args = tile_call.args()?;
-        let old_config = tile_call.config()?;
+        let old_args = tile_call.args.clone();
+        let old_config = tile_call.config.clone();
         let (args, args_changed) = mutate_tile_values(dispatch, mutator, &old_args)?;
         let mut config_changed = false;
         let mut config = Vec::with_capacity(old_config.len());
