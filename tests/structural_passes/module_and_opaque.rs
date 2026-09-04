@@ -80,7 +80,7 @@ fn rust_inline_private_functions_matches_cpp_for_targets_and_expression_calls() 
     let make_target = |kind: &str| {
         Function::get_global("target.Target")
             .unwrap()
-            .call_packed(&[AnyView::from(&tvm::tvm_ffi::String::from(kind))])
+            .call_tuple((&tvm::tvm_ffi::String::from(kind),))
             .unwrap()
     };
     let llvm = make_target("llvm");
@@ -229,14 +229,13 @@ fn filter_matches_cpp_and_removes_rejected_prim_funcs() {
         ("three", prim_func_with_global_symbol(3, None)),
     ]);
 
-    let rust_result = transform::filter(|function| Ok(prim_func_body_integer(function)? % 2 == 1))
+    let rust_result = transform::filter(|function| Ok(prim_func_body_integer(&function) % 2 == 1))
         .unwrap()
         .run(module.clone())
         .unwrap();
 
-    let cpp_condition = Function::from_typed(|function: PrimFunc| -> Result<bool> {
-        Ok(prim_func_body_integer(function)? % 2 == 1)
-    });
+    let cpp_condition =
+        Function::from_typed(|function: PrimFunc| Ok(prim_func_body_integer(&function) % 2 == 1));
     let cpp_filter: transform::Pass = Function::get_global("tirx.transform.Filter")
         .unwrap()
         .call_tuple((cpp_condition,))

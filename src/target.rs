@@ -97,10 +97,12 @@ impl Target {
 
     /// Return the same target with its host component removed.
     pub fn without_host(&self) -> Result<Self> {
-        let config = self.export()?;
-        Self::from_config(Map::from_iter(
-            config.iter().filter(|(key, _)| key.as_str() != "host"),
-        ))
+        if self.host()?.is_none() {
+            return Ok(self.clone());
+        }
+        tvm_ffi::cached_global_func!("target.WithHost")
+            .call_tuple((self, Option::<Self>::None))?
+            .try_into()
     }
 
     /// Attach `host` using TVM's canonical target operation.

@@ -250,11 +250,8 @@ fn rust_stmt_simplify_preserves_unchanged_tile_metadata() {
         transform::stmt_simplify_prim_func(PrimFunc::new(vec![variable], call).unwrap()).unwrap();
     let result_call = result.body.clone().try_cast::<TilePrimitiveCall>().unwrap();
 
-    assert_eq!(
-        object_pointer(result_call.span.as_ref().unwrap()),
-        object_pointer(&span)
-    );
-    assert_eq!(object_pointer(&result_call.config), object_pointer(&config));
+    assert!(result_call.span.as_ref().unwrap().same_as(&span));
+    assert!(result_call.config.same_as(&config));
 }
 
 #[test]
@@ -485,6 +482,11 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
         .unwrap()
         .with_host(&host)
         .unwrap();
+    assert!(host.without_host().unwrap().same_as(&host));
+    let device = target.without_host().unwrap();
+    assert!(device.host().unwrap().is_none());
+    assert!(device.without_host().unwrap().same_as(&device));
+    assert_structural_equal(&device.with_host(&host).unwrap(), &target);
     assert!(target.host().unwrap().unwrap().same_as(&host));
     assert!(host.host().unwrap().is_none());
     assert!(host.has_key("cpu").unwrap());

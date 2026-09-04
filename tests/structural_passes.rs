@@ -23,20 +23,20 @@ use tvm::ir::prim::{
 };
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
-    OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SequentialSpan,
-    SourceMap, SourceName, Span, TensorLoad, Type, Var,
+    IntImmObj, OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range,
+    SequentialSpan, SourceMap, SourceName, Span, TensorLoad, Type, Var,
 };
 use tvm::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferRegionType,
     BufferStore, BufferType, BufferVar, ComposeLayout, DeclBuffer, DispatchContext, Evaluate,
-    ExecScope, For, ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType, LambdaExpr, Layout,
-    MatchBufferRegion, PrimFunc, PrimVar, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
-    ScopeKind, SeqStmt, Stmt, TensorIntrin, TileLayout, TilePrimitiveCall, While,
+    EvaluateObj, ExecScope, For, ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType,
+    LambdaExpr, Layout, MatchBufferRegion, PrimFunc, PrimVar, Return, ScopeBinding, ScopeIdDef,
+    ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt, TensorIntrin, TileLayout, TilePrimitiveCall, While,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
-    structural_walk, Any, AnyView, Array, Function, Map, ObjectRefCast, ObjectRefCore, Result,
-    WalkOrder, WalkResult,
+    structural_walk, Any, Array, Function, Map, ObjectRefCast, ObjectRefCore, Result, WalkOrder,
+    WalkResult,
 };
 
 mod common;
@@ -57,7 +57,7 @@ fn prim_int_expression(value: i64) -> PrimExpr {
 fn cpp_pass(name: &str) -> transform::Pass {
     Function::get_global(name)
         .unwrap()
-        .call_packed(&[])
+        .call_tuple(())
         .unwrap()
         .try_into()
         .unwrap()
@@ -105,15 +105,15 @@ fn prim_func_with_global_symbol(value: i64, symbol: Option<&str>) -> PrimFunc {
     .unwrap()
 }
 
-fn prim_func_body_integer(function: PrimFunc) -> Result<i64> {
-    Ok(function
+fn prim_func_body_integer(function: &PrimFunc) -> i64 {
+    function
         .body
-        .clone()
-        .try_cast::<Evaluate>()?
+        .as_node::<EvaluateObj>()
+        .expect("test function must contain an Evaluate")
         .value
-        .clone()
-        .try_cast::<IntImm>()?
-        .value)
+        .as_node::<IntImmObj>()
+        .expect("test evaluation must contain an IntImm")
+        .value
 }
 
 #[path = "structural_passes/codegen.rs"]

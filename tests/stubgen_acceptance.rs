@@ -27,8 +27,8 @@ use tvm::ir::prim::{Add, AddObj};
 use tvm::ir::{Expr, IntImm, IntImmObj, PrimExpr, PrimType, PrimTypeObj, Type, Var, VarObj};
 use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::tvm_ffi::{
-    structural_map, structural_walk, AnyView, DefRegionKind, FieldGetter, Function, ObjectArc,
-    ObjectCore, ObjectRefCast, ObjectRefCore, WalkOrder, WalkResult,
+    structural_map, structural_walk, DefRegionKind, FieldGetter, Function, ObjectArc, ObjectCore,
+    ObjectRefCast, ObjectRefCore, WalkOrder, WalkResult,
 };
 
 mod common;
@@ -55,7 +55,7 @@ fn direct_and_semantic_constructors_round_trip() {
     assert!(missing.is_missing());
     let cpp_recognizes_missing = Function::get_global("ir.TypeIsMissing")
         .unwrap()
-        .call_packed(&[AnyView::from(&missing)])
+        .call_tuple((&missing,))
         .unwrap();
     assert!(bool::try_from(cpp_recognizes_missing).unwrap());
 
@@ -64,17 +64,17 @@ fn direct_and_semantic_constructors_round_trip() {
     let function = sample_function();
     let cpp_function: PrimFunc = Function::get_global("tirx.PrimFunc")
         .expect("missing reference semantic constructor")
-        .call_packed(&[
-            AnyView::from(&function.params),
-            AnyView::from(&function.body),
-            AnyView::from(&Type::missing()),
-            AnyView::from(&function.attrs),
-            AnyView::from(&()),
-        ])
+        .call_tuple((
+            &function.params,
+            &function.body,
+            &Type::missing(),
+            &function.attrs,
+            (),
+        ))
         .unwrap()
         .try_into()
         .unwrap();
-    assert_ne!(object_pointer(&function), object_pointer(&cpp_function));
+    assert!(!function.same_as(&cpp_function));
     assert_cpp_structural_equal(&function, &cpp_function);
 
     let rust_rebuilt = PrimFunc::from_complete_fields(
@@ -100,7 +100,7 @@ fn direct_and_semantic_constructors_round_trip() {
     let addition = body.value.clone().try_cast::<Add>().unwrap();
     let lhs_count = ObjectArc::strong_count(<PrimExpr as ObjectRefCore>::data(&addition.a));
     let borrowed_lhs: &Expr = &addition.a;
-    assert_eq!(object_pointer(borrowed_lhs), object_pointer(&addition.a));
+    assert!(borrowed_lhs.same_as(&addition.a));
     assert_eq!(
         ObjectArc::strong_count(<PrimExpr as ObjectRefCore>::data(&addition.a)),
         lhs_count,
@@ -136,7 +136,7 @@ fn direct_and_semantic_constructors_round_trip() {
         PrimExpr::try_from(moved_lhs).unwrap(),
         PrimExpr::try_from(moved_rhs).unwrap(),
     );
-    assert_eq!(object_pointer(&direct_add.a), object_pointer(&lhs_tracker));
+    assert!(direct_add.a.same_as(&lhs_tracker));
     assert_eq!(
         ObjectArc::strong_count(<Expr as ObjectRefCore>::data(&lhs_tracker)),
         lhs_count,
@@ -152,11 +152,11 @@ fn direct_and_semantic_constructors_round_trip() {
     let wide = IntImm::new("int128", 42).unwrap();
     let cpp_wide: IntImm = Function::get_global("ir.IntImm")
         .unwrap()
-        .call_packed(&[
-            AnyView::from(&wide.ty.as_node::<PrimTypeObj>().unwrap().dtype),
-            AnyView::from(&42_i64),
-            AnyView::from(&()),
-        ])
+        .call_tuple((
+            &wide.ty.as_node::<PrimTypeObj>().unwrap().dtype,
+            &42_i64,
+            (),
+        ))
         .unwrap()
         .try_into()
         .unwrap();
