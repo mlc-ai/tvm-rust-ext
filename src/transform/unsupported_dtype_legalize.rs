@@ -30,12 +30,14 @@ use super::utils::{
     mutate_stmt_default, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::{
+    Add, Broadcast, Cast, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
+};
 use crate::ir::{Call, Expr, FloatImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
 use crate::target::Target;
+use crate::te::CommReducer;
 use crate::tirx::{
-    Add, AllocBuffer, AttrStmt, Bind, Broadcast, BufferStore, BufferVar, Cast, CommReducer,
-    DeclBuffer, Div, Let, Max, Min, Mul, PrimFunc, PrimVar, Select, Shuffle, Stmt, Sub, EQ, GE, GT,
-    LE, LT, NE,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, PrimFunc, PrimVar, Stmt,
 };
 
 /// Promote BF16 computations to float32 while preserving external storage.
@@ -478,7 +480,7 @@ impl ComputeLegalizer {
         if element.same_as(&value.value) {
             return Ok(value.into());
         }
-        tvm_ffi::cached_global_func!("tirx.Broadcast")
+        tvm_ffi::cached_global_func!("ir.prim.Broadcast")
             .call_tuple((
                 element,
                 value.lanes.clone(),
@@ -497,7 +499,7 @@ impl ComputeLegalizer {
         if array_same_as(&vectors, &value.vectors) {
             return Ok(value.into());
         }
-        tvm_ffi::cached_global_func!("tirx.Shuffle")
+        tvm_ffi::cached_global_func!("ir.prim.Shuffle")
             .call_tuple((
                 vectors,
                 value.indices.clone(),
@@ -1026,7 +1028,7 @@ fn typed_constant(ty: &PrimType, value: i64) -> Result<PrimExpr> {
     if ty.dtype.lanes == 1 {
         return Ok(scalar);
     }
-    tvm_ffi::cached_global_func!("tirx.Broadcast")
+    tvm_ffi::cached_global_func!("ir.prim.Broadcast")
         .call_tuple((
             scalar,
             crate::ir::IntImm::new("int32", i64::from(ty.dtype.lanes))?,

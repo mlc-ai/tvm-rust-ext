@@ -19,6 +19,11 @@
 
 //! Runtime conformance checks for the complete handwritten IR surface.
 
+use tvm::ir::prim::{
+    Add, AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj,
+    GTObj, LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, Mul, MulObj, NEObj, Not, NotObj, OrObj,
+    RampObj, SelectObj, ShuffleObj, StringImm, StringImmObj, Sub, SubObj, GE, GT, LE, LT, NE,
+};
 use tvm::ir::{
     Attrs, AttrsObj, BaseFunc, BaseFuncObj, Call, CallObj, DictAttrs, DictAttrsObj,
     DummyGlobalInfo, DummyGlobalInfoObj, Expr, ExprObj, GlobalInfo, GlobalInfoObj, GlobalVar,
@@ -27,14 +32,14 @@ use tvm::ir::{
     SourceMapObj, SourceName, SourceNameObj, SourceObj, Span, SpanObj, TensorLoad, TensorLoadObj,
     TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
+use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
-    Add, AddObj, AllocBuffer, AllocBufferObj, AndObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis,
-    AxisObj, Bind, BindObj, BufferRegion, BufferRegionObj, BufferStore, BufferStoreObj, BufferType,
-    BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, EQObj, Evaluate, EvaluateObj, For,
-    ForKind, ForObj, GEObj, GTObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar, IterVarObj,
-    IterVarType, LEObj, LTObj, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, Mul,
-    MulObj, NEObj, Not, NotObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj,
-    StringImm, StringImmObj, Sub, SubObj, TileLayoutObj, GE, GT, LE, LT, NE,
+    AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, Bind,
+    BindObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferRegionTypeObj, BufferStore,
+    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Evaluate,
+    EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar,
+    IterVarObj, IterVarType, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, PrimFunc,
+    PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj, TileLayoutObj,
 };
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{Any, Array, DLDataType, Map, Object, ObjectCore, ObjectRefCore, String};
@@ -52,14 +57,17 @@ const SCHEMA_ANY: &str = r#"{"type":"Any"}"#;
 const SCHEMA_ARRAY_EXPR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Expr"}]}"#;
 const SCHEMA_ARRAY_GLOBAL_INFO_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"ir.GlobalInfo"}]}]}"#;
 const SCHEMA_ARRAY_ITER: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Iter"}]}"#;
+const SCHEMA_ARRAY_ITER_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.IterVar"}]}"#;
 const SCHEMA_ARRAY_RANGE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Range"}]}"#;
 const SCHEMA_ARRAY_STMT: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Stmt"}]}"#;
-const SCHEMA_ARRAY_STRING_IMM: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.StringImm"}]}"#;
+const SCHEMA_ARRAY_STRING_IMM: &str =
+    r#"{"type":"ffi.Array","args":[{"type":"ir.prim.StringImm"}]}"#;
 const SCHEMA_ARRAY_TYPE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Type"}]}"#;
 const SCHEMA_ARRAY_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Var"}]}"#;
 const SCHEMA_ATTRS: &str = r#"{"type":"ir.Attrs"}"#;
 const SCHEMA_AXIS: &str = r#"{"type":"tirx.Axis"}"#;
 const SCHEMA_BUFFER_REGION: &str = r#"{"type":"tirx.BufferRegion"}"#;
+const SCHEMA_COMM_REDUCER: &str = r#"{"type":"te.CommReducer"}"#;
 const SCHEMA_DICT_ATTRS: &str = r#"{"type":"ir.DictAttrs"}"#;
 const SCHEMA_DTYPE: &str = r#"{"type":"DataType"}"#;
 const SCHEMA_EXPR: &str = r#"{"type":"ir.Expr"}"#;
@@ -83,7 +91,7 @@ const SCHEMA_SOURCE_NAME: &str = r#"{"type":"ir.SourceName"}"#;
 const SCHEMA_SPAN: &str = r#"{"type":"ir.Span"}"#;
 const SCHEMA_STMT: &str = r#"{"type":"tirx.Stmt"}"#;
 const SCHEMA_STRING: &str = r#"{"type":"ffi.String"}"#;
-const SCHEMA_STRING_IMM: &str = r#"{"type":"tirx.StringImm"}"#;
+const SCHEMA_STRING_IMM: &str = r#"{"type":"ir.prim.StringImm"}"#;
 const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
 
@@ -309,6 +317,36 @@ fn all_handwritten_objects_match_runtime_metadata() {
         Some(Tree),
         &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
     );
+    assert_contract::<DivObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<ModObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<FloorDivObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<FloorModObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<MinObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<MaxObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
     assert_contract::<EQObj, ExprObj>(
         true,
         Some(Tree),
@@ -345,7 +383,76 @@ fn all_handwritten_objects_match_runtime_metadata() {
         Some(Tree),
         &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
     );
+    assert_contract::<OrObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<CastObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_EXPR)]);
+    assert_contract::<RampObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[
+            ("base", 0, SCHEMA_EXPR),
+            ("stride", 0, SCHEMA_EXPR),
+            ("lanes", 0, SCHEMA_EXPR),
+        ],
+    );
+    assert_contract::<BroadcastObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("value", 0, SCHEMA_EXPR), ("lanes", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<ShuffleObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[
+            ("vectors", 0, SCHEMA_ARRAY_EXPR),
+            ("indices", 0, SCHEMA_ARRAY_EXPR),
+        ],
+    );
+    assert_contract::<SelectObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[
+            ("condition", 0, SCHEMA_EXPR),
+            ("true_value", 0, SCHEMA_EXPR),
+            ("false_value", 0, SCHEMA_EXPR),
+        ],
+    );
+    assert_contract::<LetObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[
+            ("var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("value", 0, SCHEMA_EXPR),
+            ("body", 0, SCHEMA_EXPR),
+        ],
+    );
     assert_contract::<StringImmObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_STRING)]);
+    assert_contract::<CommReducerObj, Object>(
+        true,
+        Some(Tree),
+        &[
+            ("lhs", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("rhs", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("result", 0, SCHEMA_ARRAY_EXPR),
+            ("identity_element", 0, SCHEMA_ARRAY_EXPR),
+            ("span", IGNORE, SCHEMA_SPAN),
+        ],
+    );
+    assert_contract::<ReduceObj, OpaqueExprObj>(
+        true,
+        Some(Tree),
+        &[
+            ("combiner", 0, SCHEMA_COMM_REDUCER),
+            ("source", 0, SCHEMA_ARRAY_EXPR),
+            ("init", 0, SCHEMA_ARRAY_EXPR),
+            ("axis", 0, SCHEMA_ARRAY_ITER_VAR),
+            ("condition", 0, SCHEMA_EXPR),
+            ("value_index", 0, SCHEMA_INT),
+        ],
+    );
     assert_contract::<StmtObj, Object>(false, Some(Tree), &[("span", IGNORE, SCHEMA_SPAN)]);
     assert_contract::<BindObj, StmtObj>(
         true,
@@ -476,7 +583,8 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("annotations", 0, SCHEMA_ANY_MAP),
         ],
     );
-    assert_contract::<BufferRegionObj, PrimExprConvertibleObj>(
+    assert_contract::<BufferRegionTypeObj, TypeObj>(true, Some(Tree), &[]);
+    assert_contract::<BufferRegionObj, ExprObj>(
         true,
         Some(Tree),
         &[
@@ -562,6 +670,7 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>) -> BufferStore);
     assert_complete_allocator!(DeclBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Expr) -> DeclBuffer);
     assert_complete_allocator!(AllocBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Map<String, Any>) -> AllocBuffer);
+    assert_complete_allocator!(BufferRegion::from_complete_fields: fn(Option<Span>, BufferRegionType, BufferVar, Array<Range>) -> BufferRegion);
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
 }
 

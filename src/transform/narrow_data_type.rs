@@ -28,8 +28,10 @@ use super::force_narrow_index::IndexDataTypeNormalizer;
 use super::utils::with_prim_func_body;
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
+use crate::ir::prim::Cast;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
-use crate::tirx::{AttrStmt, Cast, For, IterVar, PrimFunc, Reduce, Stmt};
+use crate::te::Reduce;
+use crate::tirx::{AttrStmt, For, IterVar, PrimFunc, Stmt};
 
 const THREAD_EXTENT: &str = "thread_extent";
 const VIRTUAL_THREAD: &str = "virtual_thread";

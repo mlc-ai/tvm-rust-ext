@@ -30,11 +30,15 @@ use super::utils::{
     with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::{
+    Add, And, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not, Or, Select, StringImm,
+    Sub, EQ, GE, GT, LE, LT, NE,
+};
 use crate::ir::{Call, Expr, FloatImm, IntImm, PrimExpr, TensorLoad, Var};
+use crate::te::Reduce;
 use crate::tirx::{
-    Add, AllocBuffer, And, AttrStmt, Bind, BufferStore, BufferVar, Cast, DeclBuffer, Div, FloorDiv,
-    FloorMod, For, IfThenElse, Let, Max, Min, Mod, Mul, Not, Or, PrimFunc, Reduce, Select, SeqStmt,
-    Stmt, StringImm, Sub, TileLayout, While, EQ, GE, GT, LE, LT, NE,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, PrimFunc,
+    SeqStmt, Stmt, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -360,7 +364,7 @@ impl CsePlanner {
                 ExprClass::Let => {
                     let node = value
                         .cast::<Let>()
-                        .expect("tirx.Let has already been classified above");
+                        .expect("ir.prim.Let has already been classified above");
                     visit_cse_child(visitor, &node.value)?;
                     visitor.state_mut().let_depth += 1;
                     let body_result = visit_cse_child(visitor, &node.body);

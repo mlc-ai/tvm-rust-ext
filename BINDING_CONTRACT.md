@@ -89,7 +89,7 @@ The first generated slice remains intentionally small:
 | `ExprObj` | `ir.Expr` | `span`, `ty` | base prefix |
 | `VarObj` | `ir.Var` | `name` | direct Rust allocation |
 | `IntImmObj` | `ir.IntImm` | `value` | direct after integer validation |
-| `AddObj` | `tirx.Add` | `a`, `b` | direct after dtype validation |
+| `AddObj` | `ir.prim.Add` | `a`, `b` | direct after dtype validation |
 | `StmtObj` | `tirx.Stmt` | `span` | base prefix |
 | `EvaluateObj` | `tirx.Evaluate` | `value` | direct after value validation |
 | `BaseFuncObj` | `ir.BaseFunc` | `attrs` | base prefix |
@@ -140,7 +140,8 @@ Broader pass behavior is in
 | Complete layout, build-dependent defaults | `BufferType` | **handwritten Rust semantics + Rust allocation / verified** |
 | Native registry identity | `Axis` | **opaque wrapper + existing `tirx.AxisGet` singleton lookup / verified** |
 | Native interned identity | `SourceName` | **opaque wrapper + existing `ir.SourceName` lookup / verified** |
-| Native polymorphic behavior | `Layout`, `PrimExprConvertible`, `IterVar`, `BufferRegion` | **opaque wrapper + native allocation + reflected Rust access / verified** |
+| Native polymorphic behavior | `Layout`, `PrimExprConvertible`, `IterVar` | **opaque wrapper + native allocation + reflected Rust access / verified** |
+| Typed ordinary expression | `BufferRegion` | **complete `Expr` layout + singleton `BufferRegionType` + Rust allocation / verified** |
 | Native STL storage | `Source` | **opaque wrapper + existing `SourceMapAdd` construction / verified** |
 | Complex semantic constructor | `BufferType`, `PrimFunc`, match buffer | **handwritten Rust semantics + complete-field Rust allocation / verified** |
 | Derived mutable indexes | `IRModule` construction/update | **GENERATE rebuild logic / verified** |

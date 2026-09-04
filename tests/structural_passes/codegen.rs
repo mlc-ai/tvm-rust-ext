@@ -255,7 +255,7 @@ fn rust_pointer_value_type_rewrite_matches_cpp_for_vector_buffer_load() {
     let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
         .unwrap()
         .new_var("data");
-    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
         .unwrap()
         .call_tuple((
             prim_int_expression(0),
@@ -287,7 +287,7 @@ fn rust_pointer_value_type_rewrite_matches_cpp_for_scalar_shuffle_read() {
     let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
         .unwrap()
         .new_var("data");
-    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
         .unwrap()
         .call_tuple((
             prim_int_expression(0),
@@ -324,7 +324,7 @@ fn rust_pointer_value_type_rewrite_matches_cpp_for_allocated_buffer() {
     let buffer = BufferType::new("local", "float32", vec![int_expression(16)])
         .unwrap()
         .new_var("temporary");
-    let ramp: PrimExpr = Function::get_global("tirx.Ramp")
+    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
         .unwrap()
         .call_tuple((
             prim_int_expression(0),

@@ -28,10 +28,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
+use crate::ir::prim::{Add, Not, GE, LT};
 use crate::ir::{Call, Expr, PrimExpr, Range, TensorLoad, Var};
 use crate::tirx::{
-    Add, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse, IterVar,
-    Not, PrimFunc, Stmt, GE, LT,
+    AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse, IterVar,
+    PrimFunc, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -122,7 +123,7 @@ fn stmt_simplify_with_options(
     let analyzer = Analyzer::new()?;
     analyzer.set_enabled_extensions(options.extensions())?;
 
-    let if_then_else_operator = get_operator("tirx.if_then_else")?;
+    let if_then_else_operator = get_operator("ir.prim.if_then_else")?;
     let mut simplifier = StmtSimplifier {
         analyzer,
         if_then_else_operator,
@@ -262,7 +263,7 @@ impl StmtSimplifier {
             let extent: PrimExpr = mutator.mutate(simplifier, &value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(simplifier, &value.step)?.try_into()?;
             let zero = crate::ir::IntImm::from_dtype(extent.dtype(), 0)?;
-            let positive: PrimExpr = crate::tirx::GT::new(extent.clone(), zero)?.into();
+            let positive: PrimExpr = crate::ir::prim::GT::new(extent.clone(), zero)?.into();
             let body: Stmt = simplifier.with_constraint(&positive, |simplifier| {
                 mutator.mutate(simplifier, &value.body)?.try_into()
             })?;

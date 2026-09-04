@@ -167,8 +167,13 @@ as packages:
 
 Both pip packages must be built from the same tvm-ffi commit, at or after the
 `tvm-ffi` rev pinned in `Cargo.toml`, so that the Rust bindings, `libtvm_ffi`,
-and `libtvm_compiler` agree on the object ABI.  Any Python environment works
-(venv, uv, conda, system site-packages); the only requirements are that
+and `libtvm_compiler` agree on the object ABI.  The TVM build must also include
+[apache/tvm#20249](https://github.com/apache/tvm/pull/20249) and
+[apache/tvm#20256](https://github.com/apache/tvm/pull/20256) (commit
+`c836e8c942` or a descendant).  Those changes define the `ir.prim` type keys
+and the typed `tirx.BufferRegion` layout used by these bindings; matching only
+the tvm-ffi revision is not sufficient.  Any Python environment works (venv,
+uv, conda, system site-packages); the only requirements are that
 `tvm-ffi-config` and `python`/`python3` of that environment are on `PATH` (or
 `TVM_PYTHON` names the interpreter).  With such an environment active:
 

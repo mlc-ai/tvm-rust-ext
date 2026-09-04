@@ -26,10 +26,10 @@ use tvm_ffi::{
     WalkResult, VALUE_ERROR,
 };
 
+use crate::ir::prim::{AddObj, MulObj, SubObj};
 use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
 use crate::tirx::{
-    AddObj, AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, MulObj, PrimVar,
-    SeqStmtObj, StmtObj, SubObj,
+    AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, PrimVar, SeqStmtObj, StmtObj,
 };
 
 /// Opaque Rust view of TVM's stateful arithmetic analyzer.

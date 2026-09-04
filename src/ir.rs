@@ -24,6 +24,9 @@ use tvm_ffi::{
     TVMFFIAny, TYPE_ERROR, VALUE_ERROR,
 };
 
+/// Primitive expression nodes shared by TIRx and other IR dialects.
+pub mod prim;
+
 /// ABI-complete Rust representation of TVM's `ExprNode` prefix.
 #[repr(C)]
 #[derive(Object)]
@@ -77,6 +80,14 @@ impl std::ops::Deref for OpaqueExprObj {
 
     fn deref(&self) -> &Self::Target {
         &self.base
+    }
+}
+
+impl OpaqueExprObj {
+    pub(crate) fn new(span: Option<Span>, ty: Type) -> Self {
+        Self {
+            base: ExprObj::new(span, ty),
+        }
     }
 }
 

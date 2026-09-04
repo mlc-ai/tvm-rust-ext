@@ -27,11 +27,11 @@ use tvm_ffi::{
 use super::utils::{get_operator, mutate_expr_default, mutate_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
+use crate::ir::prim::{Add, Mul, Sub};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
-    Add, AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, Mul, PrimFunc, Stmt, Sub,
-    TileLayout,
+    AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt, TileLayout,
 };
 
 /// Apply layouts and remove logical buffer offsets from one PrimFunc.

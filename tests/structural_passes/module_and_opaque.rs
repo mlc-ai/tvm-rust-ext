@@ -362,7 +362,7 @@ fn rust_lower_tirx_opaque_matches_cpp_for_thread_binding_and_pragmas() {
     let annotations: Map<tvm::tvm_ffi::String, Any> = [
         (
             tvm::tvm_ffi::String::from("pragma_zeta"),
-            Any::from(tvm::tirx::StringImm::new("z")),
+            Any::from(tvm::ir::prim::StringImm::new("z")),
         ),
         (
             tvm::tvm_ffi::String::from("pragma_alpha"),

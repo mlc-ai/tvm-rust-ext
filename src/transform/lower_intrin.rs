@@ -28,12 +28,13 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
+use crate::ir::prim::{
+    Add, And, Broadcast, Cast, Div, FloorDiv, FloorMod, Let, Max, Mod, Or, Select, EQ, GE, LE, LT,
+    NE,
+};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::target::Target;
-use crate::tirx::{
-    Add, And, Broadcast, BufferType, BufferVar, Cast, DeclBuffer, Div, FloorDiv, FloorMod, Let,
-    Max, Mod, Or, PrimFunc, Select, Stmt, EQ, GE, LE, LT, NE,
-};
+use crate::tirx::{BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt};
 
 /// Lower target-independent intrinsics using the function's target metadata.
 pub fn lower_intrin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
@@ -145,8 +146,8 @@ impl IntrinInjecter {
             address_of_operator: get_operator("tirx.address_of")?,
             fma_operator,
             floor_operator: get_operator("tirx.floor")?,
-            shift_right_operator: get_operator("tirx.shift_right")?,
-            bitwise_and_operator: get_operator("tirx.bitwise_and")?,
+            shift_right_operator: get_operator("ir.prim.shift_right")?,
+            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
         })
     }
 
@@ -291,7 +292,7 @@ impl IntrinInjecter {
         }
         if !lhs.same_as(a) || !rhs.same_as(b) {
             let product: PrimExpr = mutator
-                .mutate(self, &crate::tirx::Mul::new(lhs, rhs)?)?
+                .mutate(self, &crate::ir::prim::Mul::new(lhs, rhs)?)?
                 .try_into()?;
             let c: PrimExpr = mutator.mutate(self, c)?.try_into()?;
             return Ok(Add::new(product, c)?.into());
@@ -367,10 +368,10 @@ impl IntrinInjecter {
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
-        if let Ok(product) = value.b.as_expr().clone().try_cast::<crate::tirx::Mul>() {
+        if let Ok(product) = value.b.as_expr().clone().try_cast::<crate::ir::prim::Mul>() {
             return self.make_fma(&product.a, &product.b, &value.a, &value, mutator);
         }
-        if let Ok(product) = value.a.as_expr().clone().try_cast::<crate::tirx::Mul>() {
+        if let Ok(product) = value.a.as_expr().clone().try_cast::<crate::ir::prim::Mul>() {
             return self.make_fma(&product.a, &product.b, &value.b, &value, mutator);
         }
         mutate_expr_default(self, mutator, value.into())?.try_into()
@@ -398,7 +399,7 @@ impl IntrinInjecter {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
                     let shifted =
                         Add::new(mapped.a.clone(), int_like(&mapped.a, divisor * coefficient))?;
-                    return Ok(crate::tirx::Sub::new(
+                    return Ok(crate::ir::prim::Sub::new(
                         Div::new(shifted, mapped.b.clone())?,
                         int_like(&mapped.a, coefficient),
                     )?
@@ -418,7 +419,7 @@ impl IntrinInjecter {
             return Ok(Select::new(
                 GE::new(remainder.clone(), int_like(&remainder, 0))?,
                 quotient.clone(),
-                crate::tirx::Sub::new(quotient, int_like(&mapped.a, 1))?,
+                crate::ir::prim::Sub::new(quotient, int_like(&mapped.a, 1))?,
             )?
             .into());
         }
@@ -443,7 +444,7 @@ impl IntrinInjecter {
         let selected = Select::new(
             condition,
             quotient.clone(),
-            crate::tirx::Sub::new(quotient.clone(), int_like(&mapped.a, 1))?,
+            crate::ir::prim::Sub::new(quotient.clone(), int_like(&mapped.a, 1))?,
         )?;
         Ok(Let::new(
             remainder,
@@ -513,9 +514,9 @@ impl IntrinInjecter {
                     &Call::new(dtype, self.floor_operator.clone(), vec![division.into()]),
                 )?
                 .try_into()?;
-            return Ok(crate::tirx::Sub::new(
+            return Ok(crate::ir::prim::Sub::new(
                 mapped.a.clone(),
-                crate::tirx::Mul::new(floor, mapped.b.clone())?,
+                crate::ir::prim::Mul::new(floor, mapped.b.clone())?,
             )?
             .into());
         }
@@ -655,13 +656,13 @@ fn swap_broadcast_cast(value: &PrimExpr) -> Result<PrimExpr> {
 }
 
 fn ramp(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Ramp")
+    tvm_ffi::cached_global_func!("ir.prim.Ramp")
         .call_tuple((base, stride, lanes, Option::<crate::ir::Span>::None))?
         .try_into()
 }
 
 fn semantic_cast(ty: PrimType, value: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Cast")
+    tvm_ffi::cached_global_func!("ir.prim.Cast")
         .call_tuple((ty, value, Option::<crate::ir::Span>::None))?
         .try_into()
 }

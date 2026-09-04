@@ -37,6 +37,7 @@ pub mod exports;
 pub mod ir;
 pub mod libinfo;
 pub mod target;
+pub mod te;
 pub mod tirx;
 pub mod transform;
 

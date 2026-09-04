@@ -18,17 +18,20 @@
  */
 
 use tvm::analysis::{loop_nesting, memory_access_statistics, node_statistics, CallEffectKind};
+use tvm::ir::prim::{
+    Add, FloorDiv, FloorMod, Let, Mul, Not, Select, StringImm, EQ, GE, GT, LE, LT, NE,
+};
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
     OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName,
     Span, TensorLoad, Type, Var,
 };
 use tvm::tirx::{
-    Add, AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferStore,
-    BufferType, DeclBuffer, DispatchContext, Evaluate, ExecScope, FloorDiv, FloorMod, For, ForKind,
-    IfThenElse, Iter, IterVar, IterVarType, Layout, Let, MatchBufferRegion, Mul, Not, PrimFunc,
-    Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, Select, SeqStmt, Stmt, StringImm,
-    TileLayout, TilePrimitiveCall, While, EQ, GE, GT, LE, LT, NE,
+    AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferRegionType,
+    BufferStore, BufferType, DeclBuffer, DispatchContext, Evaluate, ExecScope, For, ForKind,
+    IfThenElse, Iter, IterVar, IterVarType, Layout, MatchBufferRegion, PrimFunc, Return,
+    ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt, TileLayout,
+    TilePrimitiveCall, While,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{

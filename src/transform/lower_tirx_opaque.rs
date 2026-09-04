@@ -29,10 +29,11 @@ use super::utils::{
     BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::StringImm;
 use crate::ir::{Expr, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar, IterVarType,
-    PrimFunc, Stmt, StringImm,
+    PrimFunc, Stmt,
 };
 
 const PRAGMA_UNROLL: &str = "pragma_unroll";

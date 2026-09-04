@@ -30,10 +30,12 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
+use crate::ir::prim::Select;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::te::Reduce;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
-    PrimFunc, PrimVar, Reduce, Select, Stmt,
+    PrimFunc, PrimVar, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -57,7 +59,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         iter_predicates: Vec::new(),
         persistent_constraints: Vec::new(),
         buffer_data_operator: get_operator("tirx.buffer_data")?,
-        if_then_else_operator: get_operator("tirx.if_then_else")?,
+        if_then_else_operator: get_operator("ir.prim.if_then_else")?,
         masked_load_operator: get_operator("tirx.masked_load")?,
         masked_store_operator: get_operator("tirx.masked_store")?,
     };
@@ -70,7 +72,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
                     .insert(ObjectIdentity::of(buffer.as_var()));
                 for shape in buffer.type_annotation().shape.iter() {
                     let zero = IntImm::from_dtype(shape.dtype(), 0)?;
-                    let condition: PrimExpr = crate::tirx::GE::new(shape, zero)?.into();
+                    let condition: PrimExpr = crate::ir::prim::GE::new(shape, zero)?.into();
                     flattener
                         .persistent_constraints
                         .push(flattener.analyzer.enter_constraint(&condition)?);
@@ -252,7 +254,7 @@ impl BufferFlattener {
     fn iter_predicate(&self) -> Result<PrimExpr> {
         let mut predicate: PrimExpr = IntImm::new("bool", 1)?.into();
         for condition in &self.iter_predicates {
-            predicate = crate::tirx::And::new(predicate, condition.clone())?.into();
+            predicate = crate::ir::prim::And::new(predicate, condition.clone())?.into();
         }
         Ok(predicate)
     }
@@ -383,7 +385,7 @@ impl BufferFlattener {
             let extent: PrimExpr = mutator.mutate(flattener, &value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(flattener, &value.step)?.try_into()?;
             let zero = IntImm::from_dtype(extent.dtype(), 0)?;
-            let positive: PrimExpr = crate::tirx::GT::new(extent.clone(), zero)?.into();
+            let positive: PrimExpr = crate::ir::prim::GT::new(extent.clone(), zero)?.into();
             let analyzer = flattener.analyzer.clone();
             let body: Stmt = analyzer.with_constraint(&positive, || {
                 mutator.mutate(flattener, &value.body)?.try_into()
@@ -438,7 +440,7 @@ impl BufferFlattener {
             .else_case
             .as_ref()
             .map(|branch| {
-                let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
+                let negative: PrimExpr = crate::ir::prim::Not::new(condition.clone())?.into();
                 self.with_predicate(negative, |flattener| {
                     mutator.mutate(flattener, branch)?.try_into()
                 })
@@ -467,7 +469,7 @@ impl BufferFlattener {
         let true_value: PrimExpr = self.with_predicate(condition.clone(), |flattener| {
             mutator.mutate(flattener, &value.true_value)?.try_into()
         })?;
-        let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
+        let negative: PrimExpr = crate::ir::prim::Not::new(condition.clone())?.into();
         let false_value: PrimExpr = self.with_predicate(negative, |flattener| {
             mutator.mutate(flattener, &value.false_value)?.try_into()
         })?;
@@ -525,7 +527,7 @@ impl BufferFlattener {
             let true_value: Expr = self.with_predicate(condition.clone(), |flattener| {
                 mutator.mutate(flattener, &value.args.get(1)?)?.try_into()
             })?;
-            let negative: PrimExpr = crate::tirx::Not::new(condition.clone())?.into();
+            let negative: PrimExpr = crate::ir::prim::Not::new(condition.clone())?.into();
             let false_value: Expr = self.with_predicate(negative, |flattener| {
                 mutator.mutate(flattener, &value.args.get(2)?)?.try_into()
             })?;

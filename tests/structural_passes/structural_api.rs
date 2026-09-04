@@ -686,7 +686,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
         .to_prim_expr()
         .unwrap();
     assert_eq!(object_pointer(&converted_axis), object_pointer(&axis));
-    let converted_by_cpp: Add = Function::get_global("tirx.Add")
+    let converted_by_cpp: Add = Function::get_global("ir.prim.Add")
         .unwrap()
         .call_packed(&[
             AnyView::from(&iter_var),
@@ -753,9 +753,15 @@ fn buffer_bindings_round_trip_cpp_objects() {
     assert_structural_equal(&store, &cpp_store);
 
     let region = BufferRegion::new(&buffer, vec![axis_domain]).unwrap();
-    let _: Expr = PrimExprConvertible::from(region.clone())
-        .to_prim_expr()
+    let _: Expr = region.clone().into();
+    let _: BufferRegionType = region.ty.clone().try_cast().unwrap();
+    let cpp_region: BufferRegion = Function::get_global("tirx.BufferRegion")
+        .unwrap()
+        .call_tuple((&buffer, &region.region))
+        .unwrap()
+        .try_into()
         .unwrap();
+    assert_structural_equal(&region, &cpp_region);
     let match_buffer = MatchBufferRegion::new(&buffer, &region).unwrap();
     let cpp_match_buffer: MatchBufferRegion = Function::get_global("tirx.MatchBufferRegion")
         .unwrap()
