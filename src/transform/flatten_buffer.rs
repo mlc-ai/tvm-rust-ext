@@ -306,15 +306,14 @@ impl BufferFlattener {
 
 #[tvm_ffi::dispatch(mutate)]
 impl BufferFlattener {
-    fn mutate_variable(&mut self, value: Var) -> Result<Var> {
+    fn mutate_variable(&mut self, value: Var) -> Var {
         let Ok(buffer) = BufferVar::try_from(&value) else {
-            return Ok(value);
+            return value;
         };
-        Ok(self
-            .flat_map
+        self.flat_map
             .get(&ObjectIdentity::of(buffer.as_var()))
             .map(|info| info.flattened.as_var().clone())
-            .unwrap_or(value))
+            .unwrap_or(value)
     }
 
     fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<AllocBuffer> {

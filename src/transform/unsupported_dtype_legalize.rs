@@ -771,12 +771,12 @@ impl ComputeLegalizer {
         Ok(value.copy_with(buffer, data))
     }
 
-    fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<AllocBuffer> {
+    fn mutate_allocation(&mut self, value: AllocBuffer) -> AllocBuffer {
         let buffer = self.remap_buffer(&value.buffer);
         if buffer.same_as(&value.buffer) {
-            return Ok(value);
+            return value;
         }
-        Ok(value.copy_with(buffer))
+        value.copy_with(buffer)
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {

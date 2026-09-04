@@ -39,7 +39,7 @@ use crate::tirx::{
 /// Rewrite local storage using the same liveness and buffer-view model as
 /// TVM's native `StorageRewrite` pass.
 pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
-    let mut analysis = StorageAnalysis::new(&function.params)?;
+    let mut analysis = StorageAnalysis::new(&function.params);
     let mut callbacks = VisitCallbacks::new(
         analysis,
         (
@@ -55,8 +55,8 @@ pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     analysis = callbacks.into_state();
 
     let plan = StoragePlan::build(analysis)?;
-    let root_allocations = plan.root_allocations()?;
-    let mut rewriter = StoragePlanRewriter::new(plan)?;
+    let root_allocations = plan.root_allocations();
+    let mut rewriter = StoragePlanRewriter::new(plan);
     let rewritten: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
     let body = if root_allocations.is_empty() {
         rewritten
@@ -112,7 +112,7 @@ struct StorageAnalysis {
 }
 
 impl StorageAnalysis {
-    fn new(parameters: &Array<Var>) -> Result<Self> {
+    fn new(parameters: &Array<Var>) -> Self {
         let mut aliases = HashMap::new();
         for parameter in parameters.iter() {
             let identity = ObjectIdentity::of(&parameter);
@@ -120,12 +120,12 @@ impl StorageAnalysis {
                 aliases.insert(identity.clone(), identity);
             }
         }
-        Ok(Self {
+        Self {
             event: 0,
             allocations: Vec::new(),
             allocation_by_root: HashMap::new(),
             aliases,
-        })
+        }
     }
 
     fn tick(&mut self) -> usize {
@@ -442,12 +442,11 @@ impl StoragePlan {
         })
     }
 
-    fn root_allocations(&self) -> Result<Vec<Stmt>> {
-        Ok(self
-            .storage
+    fn root_allocations(&self) -> Vec<Stmt> {
+        self.storage
             .iter()
             .map(|entry| Stmt::from(entry.allocation.clone()))
-            .collect())
+            .collect()
     }
 
     fn root(&self, variable: &Var) -> ObjectIdentity {
@@ -474,11 +473,11 @@ struct StoragePlanRewriter {
 }
 
 impl StoragePlanRewriter {
-    fn new(plan: StoragePlan) -> Result<Self> {
-        Ok(Self {
+    fn new(plan: StoragePlan) -> Self {
+        Self {
             plan,
             buffer_views: HashMap::new(),
-        })
+        }
     }
 
     fn remap_buffer(&mut self, buffer: &BufferVar) -> Result<Option<(BufferVar, u64)>> {
@@ -604,22 +603,22 @@ impl StoragePlanRewriter {
         Ok(value.copy_with(buffer, stored_value, indices).into())
     }
 
-    fn mutate_variable(&mut self, value: Var) -> Result<Expr> {
+    fn mutate_variable(&mut self, value: Var) -> Expr {
         let Ok(buffer) = BufferVar::try_from(value.clone()) else {
-            return Ok(value.into());
+            return value.into();
         };
         let Some((_, remap)) = self.plan.remap(&buffer) else {
-            return Ok(value.into());
+            return value.into();
         };
         if remap.bit_offset != 0 {
             // Preserve the native warning-worthy behavior: an opaque use of an
             // offset view can only refer to the backing allocation itself.
         }
-        Ok(self.plan.storage[remap.storage]
+        self.plan.storage[remap.storage]
             .backing
             .as_var()
             .clone()
-            .into())
+            .into()
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

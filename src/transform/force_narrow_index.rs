@@ -313,11 +313,11 @@ impl IndexDataTypeNormalizer {
         }
     }
 
-    fn mutate_variable(&mut self, value: Var) -> Result<Var> {
+    fn mutate_variable(&mut self, value: Var) -> Var {
         if let Ok(buffer) = BufferVar::try_from(&value) {
-            return Ok(self.buffer_remaps.use_buffer(&buffer).as_var().clone());
+            return self.buffer_remaps.use_buffer(&buffer).as_var().clone();
         }
-        Ok(self.rewrite_variable(value))
+        self.rewrite_variable(value)
     }
 
     fn mutate_cast(&mut self, value: Cast, mutator: &mut Mutator) -> Result<PrimExpr> {
