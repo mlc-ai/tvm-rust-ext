@@ -26,8 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, mutate_buffer_region_with_buffer, mutate_expr_default, mutate_stmt_default,
+    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{
@@ -37,8 +37,8 @@ use crate::ir::prim::{
 use crate::ir::{Call, Expr, FloatImm, IntImm, PrimExpr, TensorLoad, Var};
 use crate::te::Reduce;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, PrimFunc,
-    SeqStmt, Stmt, TileLayout, While,
+    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, DeclBuffer, For, IfThenElse,
+    PrimFunc, SeqStmt, Stmt, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -790,6 +790,15 @@ fn mutate_buffer_definition(
 
 #[tvm_ffi::dispatch(mutate)]
 impl CseRewriter {
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
+    }
+
     fn mutate_expression(&mut self, value: Expr, mutator: &mut Mutator) -> Result<Expr> {
         if let Ok(expression) = PrimExpr::try_from(value.clone()) {
             if let Some(replacement) = self.replacement(&expression)? {

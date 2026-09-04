@@ -314,8 +314,8 @@ fn compose(lhs: &ScopeDefinition, rhs: &ScopeDefinition) -> Result<Option<ScopeD
     {
         return Ok(None);
     }
-    let (lhs_parent, lhs_child) = lhs.scope.name_pair();
-    let (rhs_parent, rhs_child) = rhs.scope.name_pair();
+    let (lhs_parent, lhs_child) = lhs.scope.name_pair()?;
+    let (rhs_parent, rhs_child) = rhs.scope.name_pair()?;
     if lhs_child != rhs_parent {
         return Ok(None);
     }
@@ -345,8 +345,8 @@ fn complement(
     if analyzer.can_prove_equal(&rhs_extent, &IntImm::new("int32", 0)?.into())? {
         return Ok(None);
     }
-    let (lhs_parent, lhs_child) = lhs.scope.name_pair();
-    let (rhs_parent, rhs_child) = rhs.scope.name_pair();
+    let (lhs_parent, lhs_child) = lhs.scope.name_pair()?;
+    let (rhs_parent, rhs_child) = rhs.scope.name_pair()?;
     let binding = if lhs_parent == rhs_parent && scope_rank(rhs_child) < scope_rank(lhs_child) {
         binding_from_parts(rhs_child, lhs_child)
     } else if lhs_child == rhs_child && scope_rank(lhs_parent) < scope_rank(rhs_parent) {

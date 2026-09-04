@@ -220,7 +220,7 @@ impl IntrinInjecter {
             }
         } else {
             let pointer = source_var.ty.clone().try_cast::<crate::ir::PointerType>()?;
-            storage_scope = pointer.storage_scope()?;
+            storage_scope = tvm_ffi::String::from(pointer.storage_scope());
         }
         let access_buffer = if let Some(buffer) = access_buffer {
             buffer

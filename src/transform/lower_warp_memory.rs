@@ -748,7 +748,8 @@ fn collect_scope_variables(
                 let pointer = variable.ty.clone().try_cast::<crate::ir::PointerType>()?;
                 variable.copy_with(
                     variable.name.clone(),
-                    crate::ir::PointerType::new(pointer.element_type()?, scope.as_str())?.into(),
+                    crate::ir::PointerType::new(pointer.element_type().clone(), scope.as_str())?
+                        .into(),
                 )
             };
             remaps.insert(identity, replacement);

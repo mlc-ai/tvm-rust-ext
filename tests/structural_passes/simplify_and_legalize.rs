@@ -167,6 +167,100 @@ fn rust_stmt_simplify_matches_cpp_for_loop_constraints_and_redundant_store() {
 }
 
 #[test]
+fn rust_stmt_simplify_matches_cpp_for_scope_definition_extents() {
+    load_tvm_compiler();
+    let extent_variable = Var::new("extent", "int32").unwrap();
+    let scope_id: PrimVar = Var::new("lane", "int32").unwrap().try_into().unwrap();
+    let redundant_zero = prim_int_expression(0);
+    let extent: PrimExpr = Add::new(extent_variable.clone(), redundant_zero.clone())
+        .unwrap()
+        .into();
+    let preferred: PrimExpr = Add::new(extent_variable.clone(), redundant_zero)
+        .unwrap()
+        .into();
+    let definition = ScopeIdDef::new(
+        vec![scope_id],
+        Some(vec![extent]),
+        ScopeBinding::CTA_THREAD,
+        Some(vec![preferred]),
+    )
+    .unwrap();
+    let body = ScopeIdDefStmt::new(definition, None).unwrap();
+    let function = PrimFunc::new(vec![extent_variable], body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::stmt_simplify_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_stmt_simplify_matches_cpp_inside_tile_primitive_values() {
+    load_tvm_compiler();
+    let variable = Var::new("value", "int32").unwrap();
+    let redundant: PrimExpr = Add::new(variable.clone(), prim_int_expression(0))
+        .unwrap()
+        .into();
+    let operator = tvm::ir::Op::get("tirx.tile.zero").unwrap();
+    let call = TilePrimitiveCall::new(
+        operator,
+        vec![
+            Any::from(redundant.clone()),
+            Any::from(Array::new(vec![Any::from(redundant.clone())])),
+        ],
+        Map::new(),
+        Map::from_iter([(tvm::tvm_ffi::String::from("value"), Any::from(redundant))]),
+        None,
+        ExecScope::new(ScopeKind::THREAD).unwrap(),
+    )
+    .unwrap();
+    let function = PrimFunc::new(vec![variable], call).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_result =
+        IRModule::from_expr(transform::stmt_simplify_prim_func(function).unwrap()).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.StmtSimplify").run(module).unwrap();
+
+    assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_stmt_simplify_preserves_unchanged_tile_metadata() {
+    load_tvm_compiler();
+    let source = SourceName::get("tile-call.tvm").unwrap();
+    let span = Span::new(&source, 1, 1, 1, 8).unwrap();
+    let variable = Var::new("value", "int32").unwrap();
+    let redundant: PrimExpr = Add::new(variable.clone(), prim_int_expression(0))
+        .unwrap()
+        .into();
+    let config = Map::from_iter([(tvm::tvm_ffi::String::from("unchanged"), Any::from(1i64))]);
+    let call = TilePrimitiveCall::with_span(
+        tvm::ir::Op::get("tirx.tile.zero").unwrap(),
+        vec![Any::from(redundant)],
+        Map::new(),
+        config.clone(),
+        None,
+        ExecScope::new(ScopeKind::THREAD).unwrap(),
+        Some(&span),
+    )
+    .unwrap();
+    let result =
+        transform::stmt_simplify_prim_func(PrimFunc::new(vec![variable], call).unwrap()).unwrap();
+    let result_call = result.body.clone().try_cast::<TilePrimitiveCall>().unwrap();
+
+    assert_eq!(
+        object_pointer(result_call.span.as_ref().unwrap()),
+        object_pointer(&span)
+    );
+    assert_eq!(
+        object_pointer(&result_call.config().unwrap()),
+        object_pointer(&config)
+    );
+}
+
+#[test]
 fn rust_flatten_buffer_matches_cpp_for_parameter_buffer_and_nested_loops() {
     load_tvm_compiler();
     let buffer_type = BufferType::new(
@@ -281,6 +375,62 @@ fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
+    load_tvm_compiler();
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int64", 16)]).unwrap();
+    let buffer = buffer_type.new_var("scratch");
+    let region = BufferRegion::new(
+        &buffer,
+        vec![Range::from_min_extent(
+            typed_int_expression("int64", 0),
+            typed_int_expression("int64", 16),
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let tile_call = TilePrimitiveCall::new(
+        tvm::ir::Op::get("tirx.tile.zero").unwrap(),
+        vec![Any::from(region)],
+        Map::new(),
+        Map::new(),
+        None,
+        ExecScope::new(ScopeKind::THREAD).unwrap(),
+    )
+    .unwrap();
+    let body = SeqStmt::new(vec![
+        AllocBuffer::new(&buffer).unwrap().into(),
+        tile_call.into(),
+    ])
+    .unwrap();
+    let function = PrimFunc::from_body(body).unwrap();
+    let module = IRModule::from_expr(&function).unwrap();
+
+    let rust_function = transform::force_narrow_index_to_int32_prim_func(function).unwrap();
+    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    let cpp_result = cpp_pass("tirx.transform.ForceNarrowIndexToInt32")
+        .run(module)
+        .unwrap();
+    assert_structural_equal(&rust_result, &cpp_result);
+
+    let sequence = rust_function.body.clone().try_cast::<SeqStmt>().unwrap();
+    let allocation = sequence
+        .seq
+        .get(0)
+        .unwrap()
+        .try_cast::<AllocBuffer>()
+        .unwrap();
+    let call = sequence
+        .seq
+        .get(1)
+        .unwrap()
+        .try_cast::<TilePrimitiveCall>()
+        .unwrap();
+    let region = BufferRegion::try_from(call.args().unwrap().get(0).unwrap()).unwrap();
+    assert!(region.buffer.same_as(&allocation.buffer));
 }
 
 #[test]

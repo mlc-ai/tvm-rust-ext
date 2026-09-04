@@ -25,15 +25,15 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, cast_prim_expr, int_value, mutate_stmt_expr_default, with_prim_func_body,
-    BufferRemaps,
+    array_same_as, cast_prim_expr, int_value, mutate_buffer_region_with_buffer,
+    mutate_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::StringImm;
 use crate::ir::{Expr, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar, IterVarType,
-    PrimFunc, Stmt,
+    AllocBuffer, AttrStmt, BufferRegion, BufferStore, BufferVar, DeclBuffer, For, ForKind, IterVar,
+    IterVarType, PrimFunc, Stmt,
 };
 
 const PRAGMA_UNROLL: &str = "pragma_unroll";
@@ -168,6 +168,15 @@ impl TIRxOpaqueLower {
             return Ok(value);
         }
         Ok(value.copy_with(buffer, stored_value, indices))
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_allocation(

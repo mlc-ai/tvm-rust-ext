@@ -903,7 +903,7 @@ impl BuiltinLower {
             .clone()
             .ok_or_else(|| value_error("nd allocation requires a device id"))?;
         let pointer = binding.var.ty.clone().try_cast::<PointerType>()?;
-        let dtype = pointer.element_type()?.try_cast::<PrimType>()?;
+        let dtype = pointer.element_type().clone().try_cast::<PrimType>()?;
         let mut arguments = vec![
             self.device_method_name("alloc_nd")?.into(),
             device_type.clone().into(),

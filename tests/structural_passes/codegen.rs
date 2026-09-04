@@ -116,12 +116,7 @@ fn rust_lower_warp_memory_matches_cpp_for_cross_thread_shuffle() {
 #[test]
 fn rust_lower_tvm_builtin_matches_cpp_for_context_id() {
     load_tvm_compiler();
-    let context_id: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_context_id"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let context_id: Expr = tvm::ir::Op::get("tirx.tvm_context_id").unwrap().into();
     let body = Evaluate::new(Call::new(
         PrimType::new("int32").unwrap(),
         context_id,
@@ -147,12 +142,7 @@ fn rust_lower_tvm_builtin_matches_cpp_for_context_id() {
 #[test]
 fn rust_lower_tvm_builtin_matches_cpp_for_packed_call_stack() {
     load_tvm_compiler();
-    let call_packed: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_call_packed"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let call_packed: Expr = tvm::ir::Op::get("tirx.tvm_call_packed").unwrap().into();
     let body = Evaluate::new(Call::new(
         PrimType::new("int32").unwrap(),
         call_packed,
@@ -181,14 +171,7 @@ fn rust_lower_tvm_builtin_matches_cpp_for_packed_call_stack() {
 #[test]
 fn rust_lower_tvm_builtin_matches_cpp_for_shape_stack() {
     load_tvm_compiler();
-    let operator = |name: &str| -> Expr {
-        Function::get_global("ir.GetOp")
-            .unwrap()
-            .call_tuple((tvm::tvm_ffi::String::from(name),))
-            .unwrap()
-            .try_into()
-            .unwrap()
-    };
+    let operator = |name: &str| -> Expr { tvm::ir::Op::get(name).unwrap().into() };
     let shape = Call::new(
         PointerType::new(PrimType::new("int64").unwrap(), "global").unwrap(),
         operator("tirx.tvm_stack_make_shape"),
@@ -748,12 +731,7 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
         ),
     )
     .unwrap();
-    let operator: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.tile.zero"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let operator = tvm::ir::Op::get("tirx.tile.zero").unwrap();
     let call = TilePrimitiveCall::new(
         operator,
         Vec::new(),

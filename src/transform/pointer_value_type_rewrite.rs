@@ -655,7 +655,7 @@ impl VectorTypeRewriter {
                 let pointer = info.variable.ty.clone().try_cast::<PointerType>()?;
                 info.variable.copy_with(
                     info.variable.name.clone(),
-                    PointerType::new(preferred.clone(), pointer.storage_scope()?.as_str())?.into(),
+                    PointerType::new(preferred.clone(), pointer.storage_scope())?.into(),
                 )
             };
             rewrites.insert(
@@ -989,7 +989,7 @@ fn pointer_element_type(variable: &Var) -> Result<Option<PrimType>> {
     let Ok(pointer) = variable.ty.clone().try_cast::<PointerType>() else {
         return Ok(None);
     };
-    Ok(pointer.element_type()?.try_cast::<PrimType>().ok())
+    Ok(pointer.element_type().clone().try_cast::<PrimType>().ok())
 }
 
 fn is_void(value: &PrimType) -> bool {
@@ -1154,10 +1154,8 @@ impl VectorTypeRewriter {
             info.new_variable.clone().into()
         };
         let old_pointer = call.ty.clone().try_cast::<PointerType>()?;
-        let new_pointer = PointerType::new(
-            info.new_element_dtype.clone(),
-            old_pointer.storage_scope()?.as_str(),
-        )?;
+        let new_pointer =
+            PointerType::new(info.new_element_dtype.clone(), old_pointer.storage_scope())?;
         Ok(call
             .copy_with(
                 new_pointer.into(),

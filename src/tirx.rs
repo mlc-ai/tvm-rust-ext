@@ -30,15 +30,19 @@ use crate::ir::{
 };
 
 mod buffer;
+mod function;
+mod index_map;
 mod iter_var;
 mod tile_primitive;
 
 pub use buffer::{
     AllocBuffer, AllocBufferObj, Axis, AxisObj, BufferRegion, BufferRegionObj, BufferRegionType,
     BufferRegionTypeObj, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar,
-    DeclBuffer, DeclBufferObj, Iter, IterObj, Layout, LayoutObj, MatchBufferRegion,
-    MatchBufferRegionObj, TileLayout, TileLayoutObj,
+    ComposeLayout, ComposeLayoutObj, DeclBuffer, DeclBufferObj, Iter, IterObj, Layout, LayoutObj,
+    MatchBufferRegion, MatchBufferRegionObj, TileLayout, TileLayoutObj,
 };
+pub use function::{TensorIntrin, TensorIntrinObj};
+pub use index_map::{IndexMap, IndexMapObj};
 pub use iter_var::{IterVar, IterVarObj, IterVarType};
 pub use tile_primitive::{
     DispatchContext, DispatchContextObj, ExecScope, ExecScopeObj, LambdaExpr, LambdaExprObj,
@@ -394,6 +398,11 @@ impl std::ops::Deref for SeqStmtObj {
 impl SeqStmt {
     /// Consume this sequence and return TVM's canonical flattened statement.
     pub fn flatten(self) -> Result<Stmt> {
+        if self.seq.iter().all(|statement| {
+            statement.as_node::<SeqStmtObj>().is_none() && !is_evaluate_zero(&statement)
+        }) {
+            return Ok(self.into());
+        }
         Stmt::sequence_with_span(self.seq.iter().collect(), self.span.as_ref())
     }
 
