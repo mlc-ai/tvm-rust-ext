@@ -101,8 +101,8 @@ different recursion semantics matter:
 
 - `structural_visit` measures lexical loop depth by updating state around the
   recursive visit of `For.body`.
-- `structural_mutate` limits neutral-arithmetic simplification to loop bodies
-  by manually controlling recursion through loop fields.
+- `structural_mutate` implements passes such as `RemoveNoOp` and `ConvertSSA`
+  that need control over recursion, constraints, or definition scopes.
 
 The crate also adapts Rust closures into TVM PrimFunc and module passes.  The
 current Rust ports cover statement and expression simplification, loop and
@@ -114,15 +114,37 @@ counterparts using structural equality.  Arithmetic passes reuse an opaque
 handle to TVM's existing `arith.Analyzer` instead of copying its compiler rules
 into Rust. Control-flow simplification classifies expression effects with
 `structural_walk` and caches the `TCallEffectKind` attached to each registry-owned
-operator. A two-phase module pass builds a call graph with `structural_walk`,
-treats `global_symbol` functions as external roots, and then prunes unreachable
-functions. Additional tests check definition/use identity, ownership,
-annotations, and scope-sensitive recursion.
+operator. `InlinePrivateFunctions` builds a call graph with `structural_visit`
+to avoid inlining recursive functions. Additional tests check definition/use
+identity, ownership, annotations, and scope-sensitive recursion.
 
 `AnnotateEntryFunc` and `Filter` are direct Rust translations of the two C++
 passes in `src/tirx/transform/primfunc_utils.cc`. Differential tests exercise
 the same branch decisions and compare the resulting modules with the native
 passes using structural equality.
+
+### Scope and remaining gaps
+
+Coverage is compared with TVM `15b607d6bf`, the native build used for the tests.
+The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
+All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
+`SBlockRealize` have bindings. The shared scalar/vector expressions, buffer
+types and accesses, layouts, and tile-dispatch metadata are also represented;
+this does not mean every native method or convenience constructor is exposed.
+
+- `Ramp`, `Broadcast`, and `Shuffle` have complete layouts and field allocators,
+  but no public semantic `new` constructor yet.
+- The registered transformation factories under `src/tirx/transform` have Rust
+  counterparts. `VerifySSA` and `VerifyMemory`, registered under
+  `src/tirx/analysis`, still lack Rust pass entry points.
+- `UnifiedStaticMemoryPlanner` has only a declaration in this TVM revision,
+  with no implementation or registration to port.
+- Analyzer-aware recursion lives in Rust helpers. There is no shared C++
+  `__s_mutate_with_analyzer__` protocol in this implementation.
+
+Differential tests cover representative cases, not all legal inputs or full
+native lowering pipelines. In particular, a passing suite is not proof that
+every pass has complete C++ semantic parity.
 
 The focused acceptance tests are in
 [`tests/stubgen_acceptance.rs`](tests/stubgen_acceptance.rs).  They use only
@@ -152,8 +174,8 @@ For the exact TVM/tvm-ffi build used to generate and test it, the handwritten
 surface is now a suitable golden Rust API: ABI-complete nodes allocate in
 Rust, fields borrow directly, non-mechanical semantic constructors are reviewed
 Rust implementations, and native semantic blockers retain their identity,
-resource ownership, or virtual ABI behind opaque wrappers. The acceptance tests cover both object origins and all four structural
-APIs.
+resource ownership, or virtual ABI behind opaque wrappers. The acceptance and
+pass suites together exercise both object origins and all four structural APIs.
 
 This repository is not yet the one-command generator itself.  Reaching that
 state still requires `RustGenerator` in `tvm-ffi-stubgen`, extraction of native

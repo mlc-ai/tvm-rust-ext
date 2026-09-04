@@ -363,25 +363,16 @@ The IR binding and the pass algorithm are separate concerns:
 - a Rust pass claiming C++ parity must be checked with C++ structural equality,
   not only a few field assertions.
 
-Three additional pass probes separate traversal support from compiler-semantic
-support. Checked integer folding is straightforward with post-order mapping,
-but fixed-width overflow, casts, and symbolic reasoning should reuse TVM's
-arithmetic analyzer. The prototype therefore binds `arith.Analyzer` as an
-opaque FFI object and calls its existing registered operations; stubgen must be
-able to distinguish an opaque compiler service like this from an ABI-complete,
-Rust-allocated IR node. Control-flow removal can now recognize values
-simplified by that analyzer. The Rust side-effect classifier walks the bound IR
-and queries the existing `ir.OpGetAttr` service for each operator's
-`TCallEffectKind`, allowing Rust to discard pure evaluations while preserving
-opaque or state-updating calls. Function reachability can combine a walk-built
-call graph, `global_symbol` linkage roots, and an `IRModule` rebuild, but full
-dead-code elimination still needs exact callee and effect semantics. These are
-reusable compiler services, not facts stubgen can derive from object layout or
-structural metadata. Stubgen should generate typed wrappers only after such a
-service has a language-neutral entry.
+`RemoveNoOp` and `StmtSimplify` reuse the opaque `arith.Analyzer` through its
+registered FFI operations. Rust recursion helpers manage its constraints;
+those scopes are not implemented by a C++ type-attribute hook. The Rust
+side-effect classifier reads each operator's `TCallEffectKind` through
+`ir.OpGetAttr`. `InlinePrivateFunctions` uses a call graph to avoid inlining
+recursive functions. These algorithms and services cannot be inferred from
+object layout or structural metadata.
 
-The example Rust passes remain prototype evidence. Stubgen should generate the
-IR surface they consume, not generate those transformations.
+The Rust pass ports require the same parity checks throughout. Stubgen should
+generate the IR surface they consume, not generate those transformations.
 
 ## Recommended implementation order
 

@@ -18,7 +18,7 @@
  */
 
 use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{Any, Array, Map, ObjectArc, Result, String};
+use tvm_ffi::{Any, Array, FieldGetter, Map, ObjectArc, ObjectCore, Result, String};
 
 /// Opaque handle to TVM's canonical compilation-target object.
 #[repr(C)]
@@ -85,22 +85,14 @@ impl Target {
 
     /// Return whether this target advertises `key` in its canonical key list.
     pub fn has_key(&self, key: &str) -> Result<bool> {
-        let keys: Array<String> = self
-            .export()?
-            .get(&String::from("keys"))?
-            .ok_or_else(|| {
-                tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, "canonical target has no keys", "")
-            })?
-            .try_into()?;
+        let keys: Array<String> =
+            FieldGetter::new(TargetObj::type_index(), "keys")?.get(&**self)?;
         Ok(keys.iter().any(|candidate| candidate.as_str() == key))
     }
 
     /// Return the host target, if one is attached.
     pub fn host(&self) -> Result<Option<Self>> {
-        let Some(config) = self.export()?.get(&String::from("host"))? else {
-            return Ok(None);
-        };
-        Ok(Some(Self::from_config(config.try_into()?)?))
+        FieldGetter::new(TargetObj::type_index(), "host")?.get(&**self)
     }
 
     /// Return the same target with its host component removed.

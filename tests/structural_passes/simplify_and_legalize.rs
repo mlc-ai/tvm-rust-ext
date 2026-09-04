@@ -485,6 +485,10 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
         .unwrap()
         .with_host(&host)
         .unwrap();
+    assert!(target.host().unwrap().unwrap().same_as(&host));
+    assert!(host.host().unwrap().is_none());
+    assert!(host.has_key("cpu").unwrap());
+    assert!(!host.has_key("cuda").unwrap());
     let callee_global = GlobalVar::new("worker");
     let callee = PrimFunc::with_metadata(
         Vec::new(),

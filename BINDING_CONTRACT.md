@@ -94,7 +94,7 @@ The first generated slice remains intentionally small:
 | `StmtObj` | `tirx.Stmt` | `span` | base prefix |
 | `EvaluateObj` | `tirx.Evaluate` | `value` | direct after value validation |
 | `BaseFuncObj` | `ir.BaseFunc` | `attrs` | base prefix |
-| `PrimFuncObj` | `tirx.PrimFunc` | `params`, `ret_type`, `body` | reflected preparation plus direct Rust allocation |
+| `PrimFuncObj` | `tirx.PrimFunc` | `params`, `ret_type`, `body` | Rust type derivation plus direct Rust allocation |
 
 `PrimType` and `TupleType` are constructed directly in Rust. `Type::Missing`
 continues to use TVM's existing native singleton because its semantics include
@@ -123,8 +123,9 @@ The focused checks live in `tests/stubgen_acceptance.rs`. It explicitly invokes
 a C++ field getter on a Rust-created `Add` and compares that node with a
 C++-created `Add` using C++ structural equality. For the ABI-complete object
 slice explicitly enumerated there, `tests/binding_contract.rs` checks the exact
-reflected schema, flags, registered default values, and public owned
-`from_complete_fields` signatures.
+reflected schema, flags, and registered default values. Complete-field
+allocators are exercised by construction and pass tests; this suite does not
+duplicate every constructor signature in a separate compile-only checklist.
 Layout completeness and comparison belong to stubgen and its generation tests,
 not to runtime reflection registration or each generated Rust object.
 Broader pass behavior is in
@@ -150,7 +151,7 @@ Broader pass behavior is in
 | Complex semantic constructor | `BufferType`, `PrimFunc`, match buffer | **handwritten Rust semantics + complete-field Rust allocation / verified** |
 | Derived mutable indexes | `IRModule` construction/update | **GENERATE rebuild logic / verified** |
 | Consuming `RValueRef<T>` packed argument | pass boundaries | **RUNTIME / verified without an extra reference-count increment** |
-| Pass examples and analyses | `analysis`, `transform/*` | **PROTOTYPE ONLY** |
+| Pass ports and analyses | `analysis`, `transform/*` | **handwritten consumers; pass ports require C++ differential tests** |
 
 An incomplete type is safe only as a runtime-owned handle. Stubgen must not
 expose `ObjectArc::new` for it or pretend that its reflected fields are the

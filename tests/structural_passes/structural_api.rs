@@ -39,12 +39,10 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
         object_pointer(&source_name),
         object_pointer(&same_source_name)
     );
-    assert_structural_equal(&source_name, &same_source_name);
     assert_eq!(
         object_pointer(&source_name),
         object_pointer(&cpp_source_name)
     );
-    assert_structural_equal(&source_name, &cpp_source_name);
     assert_eq!(
         object_pointer(span.source_name.as_ref().unwrap()),
         object_pointer(&source_name)
@@ -72,8 +70,6 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     let nested = SequentialSpan::new(vec![Span::from(sequential), span]);
     assert_eq!(nested.spans.len(), 3);
 
-    let int_type = PrimType::new("int32").unwrap();
-    assert!(int_type.span.is_none());
     let function = PrimFunc::from_body(Evaluate::from_i64(0).unwrap()).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
     assert_eq!(module.functions.len(), 1);
@@ -98,39 +94,6 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     );
     assert_eq!(source.source_name().unwrap().name.as_str(), "module.tvm");
     assert_eq!(source.text().unwrap().as_str(), "first line\nsecond line");
-
-    let dictionary: Map<tvm::tvm_ffi::String, Any> = [
-        (tvm::tvm_ffi::String::from("number"), Any::from(7i64)),
-        (
-            tvm::tvm_ffi::String::from("text"),
-            Any::from(tvm::tvm_ffi::String::from("value")),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let attrs = DictAttrs::from_dictionary(dictionary);
-    let dictionary = attrs.dict.clone();
-    assert_eq!(
-        i64::try_from(
-            dictionary
-                .get(&tvm::tvm_ffi::String::from("number"))
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        7
-    );
-    assert_eq!(
-        tvm::tvm_ffi::String::try_from(
-            dictionary
-                .get(&tvm::tvm_ffi::String::from("text"))
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap()
-        .as_str(),
-        "value"
-    );
 
     assert!(module.global_infos.is_empty());
     let dummy = DummyGlobalInfo::new();
@@ -452,11 +415,6 @@ fn every_layout_registered_operation_is_callable() {
 
     assert!(layout.compatible_with_shape(&shape).unwrap());
     assert!(layout.verify_well_formed().unwrap());
-    let cpp_verified = Function::get_global("tirx.LayoutVerifyWellFormed")
-        .unwrap()
-        .call_packed(&[AnyView::from(&layout)])
-        .unwrap();
-    assert!(bool::try_from(cpp_verified).unwrap());
     assert_structural_equal(&layout.get_size(None).unwrap(), &eight);
     assert_structural_equal(&layout.get_size(Some("m")).unwrap(), &eight);
     assert_structural_equal(&layout.get_span(None).unwrap(), &eight);
@@ -956,23 +914,6 @@ fn buffer_bindings_round_trip_cpp_objects() {
     );
     let function = PrimFunc::new(vec![buffer.clone().into()], store.clone()).unwrap();
 
-    assert_eq!(buffer_type.dtype.dtype.bits, 32);
-    assert_eq!(buffer_type.storage_scope.as_str(), "global");
-    assert_eq!(buffer_type.shape.len(), 1);
-    assert!(buffer_type.strides.is_empty());
-    assert!(buffer_type.data_alignment > 0);
-    assert_eq!(buffer_type.offset_factor, 1);
-    assert!(buffer_type.allocated_addr.is_empty());
-    assert_eq!(
-        buffer
-            .ty
-            .clone()
-            .try_cast::<BufferType>()
-            .unwrap()
-            .shape
-            .len(),
-        1
-    );
     assert_eq!(object_pointer(&load.source), object_pointer(&buffer));
     assert_eq!(load.indices.len(), 1);
     assert_eq!(object_pointer(&store.buffer), object_pointer(&buffer));

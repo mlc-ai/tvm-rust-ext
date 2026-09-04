@@ -24,17 +24,16 @@
 //! their handwritten definitions must not require changing this file.
 
 use tvm::ir::prim::{Add, AddObj};
-use tvm::ir::{Expr, IntImm, PrimExpr, PrimType, Type, Var, VarObj};
-use tvm::tirx::{Evaluate, PrimFunc};
-use tvm::tvm_ffi::tvm_ffi_sys::TVMFFIFieldInfo;
+use tvm::ir::{Expr, IntImm, IntImmObj, PrimExpr, PrimType, PrimTypeObj, Type, Var, VarObj};
+use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::tvm_ffi::{
-    structural_map, structural_walk, Any, AnyView, DefRegionKind, Function, ObjectArc, ObjectCore,
-    ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
+    structural_map, structural_walk, AnyView, DefRegionKind, FieldGetter, Function, ObjectArc,
+    ObjectCore, ObjectRefCast, ObjectRefCore, WalkOrder, WalkResult,
 };
 
 mod common;
 use common::{
-    assert_structural_equal as assert_cpp_structural_equal, direct_fields, load_tvm_compiler,
+    assert_structural_equal as assert_cpp_structural_equal, load_tvm_compiler, object_pointer,
 };
 
 fn typed_int_expression(dtype: &str, value: i64) -> Expr {
@@ -47,27 +46,6 @@ fn sample_function() -> PrimFunc {
     let value = Add::new(variable.clone(), zero).unwrap();
     let body = Evaluate::new(value).unwrap();
     PrimFunc::new(vec![variable], body).unwrap()
-}
-
-fn direct_field<N: ObjectCore>(name: &str) -> &'static TVMFFIFieldInfo {
-    direct_fields::<N>()
-        .iter()
-        .find(|field| field.name.as_str() == name)
-        .unwrap_or_else(|| panic!("missing reflected field {}.{name}", N::TYPE_KEY))
-}
-
-use common::object_pointer;
-
-fn cpp_reflected_field<O: ObjectRefCore>(value: &O, name: &str) -> Any {
-    let field = direct_field::<O::ContainerType>(name);
-    let getter = field
-        .getter
-        .expect("reflected field must have a C ABI getter");
-    let object = object_pointer(value).cast::<u8>();
-    let address = unsafe { object.add(field.offset as usize).cast_mut().cast() };
-    let mut result = Any::new();
-    assert_eq!(unsafe { getter(address, Any::as_data_ptr(&mut result)) }, 0);
-    result
 }
 
 #[test]
@@ -113,17 +91,11 @@ fn direct_and_semantic_constructors_round_trip() {
     assert_eq!(parameter.name.as_str(), "x");
     assert!(parameter.span.is_none());
     assert_eq!(
-        parameter
-            .ty
-            .clone()
-            .try_cast::<PrimType>()
-            .unwrap()
-            .dtype
-            .bits,
+        parameter.ty.as_node::<PrimTypeObj>().unwrap().dtype.bits,
         32
     );
 
-    let body = function.body.clone().try_cast::<Evaluate>().unwrap();
+    let body = function.body.as_node::<EvaluateObj>().unwrap();
     assert!(body.span.is_none());
     let addition = body.value.clone().try_cast::<Add>().unwrap();
     let lhs_count = ObjectArc::strong_count(<PrimExpr as ObjectRefCore>::data(&addition.a));
@@ -134,11 +106,24 @@ fn direct_and_semantic_constructors_round_trip() {
         lhs_count,
         "borrowing a generated public field must not clone its object handle"
     );
-    let lhs = addition.a.clone().try_cast::<Var>().unwrap();
-    let rhs = addition.b.clone().try_cast::<IntImm>().unwrap();
-    assert_eq!(object_pointer(&lhs), object_pointer(&parameter));
+    let rhs = addition.b.as_node::<IntImmObj>().unwrap();
+    assert!(addition.a.same_as(&parameter));
     assert_eq!(rhs.value, 0);
     assert!(rhs.span.is_none());
+
+    // Exercise the C++ field getter on Rust-owned storage through standard FFI.
+    let reflected_lhs: Expr = FieldGetter::new(AddObj::type_index(), "a")
+        .unwrap()
+        .get(&*addition)
+        .unwrap();
+    assert!(reflected_lhs.same_as(&parameter));
+    let cpp_add: Add = Function::get_global("ir.prim.Add")
+        .unwrap()
+        .call_tuple((&addition.a, &addition.b, Option::<tvm::ir::Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_cpp_structural_equal(&addition, &cpp_add);
 
     let moved_lhs = typed_int_expression("int32", 3);
     let lhs_tracker = moved_lhs.clone();
@@ -158,9 +143,6 @@ fn direct_and_semantic_constructors_round_trip() {
         "moving a handle into a complete-field allocator must not clone it"
     );
 
-    let _borrowed_attrs = &function.attrs;
-    let _borrowed_return_type = &function.ret_type;
-    let _borrowed_checked_type = &function.ty;
     assert!(function.span.is_none());
     assert!(IntImm::new("int8", 128).is_err());
 
@@ -171,7 +153,7 @@ fn direct_and_semantic_constructors_round_trip() {
     let cpp_wide: IntImm = Function::get_global("ir.IntImm")
         .unwrap()
         .call_packed(&[
-            AnyView::from(&wide.ty.clone().try_cast::<PrimType>().unwrap().dtype),
+            AnyView::from(&wide.ty.as_node::<PrimTypeObj>().unwrap().dtype),
             AnyView::from(&42_i64),
             AnyView::from(&()),
         ])
@@ -179,51 +161,6 @@ fn direct_and_semantic_constructors_round_trip() {
         .try_into()
         .unwrap();
     assert_cpp_structural_equal(&wide, &cpp_wide);
-}
-
-#[test]
-fn rust_allocated_nodes_are_consumed_by_cpp_abi() {
-    load_tvm_compiler();
-
-    let lhs = Expr::from(IntImm::new("int32", 7).unwrap());
-    let rhs = Expr::from(IntImm::new("int32", 9).unwrap());
-    let rust_add = Add::new(&lhs, &rhs).unwrap();
-
-    // Invoke the field getter registered by C++ on a Rust allocation.  A wrong
-    // Rust field offset or representation would return the wrong object here.
-    let reflected_lhs = Expr::try_from(cpp_reflected_field(&rust_add, "a")).unwrap();
-    assert_eq!(object_pointer(&reflected_lhs), object_pointer(&lhs));
-
-    // Build the equivalent node through C++ and compare through C++'s
-    // structural-equality implementation.
-    let none = ();
-    let cpp_lhs = Function::get_global("ir.IntImm")
-        .unwrap()
-        .call_packed(&[
-            AnyView::from(&PrimType::new("int32").unwrap().dtype),
-            AnyView::from(&7_i64),
-            AnyView::from(&none),
-        ])
-        .unwrap();
-    let cpp_rhs = Function::get_global("ir.IntImm")
-        .unwrap()
-        .call_packed(&[
-            AnyView::from(&PrimType::new("int32").unwrap().dtype),
-            AnyView::from(&9_i64),
-            AnyView::from(&none),
-        ])
-        .unwrap();
-    let cpp_add: Add = Function::get_global("ir.prim.Add")
-        .unwrap()
-        .call_packed(&[
-            AnyView::from(&cpp_lhs),
-            AnyView::from(&cpp_rhs),
-            AnyView::from(&none),
-        ])
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_cpp_structural_equal(&rust_add, &cpp_add);
 }
 
 #[test]
@@ -254,15 +191,15 @@ fn generated_bindings_support_structural_walk() {
     structural_walk(
         &function,
         (
-            |_: &AddObj| {
+            |_: Add| {
                 additions += 1;
                 WalkResult::Advance
             },
-            |value: &tvm::ir::IntImmObj| -> Result<WalkResult> {
+            |value: IntImm| {
                 integer_literals.push(value.value);
-                Ok(WalkResult::Advance)
+                WalkResult::Advance
             },
-            |_: &VarObj, kind: DefRegionKind| {
+            |_: Var, kind: DefRegionKind| {
                 variable_regions.push(kind);
                 WalkResult::Advance
             },
@@ -286,37 +223,27 @@ fn generated_bindings_support_structural_map() {
 
     let mapped = structural_map(
         original.clone(),
-        |addition: Add| -> Result<PrimExpr> {
-            let lhs = addition.a.clone();
-            let rhs = addition.b.clone();
-            let rhs_is_zero = rhs.try_cast::<IntImm>().ok().map(|value| value.value) == Some(0);
-            Ok(if rhs_is_zero { lhs } else { addition.into() })
+        |addition: Add| -> PrimExpr {
+            if addition
+                .b
+                .as_node::<IntImmObj>()
+                .is_some_and(|rhs| rhs.value == 0)
+            {
+                addition.a.clone()
+            } else {
+                addition.into()
+            }
         },
         WalkOrder::PostOrder,
     )
     .and_then(PrimFunc::try_from)
     .unwrap();
 
-    let mapped_value = mapped
-        .body
-        .clone()
-        .try_cast::<Evaluate>()
-        .unwrap()
-        .value
-        .clone();
-    let mapped_variable = mapped_value.try_cast::<Var>().unwrap();
+    let mapped_body = mapped.body.as_node::<EvaluateObj>().unwrap();
+    let mapped_variable = mapped_body.value.as_node::<VarObj>().unwrap();
     assert_eq!(mapped_variable.name.as_str(), "x");
-    assert_eq!(
-        object_pointer(&mapped_variable),
-        object_pointer(&mapped.params.get(0).unwrap())
-    );
+    assert!(mapped_body.value.same_as(&mapped.params.get(0).unwrap()));
 
-    let original_value = original
-        .body
-        .clone()
-        .try_cast::<Evaluate>()
-        .unwrap()
-        .value
-        .clone();
-    assert!(original_value.try_cast::<Add>().is_ok());
+    let original_body = original.body.as_node::<EvaluateObj>().unwrap();
+    assert!(original_body.value.as_node::<AddObj>().is_some());
 }
