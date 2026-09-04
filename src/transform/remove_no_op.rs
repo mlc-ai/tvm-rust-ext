@@ -28,7 +28,8 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, get_operator, int_value, is_call, is_evaluate_zero as is_no_op,
-    mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
+    mutate_buffer_region_with_buffer, mutate_stmt_expr_default, option_same_as,
+    with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
@@ -39,8 +40,8 @@ use crate::ir::prim::{
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, TensorLoadObj, Var};
 use crate::te::Reduce;
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
-    Evaluate, For, IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
+    AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar,
+    DeclBuffer, Evaluate, For, IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
@@ -566,6 +567,15 @@ impl NoOpRemover {
             return Ok(value);
         }
         Ok(value.copy_with(source.into(), indices))
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_allocation(

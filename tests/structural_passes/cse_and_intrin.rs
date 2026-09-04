@@ -261,14 +261,7 @@ fn common_subexpr_elim_remaps_buffer_definitions_and_uses_together() {
 #[test]
 fn rust_lower_tirx_dedup_cu_tensor_maps_matches_cpp() {
     load_tvm_compiler();
-    let get_operator = |name: &str| -> Expr {
-        Function::get_global("ir.GetOp")
-            .unwrap()
-            .call_tuple((tvm::tvm_ffi::String::from(name),))
-            .unwrap()
-            .try_into()
-            .unwrap()
-    };
+    let get_operator = |name: &str| -> Expr { tvm::ir::Op::get(name).unwrap().into() };
     let stack_alloca = get_operator("tirx.tvm_stack_alloca");
     let call_packed = get_operator("tirx.tvm_call_packed");
     let handle_type = PointerType::new(PrimType::void(), "global").unwrap();
@@ -369,12 +362,7 @@ fn rust_lower_intrin_matches_cpp_for_access_pointer() {
     let element_type = PrimType::new("float32").unwrap();
     let pointer_type = PointerType::new(element_type, "global").unwrap();
     let data = Var::with_type("data", pointer_type.clone());
-    let access_ptr: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.tvm_access_ptr"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let access_ptr: Expr = tvm::ir::Op::get("tirx.tvm_access_ptr").unwrap().into();
     let access = Call::new(
         pointer_type,
         access_ptr,
@@ -433,12 +421,7 @@ fn rust_lower_intrin_matches_cpp_for_signed_floor_remainder() {
 fn rust_lower_intrin_matches_cpp_for_registered_target_rule() {
     load_tvm_compiler();
     let value = Var::new("value", "float32").unwrap();
-    let exponential: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.exp"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let exponential: Expr = tvm::ir::Op::get("tirx.exp").unwrap().into();
     let body = Evaluate::new(Call::new(
         PrimType::new("float32").unwrap(),
         exponential,

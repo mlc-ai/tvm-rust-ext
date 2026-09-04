@@ -20,21 +20,27 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    Any, Array, DLDataType, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
+    Any, AnyCompatible, Array, DLDataType, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
 };
 
-use crate::ir::prim::{Let, LetObj, Select, SelectObj, StringImm, StringImmObj};
-use crate::ir::{
-    Call, CallObj, DictAttrs, Expr, IntImmObj, OpaqueExprObj, PointerTypeObj, PrimExpr, PrimType,
-    PrimTypeObj, Range, TensorLoad, TensorLoadObj, Type, Var, VarObj,
+use crate::ir::prim::{
+    Add, AddObj, And, AndObj, Broadcast, BroadcastObj, Cast, CastObj, Div, DivObj, EQObj, FloorDiv,
+    FloorDivObj, FloorMod, FloorModObj, GEObj, GTObj, LEObj, LTObj, Let, LetObj, Max, MaxObj, Min,
+    MinObj, Mod, ModObj, Mul, MulObj, NEObj, Not, NotObj, Or, OrObj, Ramp, RampObj, Select,
+    SelectObj, Shuffle, ShuffleObj, StringImm, StringImmObj, Sub, SubObj, EQ, GE, GT, LE, LT, NE,
 };
-use crate::te::{Reduce, ReduceObj};
+use crate::ir::{
+    Call, CallObj, DictAttrs, Expr, FloatImmObj, GlobalVarObj, IntImmObj, Op, OpObj, OpaqueExprObj,
+    PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, TensorLoadObj,
+    Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, Var, VarObj,
+};
 use crate::tirx::{
-    AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BufferStore,
-    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Evaluate,
-    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, IterVar, Layout, PrimFunc, SeqStmt,
-    SeqStmtObj, Stmt, TileLayout, While, WhileObj,
+    AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BreakObj,
+    BufferRegion, BufferRegionObj, BufferRegionType, BufferStore, BufferStoreObj, BufferType,
+    BufferTypeObj, BufferVar, ContinueObj, DeclBuffer, DeclBufferObj, Evaluate, EvaluateObj, For,
+    ForObj, IfThenElse, IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj, ScopeIdDef,
+    ScopeIdDefStmt, SeqStmt, SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While, WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
@@ -42,9 +48,7 @@ pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
 }
 
 pub(super) fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from(name),))?
-        .try_into()
+    Op::get(name).map(Into::into)
 }
 
 pub(super) fn operator_identity(name: &str) -> Result<ObjectIdentity> {
@@ -159,6 +163,22 @@ pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimEx
         .try_into()
 }
 
+/// Clone and downcast an object only after a borrowed node check succeeds.
+///
+/// A direct `value.clone().try_cast()` changes the reference count even when
+/// the dynamic type does not match. Default mutators test several node types
+/// in sequence, so keep failed probes borrowed and create one owning handle
+/// only for the matching branch.
+fn clone_downcast<B>(value: &impl ObjectRefCast) -> Result<Option<B>>
+where
+    B: ObjectRefCore + AnyCompatible,
+{
+    if value.as_node::<B::ContainerType>().is_none() {
+        return Ok(None);
+    }
+    value.clone().try_cast().map(Some)
+}
+
 /// Identity-preserving buffer-definition remaps used by semantic TIR mutators.
 #[derive(Default)]
 pub(super) struct BufferRemaps(HashMap<ObjectIdentity, BufferVar>);
@@ -248,7 +268,7 @@ where
     let Some(original) = layout else {
         return Ok(None);
     };
-    let Ok(tile) = original.clone().try_cast::<TileLayout>() else {
+    let Some(tile) = clone_downcast::<TileLayout>(original)? else {
         return Ok(Some(original.clone()));
     };
     let old_shard = tile.shard()?;
@@ -297,6 +317,15 @@ pub(super) fn visit_stmt_expr_default<State>(
     if value.as_node::<VarObj>().is_some() {
         return Ok(None);
     }
+    if value.as_node::<OpaqueExprObj>().is_some()
+        || value.as_node::<GlobalVarObj>().is_some()
+        || value.as_node::<OpObj>().is_some()
+        || value.as_node::<IntImmObj>().is_some()
+        || value.as_node::<FloatImmObj>().is_some()
+        || value.as_node::<StringImmObj>().is_some()
+    {
+        return Ok(None);
+    }
     if let Some(load) = value.as_node::<TensorLoadObj>() {
         for index in load.indices.iter() {
             if let Some(interrupt) = visitor.visit(&index)? {
@@ -304,6 +333,28 @@ pub(super) fn visit_stmt_expr_default<State>(
             }
         }
         return Ok(None);
+    }
+    if let Some(region) = value.as_node::<BufferRegionObj>() {
+        for range in region.region.iter() {
+            if let Some(interrupt) = visitor.visit(&range.min)? {
+                return Ok(Some(interrupt));
+            }
+            if let Some(interrupt) = visitor.visit(&range.extent)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        return Ok(None);
+    }
+    if let Some(tuple) = value.as_node::<TupleObj>() {
+        for field in tuple.fields.iter() {
+            if let Some(interrupt) = visitor.visit(&field)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        return Ok(None);
+    }
+    if let Some(projection) = value.as_node::<TupleGetItemObj>() {
+        return visitor.visit(&projection.tuple);
     }
     if let Some(call) = value.as_node::<CallObj>() {
         if call.op.as_node::<OpaqueExprObj>().is_some() {
@@ -333,28 +384,60 @@ pub(super) fn visit_stmt_expr_default<State>(
         }
         return visitor.visit(&select.false_value);
     }
-    if let Some(reduce) = value.as_node::<ReduceObj>() {
-        for axis in reduce.axis.iter() {
-            if let Some(domain) = axis.dom()? {
-                if let Some(interrupt) = visitor.visit(&domain.min)? {
+    macro_rules! visit_binary {
+        ($node:ty) => {
+            if let Some(binary) = value.as_node::<$node>() {
+                if let Some(interrupt) = visitor.visit(&binary.a)? {
                     return Ok(Some(interrupt));
                 }
-                if let Some(interrupt) = visitor.visit(&domain.extent)? {
-                    return Ok(Some(interrupt));
-                }
+                return visitor.visit(&binary.b);
             }
+        };
+    }
+    visit_binary!(AddObj);
+    visit_binary!(SubObj);
+    visit_binary!(MulObj);
+    visit_binary!(DivObj);
+    visit_binary!(ModObj);
+    visit_binary!(FloorDivObj);
+    visit_binary!(FloorModObj);
+    visit_binary!(MinObj);
+    visit_binary!(MaxObj);
+    visit_binary!(EQObj);
+    visit_binary!(NEObj);
+    visit_binary!(LTObj);
+    visit_binary!(LEObj);
+    visit_binary!(GTObj);
+    visit_binary!(GEObj);
+    visit_binary!(AndObj);
+    visit_binary!(OrObj);
+    if let Some(cast) = value.as_node::<CastObj>() {
+        return visitor.visit(&cast.value);
+    }
+    if let Some(not) = value.as_node::<NotObj>() {
+        return visitor.visit(&not.a);
+    }
+    if let Some(ramp) = value.as_node::<RampObj>() {
+        if let Some(interrupt) = visitor.visit(&ramp.base)? {
+            return Ok(Some(interrupt));
         }
-        for source in reduce.source.iter() {
-            if let Some(interrupt) = visitor.visit(&source)? {
+        return visitor.visit(&ramp.stride);
+    }
+    if let Some(broadcast) = value.as_node::<BroadcastObj>() {
+        return visitor.visit(&broadcast.value);
+    }
+    if let Some(shuffle) = value.as_node::<ShuffleObj>() {
+        for index in shuffle.indices.iter() {
+            if let Some(interrupt) = visitor.visit(&index)? {
                 return Ok(Some(interrupt));
             }
         }
-        for init in reduce.init.iter() {
-            if let Some(interrupt) = visitor.visit(&init)? {
+        for vector in shuffle.vectors.iter() {
+            if let Some(interrupt) = visitor.visit(&vector)? {
                 return Ok(Some(interrupt));
             }
         }
-        return visitor.visit(&reduce.condition);
+        return Ok(None);
     }
     if let Some(bind) = value.as_node::<BindObj>() {
         return visitor.visit(&bind.value);
@@ -384,6 +467,12 @@ pub(super) fn visit_stmt_expr_default<State>(
             return Ok(Some(interrupt));
         }
         return visitor.visit(&while_node.body);
+    }
+    if let Some(return_node) = value.as_node::<ReturnObj>() {
+        return visitor.visit(&return_node.value);
+    }
+    if value.as_node::<BreakObj>().is_some() || value.as_node::<ContinueObj>().is_some() {
+        return Ok(None);
     }
     if let Some(allocation) = value.as_node::<AllocBufferObj>() {
         return visit_buffer_definition(visitor, &allocation.buffer);
@@ -442,8 +531,79 @@ pub(super) fn visit_stmt_expr_default<State>(
     if let Some(evaluate) = value.as_node::<EvaluateObj>() {
         return visitor.visit(&evaluate.value);
     }
+    if let Some(scope_definition) = value.cast::<ScopeIdDefStmt>() {
+        return visit_scope_id_definition(visitor, &scope_definition.definition()?);
+    }
+    if let Some(tile_call) = value.cast::<TilePrimitiveCall>() {
+        for argument in tile_call.args()?.iter() {
+            if let Some(interrupt) = visit_tile_value(visitor, &argument)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        for (_, configured) in tile_call.config()?.iter() {
+            if let Some(interrupt) = visit_tile_value(visitor, &configured)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        return Ok(None);
+    }
 
     visitor.visit_children()
+}
+
+fn visit_scope_id_definition<State>(
+    visitor: &mut VisitContext<'_, State>,
+    definition: &ScopeIdDef,
+) -> Result<Option<VisitInterrupt>> {
+    if let Some(extents) = definition.extents()? {
+        for extent in extents.iter() {
+            if let Some(interrupt) = visitor.visit(&extent)? {
+                return Ok(Some(interrupt));
+            }
+        }
+    }
+    if let Some(extents) = definition.preferred_extents()? {
+        for extent in extents.iter() {
+            if let Some(interrupt) = visitor.visit(&extent)? {
+                return Ok(Some(interrupt));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn visit_tile_value<State>(
+    visitor: &mut VisitContext<'_, State>,
+    value: &Any,
+) -> Result<Option<VisitInterrupt>> {
+    if let Some(region) = value.try_as::<BufferRegion>() {
+        for range in region.region.iter() {
+            if let Some(interrupt) = visitor.visit(&range.min)? {
+                return Ok(Some(interrupt));
+            }
+            if let Some(interrupt) = visitor.visit(&range.extent)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        return Ok(None);
+    }
+    if value.try_as::<Var>().is_some_and(|var| is_buffer_var(&var)) {
+        return Ok(None);
+    }
+    if let Some(expression) = value.try_as::<PrimExpr>() {
+        return visitor.visit(&expression);
+    }
+    if let Some(statement) = value.try_as::<Stmt>() {
+        return visitor.visit(&statement);
+    }
+    if let Some(array) = value.try_as::<Array<Any>>() {
+        for item in array.iter() {
+            if let Some(interrupt) = visit_tile_value(visitor, &item)? {
+                return Ok(Some(interrupt));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn visit_buffer_definition<State>(
@@ -465,7 +625,7 @@ fn visit_buffer_definition<State>(
         }
     }
     if let Some(layout) = &buffer_type.layout {
-        if let Ok(tile) = layout.clone().try_cast::<crate::tirx::TileLayout>() {
+        if let Some(tile) = clone_downcast::<TileLayout>(layout)? {
             for iter in tile.shard()?.iter().chain(tile.replica()?.iter()) {
                 if let Some(interrupt) = visitor.visit(&iter.extent)? {
                     return Ok(Some(interrupt));
@@ -508,14 +668,46 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
     if value.as_node::<VarObj>().is_some() {
         return Ok(value);
     }
-    if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
+    if let Some(load) = clone_downcast::<TensorLoad>(&value)? {
         let indices: Array<PrimExpr> = mutator.mutate(dispatch, &load.indices)?.try_into()?;
         if array_same_as(&indices, &load.indices) {
             return Ok(value);
         }
         return Ok(load.copy_with(load.source.clone(), indices).into());
     }
-    if let Ok(call) = value.clone().try_cast::<Call>() {
+    if let Some(region) = clone_downcast::<BufferRegion>(&value)? {
+        let ranges = region
+            .region
+            .iter()
+            .map(|range| mutate_range(dispatch, mutator, &range))
+            .collect::<Result<Vec<_>>>()?;
+        let ranges = Array::new(ranges);
+        if array_same_as(&ranges, &region.region) {
+            return Ok(value);
+        }
+        return Ok(BufferRegion::from_complete_fields(
+            region.span.clone(),
+            region.ty.clone().try_cast::<BufferRegionType>()?,
+            region.buffer.clone(),
+            ranges,
+        )
+        .into());
+    }
+    if let Some(tuple) = clone_downcast::<Tuple>(&value)? {
+        let fields: Array<Expr> = mutator.mutate(dispatch, &tuple.fields)?.try_into()?;
+        if array_same_as(&fields, &tuple.fields) {
+            return Ok(value);
+        }
+        return Ok(tuple.copy_with(fields).into());
+    }
+    if let Some(projection) = clone_downcast::<TupleGetItem>(&value)? {
+        let tuple: Expr = mutator.mutate(dispatch, &projection.tuple)?.try_into()?;
+        if tuple.same_as(&projection.tuple) {
+            return Ok(value);
+        }
+        return Ok(projection.copy_with(tuple)?.into());
+    }
+    if let Some(call) = clone_downcast::<Call>(&value)? {
         let op = if is_opaque_expr(&call.op) {
             mutator.mutate(dispatch, &call.op)?.try_into()?
         } else {
@@ -525,9 +717,21 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if op.same_as(&call.op) && array_same_as(&args, &call.args) {
             return Ok(value);
         }
-        return Ok(call.copy_with(call.ty.clone(), op, args).into());
+        let result_type = if call.op.same_as(&get_operator("tirx.buffer_data")?) {
+            let source = args.get(0)?;
+            let buffer = BufferVar::try_from(&source)?;
+            let buffer_type = buffer.buffer_type();
+            PointerType::new(
+                buffer_type.dtype.clone(),
+                buffer_type.storage_scope.as_str(),
+            )?
+            .into()
+        } else {
+            call.ty.clone()
+        };
+        return Ok(call.copy_with(result_type, op, args).into());
     }
-    if let Ok(let_expr) = value.clone().try_cast::<Let>() {
+    if let Some(let_expr) = clone_downcast::<Let>(&value)? {
         let bound_value: PrimExpr = mutator.mutate(dispatch, &let_expr.value)?.try_into()?;
         let body: PrimExpr = mutator.mutate(dispatch, &let_expr.body)?.try_into()?;
         if bound_value.same_as(&let_expr.value) && body.same_as(&let_expr.body) {
@@ -537,7 +741,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
             .copy_with(let_expr.var.clone(), bound_value, body)
             .into());
     }
-    if let Ok(select) = value.clone().try_cast::<Select>() {
+    if let Some(select) = clone_downcast::<Select>(&value)? {
         let condition: PrimExpr = mutator.mutate(dispatch, &select.condition)?.try_into()?;
         let true_value: PrimExpr = mutator.mutate(dispatch, &select.true_value)?.try_into()?;
         let false_value: PrimExpr = mutator.mutate(dispatch, &select.false_value)?.try_into()?;
@@ -549,46 +753,99 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         }
         return Ok(select.copy_with(condition, true_value, false_value).into());
     }
-    if let Ok(reduce) = value.clone().try_cast::<Reduce>() {
-        let mut axes = Vec::with_capacity(reduce.axis.len());
-        for axis in reduce.axis.iter() {
-            let old_domain = axis.dom()?;
-            let domain = old_domain
-                .as_ref()
-                .map(|domain| mutate_range(dispatch, mutator, domain))
-                .transpose()?;
-            if option_same_as(&domain, &old_domain) {
-                axes.push(axis);
-            } else {
-                axes.push(IterVar::with_metadata(
-                    domain,
-                    axis.var()?.as_var().clone(),
-                    axis.iter_type()?,
-                    axis.thread_tag()?.as_str(),
-                    axis.span()?.as_ref(),
-                )?);
+    if value.as_node::<OpaqueExprObj>().is_some()
+        || value.as_node::<GlobalVarObj>().is_some()
+        || value.as_node::<OpObj>().is_some()
+        || value.as_node::<IntImmObj>().is_some()
+        || value.as_node::<FloatImmObj>().is_some()
+        || value.as_node::<StringImmObj>().is_some()
+    {
+        return Ok(value);
+    }
+    macro_rules! mutate_binary {
+        ($node:ty) => {
+            if let Some(binary) = clone_downcast::<$node>(&value)? {
+                let a: PrimExpr = mutator.mutate(dispatch, &binary.a)?.try_into()?;
+                let b: PrimExpr = mutator.mutate(dispatch, &binary.b)?.try_into()?;
+                if a.same_as(&binary.a) && b.same_as(&binary.b) {
+                    return Ok(value);
+                }
+                return Ok(binary.copy_with(a, b).into());
             }
-        }
-        let source: Array<PrimExpr> = mutator.mutate(dispatch, &reduce.source)?.try_into()?;
-        let init: Array<PrimExpr> = mutator.mutate(dispatch, &reduce.init)?.try_into()?;
-        let condition: PrimExpr = mutator.mutate(dispatch, &reduce.condition)?.try_into()?;
-        let axes = Array::new(axes);
-        if array_same_as(&source, &reduce.source)
-            && array_same_as(&init, &reduce.init)
-            && array_same_as(&axes, &reduce.axis)
-            && condition.same_as(&reduce.condition)
-        {
+        };
+    }
+    mutate_binary!(Add);
+    mutate_binary!(Sub);
+    mutate_binary!(Mul);
+    mutate_binary!(Div);
+    mutate_binary!(Mod);
+    mutate_binary!(FloorDiv);
+    mutate_binary!(FloorMod);
+    mutate_binary!(Min);
+    mutate_binary!(Max);
+    mutate_binary!(EQ);
+    mutate_binary!(NE);
+    mutate_binary!(LT);
+    mutate_binary!(LE);
+    mutate_binary!(GT);
+    mutate_binary!(GE);
+    mutate_binary!(And);
+    mutate_binary!(Or);
+    if let Some(cast) = clone_downcast::<Cast>(&value)? {
+        let operand: PrimExpr = mutator.mutate(dispatch, &cast.value)?.try_into()?;
+        if operand.same_as(&cast.value) {
             return Ok(value);
         }
-        return Ok(Reduce::from_complete_fields(
-            reduce.span.clone(),
-            reduce.ty.clone().try_cast()?,
-            reduce.combiner.clone(),
-            source,
-            init,
-            axes,
-            condition,
-            reduce.value_index,
+        return Ok(cast.copy_with(cast.ty.clone().try_cast()?, operand).into());
+    }
+    if let Some(not) = clone_downcast::<Not>(&value)? {
+        let operand: PrimExpr = mutator.mutate(dispatch, &not.a)?.try_into()?;
+        if operand.same_as(&not.a) {
+            return Ok(value);
+        }
+        return Ok(not.copy_with(operand).into());
+    }
+    if let Some(ramp) = clone_downcast::<Ramp>(&value)? {
+        let base: PrimExpr = mutator.mutate(dispatch, &ramp.base)?.try_into()?;
+        let stride: PrimExpr = mutator.mutate(dispatch, &ramp.stride)?.try_into()?;
+        let lanes: PrimExpr = mutator.mutate(dispatch, &ramp.lanes)?.try_into()?;
+        if base.same_as(&ramp.base) && stride.same_as(&ramp.stride) && lanes.same_as(&ramp.lanes) {
+            return Ok(value);
+        }
+        return Ok(Ramp::from_complete_fields(
+            ramp.span.clone(),
+            ramp.ty.clone().try_cast()?,
+            base,
+            stride,
+            lanes,
+        )
+        .into());
+    }
+    if let Some(broadcast) = clone_downcast::<Broadcast>(&value)? {
+        let broadcast_value: PrimExpr = mutator.mutate(dispatch, &broadcast.value)?.try_into()?;
+        let lanes: PrimExpr = mutator.mutate(dispatch, &broadcast.lanes)?.try_into()?;
+        if broadcast_value.same_as(&broadcast.value) && lanes.same_as(&broadcast.lanes) {
+            return Ok(value);
+        }
+        return Ok(Broadcast::from_complete_fields(
+            broadcast.span.clone(),
+            broadcast.ty.clone().try_cast()?,
+            broadcast_value,
+            lanes,
+        )
+        .into());
+    }
+    if let Some(shuffle) = clone_downcast::<Shuffle>(&value)? {
+        let vectors: Array<PrimExpr> = mutator.mutate(dispatch, &shuffle.vectors)?.try_into()?;
+        let indices: Array<PrimExpr> = mutator.mutate(dispatch, &shuffle.indices)?.try_into()?;
+        if array_same_as(&vectors, &shuffle.vectors) && array_same_as(&indices, &shuffle.indices) {
+            return Ok(value);
+        }
+        return Ok(Shuffle::from_complete_fields(
+            shuffle.span.clone(),
+            shuffle.ty.clone().try_cast()?,
+            vectors,
+            indices,
         )
         .into());
     }
@@ -600,14 +857,14 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
     mutator: &mut Mutator,
     value: Stmt,
 ) -> Result<Stmt> {
-    if let Ok(bind) = value.clone().try_cast::<Bind>() {
+    if let Some(bind) = clone_downcast::<Bind>(&value)? {
         let bound_value: Expr = mutator.mutate(dispatch, &bind.value)?.try_into()?;
         if bound_value.same_as(&bind.value) {
             return Ok(value);
         }
         return Ok(bind.copy_with(bind.var.clone(), bound_value).into());
     }
-    if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
+    if let Some(attribute) = clone_downcast::<AttrStmt>(&value)? {
         let attr_value: PrimExpr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
         let body: Stmt = mutator.mutate(dispatch, &attribute.body)?.try_into()?;
         if attr_value.same_as(&attribute.value) && body.same_as(&attribute.body) {
@@ -622,7 +879,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
             )
             .into());
     }
-    if let Ok(loop_node) = value.clone().try_cast::<For>() {
+    if let Some(loop_node) = clone_downcast::<For>(&value)? {
         let minimum: PrimExpr = mutator.mutate(dispatch, &loop_node.min)?.try_into()?;
         let extent: PrimExpr = mutator.mutate(dispatch, &loop_node.extent)?.try_into()?;
         let step: Option<PrimExpr> = mutator.mutate(dispatch, &loop_node.step)?.try_into()?;
@@ -647,7 +904,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         )
         .into());
     }
-    if let Ok(while_node) = value.clone().try_cast::<While>() {
+    if let Some(while_node) = clone_downcast::<While>(&value)? {
         let condition: PrimExpr = mutator
             .mutate(dispatch, &while_node.condition)?
             .try_into()?;
@@ -657,12 +914,22 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         }
         return Ok(while_node.copy_with(condition, body).into());
     }
+    if let Some(return_node) = clone_downcast::<Return>(&value)? {
+        let returned: Expr = mutator.mutate(dispatch, &return_node.value)?.try_into()?;
+        if returned.same_as(&return_node.value) {
+            return Ok(value);
+        }
+        return Ok(return_node.copy_with(returned).into());
+    }
+    if value.as_node::<BreakObj>().is_some() || value.as_node::<ContinueObj>().is_some() {
+        return Ok(value);
+    }
     if value.as_node::<AllocBufferObj>().is_some() {
         // Buffer-definition recursion requires a pass-specific remap table.
         // A pass that changes buffer metadata supplies its own handlers.
         return Ok(value);
     }
-    if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
+    if let Some(declaration) = clone_downcast::<DeclBuffer>(&value)? {
         let data: Expr = mutator.mutate(dispatch, &declaration.data)?.try_into()?;
         if data.same_as(&declaration.data) {
             return Ok(value);
@@ -671,7 +938,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
             .copy_with(declaration.buffer.clone(), data)
             .into());
     }
-    if let Ok(store) = value.clone().try_cast::<BufferStore>() {
+    if let Some(store) = clone_downcast::<BufferStore>(&value)? {
         let stored_value: PrimExpr = mutator.mutate(dispatch, &store.value)?.try_into()?;
         let indices: Array<PrimExpr> = mutator.mutate(dispatch, &store.indices)?.try_into()?;
         if stored_value.same_as(&store.value) && array_same_as(&indices, &store.indices) {
@@ -681,7 +948,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
             .copy_with(store.buffer.clone(), stored_value, indices)
             .into());
     }
-    if let Ok(conditional) = value.clone().try_cast::<IfThenElse>() {
+    if let Some(conditional) = clone_downcast::<IfThenElse>(&value)? {
         let condition: PrimExpr = mutator
             .mutate(dispatch, &conditional.condition)?
             .try_into()?;
@@ -705,7 +972,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         )
         .into());
     }
-    if let Ok(assertion) = value.clone().try_cast::<AssertStmt>() {
+    if let Some(assertion) = clone_downcast::<AssertStmt>(&value)? {
         let condition: PrimExpr = mutator.mutate(dispatch, &assertion.condition)?.try_into()?;
         let error_kind: StringImm = mutator
             .mutate(dispatch, &assertion.error_kind)?
@@ -723,18 +990,137 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
             .copy_with(condition, error_kind, message_parts)
             .into());
     }
-    if let Ok(sequence) = value.clone().try_cast::<SeqStmt>() {
+    if let Some(sequence) = clone_downcast::<SeqStmt>(&value)? {
         let statements: Array<Stmt> = mutator.mutate(dispatch, &sequence.seq)?.try_into()?;
+        if array_same_as(&statements, &sequence.seq) {
+            return sequence.flatten();
+        }
         return Stmt::sequence_with_span(statements.iter().collect(), sequence.span.as_ref());
     }
-    if let Ok(evaluate) = value.clone().try_cast::<Evaluate>() {
+    if let Some(evaluate) = clone_downcast::<Evaluate>(&value)? {
         let evaluated: Expr = mutator.mutate(dispatch, &evaluate.value)?.try_into()?;
         if evaluated.same_as(&evaluate.value) {
             return Ok(value);
         }
         return Ok(evaluate.copy_with(evaluated).into());
     }
+    if let Some(scope_statement) = clone_downcast::<ScopeIdDefStmt>(&value)? {
+        let definition = scope_statement.definition()?;
+        let old_extents = definition.extents()?;
+        let old_preferred_extents = definition.preferred_extents()?;
+        let extents = mutate_optional_prim_exprs(dispatch, mutator, old_extents.clone())?;
+        let preferred_extents =
+            mutate_optional_prim_exprs(dispatch, mutator, old_preferred_extents.clone())?;
+        if option_array_same_as(&extents, &old_extents)
+            && option_array_same_as(&preferred_extents, &old_preferred_extents)
+        {
+            return Ok(value);
+        }
+        let definition = ScopeIdDef::new(
+            definition.def_ids()?.iter().collect(),
+            extents.map(|values| values.iter().collect()),
+            definition.scope()?,
+            preferred_extents.map(|values| values.iter().collect()),
+        )?;
+        return Ok(ScopeIdDefStmt::new(definition, scope_statement.span.as_ref())?.into());
+    }
+    if let Some(tile_call) = clone_downcast::<TilePrimitiveCall>(&value)? {
+        let old_args = tile_call.args()?;
+        let old_config = tile_call.config()?;
+        let (args, args_changed) = mutate_tile_values(dispatch, mutator, &old_args)?;
+        let mut config_changed = false;
+        let mut config = Vec::with_capacity(old_config.len());
+        for (key, configured) in old_config.iter() {
+            let (configured, changed) = mutate_tile_value(dispatch, mutator, &configured)?;
+            config_changed |= changed;
+            config.push((key, configured));
+        }
+        if !args_changed && !config_changed {
+            return Ok(value);
+        }
+        let config = if config_changed {
+            Map::from_iter(config)
+        } else {
+            old_config
+        };
+        return Ok(tile_call.copy_with(args, config)?.into());
+    }
     mutator.default_mutate(dispatch).and_then(Stmt::try_from)
+}
+
+fn mutate_tile_values<D: MutateDispatch>(
+    dispatch: &mut D,
+    mutator: &mut Mutator,
+    values: &Array<Any>,
+) -> Result<(Array<Any>, bool)> {
+    let mut changed = false;
+    let mut mapped = Vec::with_capacity(values.len());
+    for value in values.iter() {
+        let (value, value_changed) = mutate_tile_value(dispatch, mutator, &value)?;
+        changed |= value_changed;
+        mapped.push(value);
+    }
+    Ok((
+        if changed {
+            Array::new(mapped)
+        } else {
+            values.clone()
+        },
+        changed,
+    ))
+}
+
+fn mutate_tile_value<D: MutateDispatch>(
+    dispatch: &mut D,
+    mutator: &mut Mutator,
+    value: &Any,
+) -> Result<(Any, bool)> {
+    if let Some(region) = value.try_as::<BufferRegion>() {
+        let mapped = mutator.mutate(dispatch, &region)?;
+        let mapped_region = mapped
+            .try_as::<BufferRegion>()
+            .ok_or_else(|| value_error("mutating a BufferRegion must return a BufferRegion"))?;
+        let changed = !mapped_region.same_as(&region);
+        return Ok((mapped, changed));
+    }
+    if let Some(variable) = value.try_as::<Var>() {
+        if is_buffer_var(&variable) {
+            let mapped = mutator.mutate(dispatch, &variable)?;
+            let mapped_variable = mapped
+                .try_as::<Var>()
+                .ok_or_else(|| value_error("mutating a buffer variable must return a Var"))?;
+            BufferVar::try_from(&mapped_variable)?;
+            let changed = !mapped_variable.same_as(&variable);
+            return Ok((mapped, changed));
+        }
+    }
+    if let Some(expression) = value.try_as::<PrimExpr>() {
+        let mapped = mutator.mutate(dispatch, &expression)?;
+        let mapped_expression = PrimExpr::try_from(mapped.clone())?;
+        let changed = !mapped_expression.same_as(&expression);
+        return Ok((mapped, changed));
+    }
+    if let Some(statement) = value.try_as::<Stmt>() {
+        let mapped = mutator.mutate(dispatch, &statement)?;
+        let mapped_statement = Stmt::try_from(mapped.clone())?;
+        let changed = !mapped_statement.same_as(&statement);
+        return Ok((mapped, changed));
+    }
+    if let Some(array) = value.try_as::<Array<Any>>() {
+        let (mapped, changed) = mutate_tile_values(dispatch, mutator, &array)?;
+        return Ok((Any::from(mapped), changed));
+    }
+    Ok((value.clone(), false))
+}
+
+fn mutate_optional_prim_exprs<D: MutateDispatch>(
+    dispatch: &mut D,
+    mutator: &mut Mutator,
+    values: Option<Array<PrimExpr>>,
+) -> Result<Option<Array<PrimExpr>>> {
+    values
+        .map(|values| mutator.mutate(dispatch, &values)?.try_into())
+        .transpose()
 }
 
 fn mutate_range<D: MutateDispatch>(
@@ -751,6 +1137,30 @@ fn mutate_range<D: MutateDispatch>(
     }
 }
 
+/// Mutate a buffer region after its buffer definition has been remapped.
+pub(super) fn mutate_buffer_region_with_buffer<D: MutateDispatch>(
+    dispatch: &mut D,
+    mutator: &mut Mutator,
+    value: BufferRegion,
+    buffer: BufferVar,
+) -> Result<BufferRegion> {
+    let ranges = value
+        .region
+        .iter()
+        .map(|range| mutate_range(dispatch, mutator, &range))
+        .collect::<Result<Vec<_>>>()?;
+    let ranges = Array::new(ranges);
+    if buffer.same_as(&value.buffer) && array_same_as(&ranges, &value.region) {
+        return Ok(value);
+    }
+    Ok(BufferRegion::from_complete_fields(
+        value.span.clone(),
+        value.ty.clone().try_cast::<BufferRegionType>()?,
+        buffer,
+        ranges,
+    ))
+}
+
 pub(super) fn array_same_as<T>(lhs: &Array<T>, rhs: &Array<T>) -> bool
 where
     T: ObjectRefCore + tvm_ffi::AnyCompatible + Clone,
@@ -765,6 +1175,17 @@ where
 pub(super) fn option_same_as<T: ObjectRefCore>(lhs: &Option<T>, rhs: &Option<T>) -> bool {
     match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => lhs.same_as(rhs),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn option_array_same_as<T>(lhs: &Option<Array<T>>, rhs: &Option<Array<T>>) -> bool
+where
+    T: ObjectRefCore + tvm_ffi::AnyCompatible + Clone,
+{
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => array_same_as(lhs, rhs),
         (None, None) => true,
         _ => false,
     }

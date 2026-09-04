@@ -543,12 +543,7 @@ fn rust_remap_thread_axis_does_not_rewrite_loop_annotations() {
 #[test]
 fn rust_remove_assume_matches_cpp_for_a_root_assume() {
     load_tvm_compiler();
-    let assume_op: Expr = Function::get_global("ir.GetOp")
-        .unwrap()
-        .call_tuple((tvm::tvm_ffi::String::from("tirx.assume"),))
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let assume_op: Expr = tvm::ir::Op::get("tirx.assume").unwrap().into();
     let condition = typed_int_expression("bool", 1);
     let call = Call::new(PrimType::new("bool").unwrap(), assume_op, vec![condition]);
     let function = PrimFunc::from_body(Evaluate::new(call).unwrap()).unwrap();

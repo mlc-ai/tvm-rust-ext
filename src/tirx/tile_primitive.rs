@@ -24,7 +24,7 @@ use tvm_ffi::{
 };
 
 use super::{BufferVar, PrimVar, Stmt, StmtObj};
-use crate::ir::{Expr, PrimExpr, Range, Span, Var};
+use crate::ir::{Op, PrimExpr, Range, Span, Var};
 use crate::target::Target;
 
 #[repr(transparent)]
@@ -37,6 +37,11 @@ impl ScopeKind {
     pub const WARPGROUP: Self = Self(4);
     pub const WARP: Self = Self(5);
     pub const THREAD: Self = Self(6);
+
+    /// Preserve a native value not yet known by this Rust binding.
+    pub const fn from_raw(value: i32) -> Self {
+        Self(value)
+    }
 
     pub const fn as_raw(self) -> i32 {
         self.0
@@ -55,14 +60,15 @@ impl ScopeKind {
         }
     }
 
-    pub const fn name(self) -> &'static str {
+    /// Return the native name of a scope understood by this TVM build.
+    pub fn name(self) -> Result<&'static str> {
         match self.0 {
-            2 => "cluster",
-            3 => "cta",
-            4 => "warpgroup",
-            5 => "warp",
-            6 => "thread",
-            _ => panic!("ScopeKind values are validated when constructed"),
+            2 => Ok("cluster"),
+            3 => Ok("cta"),
+            4 => Ok("warpgroup"),
+            5 => Ok("warp"),
+            6 => Ok("thread"),
+            _ => Err(value_error(&format!("unknown ScopeKind value {}", self.0))),
         }
     }
 }
@@ -71,12 +77,9 @@ impl TryFrom<i64> for ScopeKind {
     type Error = Error;
 
     fn try_from(value: i64) -> Result<Self> {
-        let value = i32::try_from(value)
-            .map_err(|_| value_error("ScopeKind does not fit its native i32 representation"))?;
-        match value {
-            2..=6 => Ok(Self(value)),
-            _ => Err(value_error(&format!("unknown ScopeKind value {value}"))),
-        }
+        i32::try_from(value)
+            .map(Self)
+            .map_err(|_| value_error("ScopeKind does not fit its native i32 representation"))
     }
 }
 
@@ -96,23 +99,31 @@ impl ScopeBinding {
     pub const WARPGROUP_THREAD: Self = Self(8);
     pub const CLUSTER_CTA_PAIR: Self = Self(9);
 
+    /// Preserve a native value not yet known by this Rust binding.
+    pub const fn from_raw(value: i32) -> Self {
+        Self(value)
+    }
+
     pub const fn as_raw(self) -> i32 {
         self.0
     }
 
-    pub(crate) const fn name_pair(self) -> (&'static str, &'static str) {
+    pub(crate) fn name_pair(self) -> Result<(&'static str, &'static str)> {
         match self.0 {
-            0 => ("kernel", "cluster"),
-            1 => ("kernel", "cta"),
-            2 => ("cluster", "cta"),
-            3 => ("cta", "warpgroup"),
-            4 => ("cta", "warp"),
-            5 => ("warpgroup", "warp"),
-            6 => ("warp", "thread"),
-            7 => ("cta", "thread"),
-            8 => ("warpgroup", "thread"),
-            9 => ("cluster", "cta_pair"),
-            _ => panic!("ScopeBinding values are validated when constructed"),
+            0 => Ok(("kernel", "cluster")),
+            1 => Ok(("kernel", "cta")),
+            2 => Ok(("cluster", "cta")),
+            3 => Ok(("cta", "warpgroup")),
+            4 => Ok(("cta", "warp")),
+            5 => Ok(("warpgroup", "warp")),
+            6 => Ok(("warp", "thread")),
+            7 => Ok(("cta", "thread")),
+            8 => Ok(("warpgroup", "thread")),
+            9 => Ok(("cluster", "cta_pair")),
+            _ => Err(value_error(&format!(
+                "unknown ScopeBinding value {}",
+                self.0
+            ))),
         }
     }
 }
@@ -121,13 +132,9 @@ impl TryFrom<i64> for ScopeBinding {
     type Error = Error;
 
     fn try_from(value: i64) -> Result<Self> {
-        let value = i32::try_from(value)
-            .map_err(|_| value_error("ScopeBinding does not fit its native representation"))?;
-        if (0..=9).contains(&value) {
-            Ok(Self(value))
-        } else {
-            Err(value_error(&format!("unknown ScopeBinding value {value}")))
-        }
+        i32::try_from(value)
+            .map(Self)
+            .map_err(|_| value_error("ScopeBinding does not fit its native i32 representation"))
     }
 }
 
@@ -155,7 +162,7 @@ impl std::ops::Deref for ExecScope {
 
 impl ExecScope {
     pub fn new(kind: ScopeKind) -> Result<Self> {
-        Self::from_name(kind.name())
+        Self::from_name(kind.name()?)
     }
 
     pub fn from_name(name: &str) -> Result<Self> {
@@ -169,7 +176,7 @@ impl ExecScope {
     }
 
     pub fn name(&self) -> Result<&'static str> {
-        Ok(self.kind()?.name())
+        self.kind()?.name()
     }
 }
 
@@ -203,7 +210,7 @@ impl ScopeIdDef {
         scope: ScopeBinding,
         preferred_extents: Option<Vec<PrimExpr>>,
     ) -> Result<Self> {
-        let (parent, child) = scope.name_pair();
+        let (parent, child) = scope.name_pair()?;
         tvm_ffi::cached_global_func!("tirx.ScopeIdDef")
             .call_tuple((
                 Array::new(def_ids),
@@ -269,6 +276,14 @@ impl std::ops::Deref for ScopeIdDefStmt {
 
     fn deref(&self) -> &Self::Target {
         &self.data
+    }
+}
+
+impl std::ops::Deref for ScopeIdDefStmtObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
 }
 
@@ -497,25 +512,72 @@ impl std::ops::Deref for TilePrimitiveCall {
     }
 }
 
+impl std::ops::Deref for TilePrimitiveCallObj {
+    type Target = StmtObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
 impl TilePrimitiveCall {
+    fn from_fields(
+        op: Op,
+        args: Array<Any>,
+        workspace: Map<FfiString, BufferVar>,
+        config: Map<FfiString, Any>,
+        dispatch: Option<FfiString>,
+        scope: ExecScope,
+        span: Option<Span>,
+    ) -> Result<Self> {
+        let mut result: Self = tvm_ffi::cached_global_func!("tirx.TilePrimitiveCall")
+            .call_tuple((op, args, workspace, config, dispatch, scope))?
+            .try_into()?;
+        // The native constructor does not accept source metadata.  It always
+        // returns a fresh object, and Rust knows the complete StmtObj prefix,
+        // so initialize that inherited field before the handle is shared.
+        debug_assert_eq!(ObjectArc::strong_count(&result.data), 1);
+        result.data.base.span = span;
+        Ok(result)
+    }
+
     pub fn new(
-        op: Expr,
+        op: Op,
         args: Vec<Any>,
         workspace: Map<FfiString, BufferVar>,
         config: Map<FfiString, Any>,
         dispatch: Option<FfiString>,
         scope: ExecScope,
     ) -> Result<Self> {
-        tvm_ffi::cached_global_func!("tirx.TilePrimitiveCall")
-            .call_tuple((op, Array::new(args), workspace, config, dispatch, scope))?
-            .try_into()
+        Self::with_span(op, args, workspace, config, dispatch, scope, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_span(
+        op: Op,
+        args: Vec<Any>,
+        workspace: Map<FfiString, BufferVar>,
+        config: Map<FfiString, Any>,
+        dispatch: Option<FfiString>,
+        scope: ExecScope,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        Self::from_fields(
+            op,
+            Array::new(args),
+            workspace,
+            config,
+            dispatch,
+            scope,
+            span.cloned(),
+        )
     }
 
     pub fn scope(&self) -> Result<ExecScope> {
         field(self, "scope")
     }
 
-    pub fn op(&self) -> Result<Expr> {
+    pub fn op(&self) -> Result<Op> {
         field(self, "op")
     }
 
@@ -533,6 +595,18 @@ impl TilePrimitiveCall {
 
     pub fn dispatch(&self) -> Result<Option<FfiString>> {
         field(self, "dispatch")
+    }
+
+    pub fn copy_with(&self, args: Array<Any>, config: Map<FfiString, Any>) -> Result<Self> {
+        Self::from_fields(
+            self.op()?,
+            args,
+            self.workspace()?,
+            config,
+            self.dispatch()?,
+            self.scope()?,
+            self.span.clone(),
+        )
     }
 }
 

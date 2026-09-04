@@ -27,7 +27,7 @@ use tvm_ffi::{
 };
 
 use crate::ir::prim::{AddObj, MulObj, SubObj};
-use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
+use crate::ir::{CallObj, ExprObj, IntImmObj, OpObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
 use crate::tirx::{
     AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, PrimVar, SeqStmtObj, StmtObj,
 };
@@ -339,15 +339,6 @@ impl TryFrom<i64> for CallEffectKind {
             )
         })
     }
-}
-
-/// Opaque view of a registry-owned TVM operator.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ir.Op"]
-#[type_final]
-struct OpObj {
-    base: ExprObj,
 }
 
 /// Read a boolean attribute from a registry-owned operator.

@@ -120,9 +120,10 @@ A binding is accepted only when every applicable check passes:
 
 The focused checks live in `tests/stubgen_acceptance.rs`. It explicitly invokes
 a C++ field getter on a Rust-created `Add` and compares that node with a
-C++-created `Add` using C++ structural equality. For every ABI-complete object,
-`tests/binding_contract.rs` checks the exact reflected schema, flags, registered
-default values, and every public owned `from_complete_fields` signature.
+C++-created `Add` using C++ structural equality. For the ABI-complete object
+slice explicitly enumerated there, `tests/binding_contract.rs` checks the exact
+reflected schema, flags, registered default values, and public owned
+`from_complete_fields` signatures.
 Layout completeness and comparison belong to stubgen and its generation tests,
 not to runtime reflection registration or each generated Rust object.
 Broader pass behavior is in
@@ -132,7 +133,7 @@ Broader pass behavior is in
 
 | Pattern | Representative types | Owner/status |
 | --- | --- | --- |
-| Complete ordinary data layout | `Expr`, `Var`, `IntImm`, `Add`, `Stmt`, `Evaluate`, `Span`, `Range` | **GENERATE / verified** |
+| Complete ordinary data layout | `Expr`, `Var`, `IntImm`, `Add`, `Stmt`, `Evaluate`, `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin` | **GENERATE / verified** |
 | Owning object reference and checked casts | all reference wrappers | **GENERATE / verified** |
 | Direct scalar/object/optional/array/map fields | `IntImm`, `Call`, `For` | **GENERATE / verified** |
 | Heterogeneous `Array<Any>` / `Map<K, Any>` | schedule values, `DictAttrs`, annotations | **RUNTIME / verified via shared container-element support** |
@@ -140,9 +141,10 @@ Broader pass behavior is in
 | Complete layout, build-dependent defaults | `BufferType` | **handwritten Rust semantics + Rust allocation / verified** |
 | Native registry identity | `Axis` | **opaque wrapper + existing `tirx.AxisGet` singleton lookup / verified** |
 | Native interned identity | `SourceName` | **opaque wrapper + existing `ir.SourceName` lookup / verified** |
-| Native polymorphic behavior | `Layout`, `PrimExprConvertible`, `IterVar` | **opaque wrapper + native allocation + reflected Rust access / verified** |
+| Native polymorphic behavior | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | **opaque wrapper + native allocation + reflected Rust access / verified** |
 | Typed ordinary expression | `BufferRegion` | **complete `Expr` layout + singleton `BufferRegionType` + Rust allocation / verified** |
 | Native STL storage | `Source` | **opaque wrapper + existing `SourceMapAdd` construction / verified** |
+| Non-object optional ABI | `TilePrimitiveCall` (`Optional<String>`) | **opaque wrapper + existing constructor; Rust `Option<String>` is not layout-compatible** |
 | Complex semantic constructor | `BufferType`, `PrimFunc`, match buffer | **handwritten Rust semantics + complete-field Rust allocation / verified** |
 | Derived mutable indexes | `IRModule` construction/update | **GENERATE rebuild logic / verified** |
 | Consuming `RValueRef<T>` packed argument | pass boundaries | **RUNTIME / verified without an extra reference-count increment** |
@@ -155,13 +157,16 @@ a separately reviewed C++ ABI migration removes that blocker.
 
 ## Important ABI details
 
-- Rust `Option<ObjectRef>` represents a nullable C++ object handle; a required
-  C++ object reference uses the non-optional wrapper.
+- Rust `Option<ObjectRef>` represents a nullable C++ object handle; a field
+  known to require a defined handle uses the non-optional wrapper.
 - Do not infer a field's optionality from the referenced C++ `ObjectRef`
-  class's `_type_is_nullable` flag.  Most C++ handles support an undefined
-  value even when a particular node field is required.  Stubgen maps an
-  explicit `ffi::Optional<T>` field schema to `Option<T>`; a reviewed semantic
-  constructor must reject a missing required handle.
+  class's `_type_is_nullable` flag alone. Stubgen must combine the declared
+  field type with constructor behavior. An explicit `ffi::Optional<T>` maps to
+  `Option<T>`, while a plain handle normally stays non-optional. A derived
+  constructor may prove an exception: `SequentialSpan` intentionally leaves
+  its inherited `SpanNode::source_name` undefined, so the physical Rust base
+  field must be `Option<SourceName>` even though ordinary `Span::new` requires
+  a source name.
 - C++ `int` and `enum class ... : int` use an `i32` representation, not `i64`.
 - Native enum fields use a `#[repr(transparent)]` integer newtype with named
   constants that preserve the exact C++ enumerator spelling, not a closed Rust

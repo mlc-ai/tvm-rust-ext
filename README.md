@@ -75,10 +75,12 @@ returns `Result`.
 The supporting handwritten slice is bounded but broader than the initial
 stubgen milestone so it can answer additional pass-authoring questions:
 
-- Common IR includes expressions, variables, calls, types, attributes, source
-  spans, functions, and modules.
+- Common IR includes expressions, variables, calls, function and tensor-map
+  types, attributes, ordinary and sequential source spans, functions, and
+  modules.
 - TIR includes arithmetic, statements, conditionals, loops, buffers,
-  load/store accesses, and PrimFuncs.
+  load/store accesses, index maps, tensor intrinsics, virtual layouts, and
+  PrimFuncs.
 
 The main stubgen acceptance path uses the two framework-controlled APIs:
 
@@ -123,11 +125,12 @@ handwritten definitions, and run the same tests without modifying them.  The
 test surface becomes immutable only after the golden-reference freeze gate in
 [`BINDING_CONTRACT.md`](BINDING_CONTRACT.md) passes.
 [`tests/binding_contract.rs`](tests/binding_contract.rs) separately checks the
-reflection contract of every object wrapper currently handwritten by the
-prototype, including exact field schemas, flags, registered defaults, type
-identity, inheritance, and structural metadata. Physical layout validation
-belongs to stubgen's generation tests rather than runtime reflection metadata
-or generated target code.
+reflection contract of the ABI-complete wrapper slice explicitly listed in the
+test, including exact field schemas, flags, registered defaults, type identity,
+inheritance, and structural metadata. Opaque compiler-owned objects are covered
+by focused behavior tests instead. Physical layout validation belongs to
+stubgen's generation tests rather than runtime reflection metadata or generated
+target code.
 The larger pass-parity suite is rooted at
 [`tests/structural_passes.rs`](tests/structural_passes.rs) and split into focused
 modules under [`tests/structural_passes/`](tests/structural_passes/).

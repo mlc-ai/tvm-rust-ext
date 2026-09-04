@@ -26,15 +26,16 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, is_opaque_expr, mutate_stmt_expr_default, visit_stmt_expr_default,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, is_opaque_expr, mutate_buffer_region_with_buffer, mutate_stmt_expr_default,
+    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_module_pass, Pass};
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, PrimExpr, TensorLoad, Var,
 };
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, Evaluate, For, PrimFunc, Stmt,
+    AllocBuffer, AttrStmt, BufferRegion, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
+    PrimFunc, Stmt,
 };
 
 type FunctionTable = HashMap<ObjectIdentity, (GlobalVar, PrimFunc)>;
@@ -266,6 +267,15 @@ impl PrimFuncInliner {
             return Ok(value);
         }
         Ok(value.copy_with(buffer, stored_value, indices))
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_allocation(

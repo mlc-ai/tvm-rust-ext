@@ -17,13 +17,11 @@
  * under the License.
  */
 
-use tvm_ffi::{
-    structural_mutate, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCore, Result, String,
-};
+use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCore, Result};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
-use crate::ir::{CallObj, Expr};
+use crate::ir::{CallObj, Expr, Op};
 use crate::tirx::{Evaluate, PrimFunc};
 
 /// Remove `Evaluate(tirx.assume(...))` using TVM's operator-identity rule.
@@ -32,9 +30,7 @@ pub fn remove_assume_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 }
 
 fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
-    let assume_op: Expr = tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from("tirx.assume"),))?
-        .try_into()?;
+    let assume_op: Expr = Op::get("tirx.assume")?.into();
     let mut remover = AssumeRemover {
         assume_op: ObjectIdentity::of(&assume_op),
     };

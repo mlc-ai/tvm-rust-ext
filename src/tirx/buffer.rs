@@ -323,6 +323,112 @@ pub struct TileLayout {
     data: ObjectArc<TileLayoutObj>,
 }
 
+/// Opaque Rust representation of TVM's polymorphic composed layout.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.ComposeLayout"]
+#[type_final]
+pub struct ComposeLayoutObj {
+    base: LayoutObj,
+}
+
+/// Reference-counted handle to a composed tiled layout.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct ComposeLayout {
+    data: ObjectArc<ComposeLayoutObj>,
+}
+
+impl std::ops::Deref for ComposeLayout {
+    type Target = ComposeLayoutObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for ComposeLayoutObj {
+    type Target = LayoutObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl ComposeLayout {
+    /// Construct a composed layout through TVM's existing virtual-layout implementation.
+    pub fn new(
+        per_element: i32,
+        swizzle_len: i32,
+        atom_len: i32,
+        tile_layout: TileLayout,
+        swizzle_inner: bool,
+    ) -> Result<Self> {
+        tvm_ffi::cached_global_func!("tirx.ComposeLayout")
+            .call_tuple((
+                i64::from(per_element),
+                i64::from(swizzle_len),
+                i64::from(atom_len),
+                tile_layout,
+                swizzle_inner,
+            ))?
+            .try_into()
+    }
+
+    fn field<T>(&self, name: &str) -> Result<T>
+    where
+        T: TryFrom<Any, Error = Error>,
+    {
+        FieldGetter::new(ComposeLayoutObj::type_index(), name)?.get(&**self)
+    }
+
+    fn integer_field(&self, name: &str) -> Result<i32> {
+        let value: i64 = self.field(name)?;
+        i32::try_from(value).map_err(|_| {
+            Error::new(
+                TYPE_ERROR,
+                &format!("ComposeLayout.{name} does not fit the native int width"),
+                "",
+            )
+        })
+    }
+
+    /// Return the number of values represented by each composed element.
+    pub fn per_element(&self) -> Result<i32> {
+        self.integer_field("per_element")
+    }
+
+    /// Return the number of bits participating in the swizzle.
+    pub fn swizzle_len(&self) -> Result<i32> {
+        self.integer_field("swizzle_len")
+    }
+
+    /// Return the number of low-order bits in one atom.
+    pub fn atom_len(&self) -> Result<i32> {
+        self.integer_field("atom_len")
+    }
+
+    /// Return whether the inner coordinate is swizzled.
+    pub fn swizzle_inner(&self) -> Result<bool> {
+        self.field("swizzle_inner")
+    }
+
+    /// Return the cached mask for the inner swizzle bits.
+    pub fn inner_mask(&self) -> Result<i32> {
+        self.integer_field("inner_mask")
+    }
+
+    /// Return the cached mask for the outer swizzle bits.
+    pub fn outer_mask(&self) -> Result<i32> {
+        self.integer_field("outer_mask")
+    }
+
+    /// Return the tiled layout wrapped by this composition.
+    pub fn tile_layout(&self) -> Result<TileLayout> {
+        self.field("tile_layout")
+    }
+}
+
 impl std::ops::Deref for TileLayout {
     type Target = TileLayoutObj;
 
@@ -1354,6 +1460,7 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
 
 tvm_ffi::impl_object_upcast!(
     TileLayout => Layout,
+    ComposeLayout => Layout,
     BufferType => Type,
     BufferRegionType => Type,
     DeclBuffer => Stmt,

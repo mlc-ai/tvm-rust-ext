@@ -21,7 +21,7 @@ use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     Any, AnyCompatible, AnyView, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error,
     FieldGetter, Map, ObjectArc, ObjectCore, ObjectRefCast, ObjectRefCore, Result, String,
-    TVMFFIAny, TYPE_ERROR, VALUE_ERROR,
+    TVMFFIAny, INDEX_ERROR, TYPE_ERROR, VALUE_ERROR,
 };
 
 /// Primitive expression nodes shared by TIRx and other IR dialects.
@@ -88,6 +88,56 @@ impl OpaqueExprObj {
         Self {
             base: ExprObj::new(span, ty),
         }
+    }
+}
+
+/// Opaque handle to an operator owned by TVM's process-wide registry.
+///
+/// Operators are singleton expressions with native registry state, so Rust
+/// borrows their behavior through TVM-FFI instead of allocating `OpObj`
+/// directly.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.Op"]
+#[type_final]
+pub struct OpObj {
+    base: ExprObj,
+}
+
+/// Reference-counted handle to a registered TVM operator.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Op {
+    data: ObjectArc<OpObj>,
+}
+
+impl std::ops::Deref for Op {
+    type Target = OpObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for OpObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Op {
+    /// Return the registry singleton named `name`.
+    pub fn get(name: &str) -> Result<Self> {
+        tvm_ffi::cached_global_func!("ir.GetOp")
+            .call_tuple((String::from(name),))?
+            .try_into()
+    }
+
+    /// Return the operator's registered name.
+    pub fn name(&self) -> Result<String> {
+        FieldGetter::new(OpObj::type_index(), "name")?.get(&**self)
     }
 }
 
@@ -766,7 +816,7 @@ impl SourceMap {
 #[type_key = "ir.Span"]
 pub struct SpanObj {
     base: tvm_ffi::Object,
-    pub source_name: SourceName,
+    pub source_name: Option<SourceName>,
     pub line: i32,
     pub column: i32,
     pub end_line: i32,
@@ -799,7 +849,7 @@ impl Span {
         let end_column = i32::try_from(end_column)
             .map_err(|_| integer_field_overflow("end_column", end_column))?;
         Ok(Self::from_complete_fields(
-            source_name.into(),
+            Some(source_name.into()),
             line,
             column,
             end_line,
@@ -809,7 +859,7 @@ impl Span {
 
     /// Construct a span from the exact-width values stored by the native object.
     pub fn from_complete_fields(
-        source_name: SourceName,
+        source_name: Option<SourceName>,
         line: i32,
         column: i32,
         end_line: i32,
@@ -823,6 +873,78 @@ impl Span {
                 column,
                 end_line,
                 end_column,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of a span assembled from multiple sources.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.SequentialSpan"]
+#[type_final]
+pub struct SequentialSpanObj {
+    base: SpanObj,
+    pub spans: Array<Span>,
+}
+
+/// Reference-counted handle to a span assembled from multiple sources.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct SequentialSpan {
+    data: ObjectArc<SequentialSpanObj>,
+}
+
+impl std::ops::Deref for SequentialSpan {
+    type Target = SequentialSpanObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for SequentialSpanObj {
+    type Target = SpanObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl SequentialSpan {
+    /// Construct a sequential span, flattening nested sequential spans like TVM.
+    pub fn new(spans: Vec<Span>) -> Self {
+        let mut flattened = Vec::new();
+        for span in spans {
+            if let Some(sequence) = span.as_node::<SequentialSpanObj>() {
+                flattened.extend(sequence.spans.iter());
+            } else {
+                flattened.push(span);
+            }
+        }
+        Self::from_complete_fields(None, 0, 0, 0, 0, Array::new(flattened))
+    }
+
+    /// Construct a sequential span from every physical field.
+    pub fn from_complete_fields(
+        source_name: Option<SourceName>,
+        line: i32,
+        column: i32,
+        end_line: i32,
+        end_column: i32,
+        spans: Array<Span>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(SequentialSpanObj {
+                base: SpanObj {
+                    base: tvm_ffi::Object::new(),
+                    source_name,
+                    line,
+                    column,
+                    end_line,
+                    end_column,
+                },
+                spans,
             }),
         }
     }
@@ -951,6 +1073,162 @@ fn require_primitive_expr(value: Expr, context: &str) -> Result<PrimExpr> {
             "",
         )
     })
+}
+
+/// ABI-complete Rust representation of TVM's `TupleNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.Tuple"]
+#[type_final]
+pub struct TupleObj {
+    base: ExprObj,
+    pub fields: Array<Expr>,
+}
+
+/// Reference-counted handle to a tuple expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct Tuple {
+    data: ObjectArc<TupleObj>,
+}
+
+impl std::ops::Deref for Tuple {
+    type Target = TupleObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for TupleObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Tuple {
+    /// Construct a tuple and derive its type when every field has a known type.
+    pub fn new(fields: Vec<Expr>) -> Self {
+        Self::with_span(fields, None)
+    }
+
+    /// Construct a tuple with optional source metadata.
+    pub fn with_span(fields: Vec<Expr>, span: Option<&Span>) -> Self {
+        let ty = fields
+            .iter()
+            .map(|field| (!field.ty.is_missing()).then(|| field.ty.clone()))
+            .collect::<Option<Vec<_>>>()
+            .map(|fields| Type::from(TupleType::new(fields)))
+            .unwrap_or_else(Type::missing);
+        Self::from_complete_fields(span.cloned(), ty, Array::new(fields))
+    }
+
+    /// Construct a tuple from every physical field without deriving its type.
+    pub fn from_complete_fields(span: Option<Span>, ty: Type, fields: Array<Expr>) -> Self {
+        Self {
+            data: ObjectArc::new(TupleObj {
+                base: ExprObj::new(span, ty),
+                fields,
+            }),
+        }
+    }
+
+    /// Copy this tuple with new fields and preserve its span.
+    pub fn copy_with(&self, fields: Array<Expr>) -> Self {
+        Self::with_span(fields.iter().collect(), self.span.as_ref())
+    }
+}
+
+/// ABI-complete Rust representation of TVM's `TupleGetItemNode`.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.TupleGetItem"]
+#[type_final]
+pub struct TupleGetItemObj {
+    base: ExprObj,
+    pub tuple: Expr,
+    pub index: i32,
+}
+
+/// Reference-counted handle to a tuple field projection.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct TupleGetItem {
+    data: ObjectArc<TupleGetItemObj>,
+}
+
+impl std::ops::Deref for TupleGetItem {
+    type Target = TupleGetItemObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for TupleGetItemObj {
+    type Target = ExprObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl TupleGetItem {
+    /// Construct a tuple field projection after validating its index.
+    pub fn new<T>(tuple: T, index: i32) -> Result<Self>
+    where
+        T: Into<Expr>,
+    {
+        Self::with_span(tuple, index, None)
+    }
+
+    /// Construct a tuple field projection with optional source metadata.
+    pub fn with_span<T>(tuple: T, index: i32, span: Option<&Span>) -> Result<Self>
+    where
+        T: Into<Expr>,
+    {
+        if index < 0 {
+            return Err(Error::new(
+                INDEX_ERROR,
+                "tuple index cannot be negative",
+                "",
+            ));
+        }
+        let tuple = tuple.into();
+        let ty = if let Some(tuple_type) = tuple.ty.as_node::<TupleTypeObj>() {
+            tuple_type.fields.get(index as usize).map_err(|_| {
+                Error::new(
+                    INDEX_ERROR,
+                    &format!(
+                        "tuple of length {} cannot be accessed at index {index}",
+                        tuple_type.fields.len()
+                    ),
+                    "",
+                )
+            })?
+        } else {
+            Type::missing()
+        };
+        Ok(Self::from_complete_fields(span.cloned(), ty, tuple, index))
+    }
+
+    /// Construct a tuple projection from every physical field.
+    pub fn from_complete_fields(span: Option<Span>, ty: Type, tuple: Expr, index: i32) -> Self {
+        Self {
+            data: ObjectArc::new(TupleGetItemObj {
+                base: ExprObj::new(span, ty),
+                tuple,
+                index,
+            }),
+        }
+    }
+
+    /// Copy this projection with a new tuple and preserve its index and span.
+    pub fn copy_with(&self, tuple: Expr) -> Result<Self> {
+        Self::with_span(tuple, self.index, self.span.as_ref())
+    }
 }
 
 /// ABI-complete Rust representation of TVM's generic indexed load.
@@ -1129,17 +1407,15 @@ impl TypeObj {
     }
 }
 
-/// Checked Rust view of TVM's low-level pointer type.
-///
-/// The constructor logic only needs to distinguish pointer parameters from
-/// ordinary types; stubgen will eventually replace this minimal view with the
-/// complete generated binding.
+/// ABI-complete Rust representation of TVM's low-level pointer type.
 #[repr(C)]
 #[derive(Object)]
 #[type_key = "ir.PointerType"]
 #[type_final]
 pub struct PointerTypeObj {
     base: TypeObj,
+    pub element_type: Type,
+    pub storage_scope: String,
 }
 
 #[repr(C)]
@@ -1165,24 +1441,54 @@ impl std::ops::Deref for PointerTypeObj {
 }
 
 impl PointerType {
-    /// Construct a pointer type through TVM's canonical type constructor.
+    /// Construct a pointer type directly in Rust.
     pub fn new<T>(element_type: T, storage_scope: &str) -> Result<Self>
     where
         T: Into<Type>,
     {
-        tvm_ffi::cached_global_func!("ir.PointerType")
-            .call_tuple((element_type.into(), String::from(storage_scope)))?
-            .try_into()
+        let element_type = element_type.into();
+        if element_type.is_missing() {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "PointerType element_type cannot be Type::Missing()",
+                "",
+            ));
+        }
+        let storage_scope = if storage_scope.is_empty() {
+            "global"
+        } else {
+            storage_scope
+        };
+        Ok(Self::from_complete_fields(
+            None,
+            element_type,
+            String::from(storage_scope),
+        ))
     }
 
-    /// Return the type stored at this pointer.
-    pub fn element_type(&self) -> Result<Type> {
-        FieldGetter::new(PointerTypeObj::type_index(), "element_type")?.get(&**self)
+    /// Construct a pointer type from every physical field.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        element_type: Type,
+        storage_scope: String,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(PointerTypeObj {
+                base: TypeObj::new(span),
+                element_type,
+                storage_scope,
+            }),
+        }
     }
 
-    /// Return the pointer's native storage scope.
-    pub fn storage_scope(&self) -> Result<String> {
-        FieldGetter::new(PointerTypeObj::type_index(), "storage_scope")?.get(&**self)
+    /// Borrow the type stored at this pointer.
+    pub fn element_type(&self) -> &Type {
+        &self.element_type
+    }
+
+    /// Borrow the pointer's storage scope.
+    pub fn storage_scope(&self) -> &str {
+        self.storage_scope.as_str()
     }
 }
 
@@ -1300,6 +1606,126 @@ impl TupleType {
     /// Construct the empty tuple type used as TVM's void type.
     pub fn empty() -> Self {
         Self::new(Vec::new())
+    }
+}
+
+/// ABI-complete Rust representation of TVM's function type.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.FuncType"]
+#[type_final]
+pub struct FuncTypeObj {
+    base: TypeObj,
+    pub arg_types: Array<Type>,
+    pub ret_type: Type,
+}
+
+/// Reference-counted handle to a TVM function type.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct FuncType {
+    data: ObjectArc<FuncTypeObj>,
+}
+
+impl std::ops::Deref for FuncType {
+    type Target = FuncTypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for FuncTypeObj {
+    type Target = TypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl FuncType {
+    /// Construct a function type directly in Rust.
+    pub fn new(arg_types: Vec<Type>, ret_type: Type) -> Self {
+        Self::with_span(arg_types, ret_type, None)
+    }
+
+    /// Construct a function type with optional source metadata.
+    pub fn with_span(arg_types: Vec<Type>, ret_type: Type, span: Option<&Span>) -> Self {
+        Self::from_complete_fields(span.cloned(), Array::new(arg_types), ret_type)
+    }
+
+    /// Construct a function type from every physical field.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        arg_types: Array<Type>,
+        ret_type: Type,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(FuncTypeObj {
+                base: TypeObj::new(span),
+                arg_types,
+                ret_type,
+            }),
+        }
+    }
+}
+
+/// ABI-complete Rust representation of TVM's tensor-map marker type.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ir.TensorMapType"]
+#[type_final]
+pub struct TensorMapTypeObj {
+    base: TypeObj,
+}
+
+/// Reference-counted handle to a tensor-map marker type.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct TensorMapType {
+    data: ObjectArc<TensorMapTypeObj>,
+}
+
+impl std::ops::Deref for TensorMapType {
+    type Target = TensorMapTypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for TensorMapTypeObj {
+    type Target = TypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl TensorMapType {
+    /// Construct a tensor-map marker type directly in Rust.
+    pub fn new() -> Self {
+        Self::with_span(None)
+    }
+
+    /// Construct a tensor-map marker type with optional source metadata.
+    pub fn with_span(span: Option<&Span>) -> Self {
+        Self::from_complete_fields(span.cloned())
+    }
+
+    /// Construct a tensor-map marker type from every physical field.
+    pub fn from_complete_fields(span: Option<Span>) -> Self {
+        Self {
+            data: ObjectArc::new(TensorMapTypeObj {
+                base: TypeObj::new(span),
+            }),
+        }
+    }
+}
+
+impl Default for TensorMapType {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1891,6 +2317,7 @@ impl Call {
 }
 
 tvm_ffi::impl_object_upcast!(
+    SequentialSpan => Span,
     BaseFunc => Expr,
     IntImm => Expr,
     IntImm => PrimExpr,
@@ -1901,9 +2328,14 @@ tvm_ffi::impl_object_upcast!(
     PointerType => Type,
     PrimType => Type,
     TupleType => Type,
+    FuncType => Type,
+    TensorMapType => Type,
     Var => Expr,
     GlobalVar => Expr,
     Call => Expr,
+    Op => Expr,
+    Tuple => Expr,
+    TupleGetItem => Expr,
     TensorLoad => Expr,
     TensorLoad => PrimExpr,
     DictAttrs => Attrs,

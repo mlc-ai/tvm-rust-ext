@@ -26,26 +26,31 @@ use tvm::ir::prim::{
 };
 use tvm::ir::{
     Attrs, AttrsObj, BaseFunc, BaseFuncObj, Call, CallObj, DictAttrs, DictAttrsObj,
-    DummyGlobalInfo, DummyGlobalInfoObj, Expr, ExprObj, GlobalInfo, GlobalInfoObj, GlobalVar,
-    GlobalVarObj, IRModule, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj, OpaqueTypeObj, PrimExpr,
-    PrimExprConvertibleObj, PrimType, PrimTypeObj, Range, RangeObj, Source, SourceMap,
+    DummyGlobalInfo, DummyGlobalInfoObj, Expr, ExprObj, FuncType, FuncTypeObj, GlobalInfo,
+    GlobalInfoObj, GlobalVar, GlobalVarObj, IRModule, IRModuleObj, IntImm, IntImmObj,
+    OpaqueExprObj, OpaqueTypeObj, PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj,
+    PrimType, PrimTypeObj, Range, RangeObj, SequentialSpan, SequentialSpanObj, Source, SourceMap,
     SourceMapObj, SourceName, SourceNameObj, SourceObj, Span, SpanObj, TensorLoad, TensorLoadObj,
-    TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
+    TensorMapType, TensorMapTypeObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, TupleType,
+    TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
 use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
     AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, Bind,
     BindObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferRegionTypeObj, BufferStore,
-    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Evaluate,
-    EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, Iter, IterObj, IterVar,
-    IterVarObj, IterVarType, Layout, LayoutObj, MatchBufferRegion, MatchBufferRegionObj, PrimFunc,
-    PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj, Stmt, StmtObj, TileLayoutObj,
+    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj, DeclBuffer,
+    DeclBufferObj, Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj,
+    IndexMap, IndexMapObj, Iter, IterObj, IterVar, IterVarObj, IterVarType, Layout, LayoutObj,
+    MatchBufferRegion, MatchBufferRegionObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj,
+    Stmt, StmtObj, TensorIntrin, TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
 };
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
-use tvm::tvm_ffi::{Any, Array, DLDataType, Map, Object, ObjectCore, ObjectRefCore, String};
+use tvm::tvm_ffi::{
+    Any, Array, DLDataType, Function, Map, Object, ObjectCore, ObjectRefCore, String,
+};
 
 mod common;
-use common::{direct_fields, load_tvm_compiler, runtime_type_info};
+use common::{assert_structural_equal, direct_fields, load_tvm_compiler, runtime_type_info};
 
 const DEFAULT: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskHasDefault as i64;
 const IGNORE: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore as i64;
@@ -54,11 +59,13 @@ const DEF_RECURSIVE: i64 =
 
 const SCHEMA_ANY_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"Any"}]}"#;
 const SCHEMA_ANY: &str = r#"{"type":"Any"}"#;
+const SCHEMA_ARRAY_ANY: &str = r#"{"type":"ffi.Array","args":[{"type":"Any"}]}"#;
 const SCHEMA_ARRAY_EXPR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Expr"}]}"#;
 const SCHEMA_ARRAY_GLOBAL_INFO_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"ir.GlobalInfo"}]}]}"#;
 const SCHEMA_ARRAY_ITER: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Iter"}]}"#;
 const SCHEMA_ARRAY_ITER_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.IterVar"}]}"#;
 const SCHEMA_ARRAY_RANGE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Range"}]}"#;
+const SCHEMA_ARRAY_SPAN: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Span"}]}"#;
 const SCHEMA_ARRAY_STMT: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Stmt"}]}"#;
 const SCHEMA_ARRAY_STRING_IMM: &str =
     r#"{"type":"ffi.Array","args":[{"type":"ir.prim.StringImm"}]}"#;
@@ -67,10 +74,12 @@ const SCHEMA_ARRAY_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Var"}]
 const SCHEMA_ATTRS: &str = r#"{"type":"ir.Attrs"}"#;
 const SCHEMA_AXIS: &str = r#"{"type":"tirx.Axis"}"#;
 const SCHEMA_BUFFER_REGION: &str = r#"{"type":"tirx.BufferRegion"}"#;
+const SCHEMA_BOOL: &str = r#"{"type":"bool"}"#;
 const SCHEMA_COMM_REDUCER: &str = r#"{"type":"te.CommReducer"}"#;
 const SCHEMA_DICT_ATTRS: &str = r#"{"type":"ir.DictAttrs"}"#;
 const SCHEMA_DTYPE: &str = r#"{"type":"DataType"}"#;
 const SCHEMA_EXPR: &str = r#"{"type":"ir.Expr"}"#;
+const SCHEMA_EXEC_SCOPE: &str = r#"{"type":"tirx.ExecScope"}"#;
 const SCHEMA_INT: &str = r#"{"type":"int"}"#;
 const SCHEMA_LAYOUT_OPTIONAL: &str = r#"{"type":"Optional","args":[{"type":"tirx.Layout"}]}"#;
 const SCHEMA_MAP_AXIS_EXPR: &str =
@@ -81,9 +90,14 @@ const SCHEMA_MAP_GLOBAL_VAR: &str =
     r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ir.GlobalVar"}]}"#;
 const SCHEMA_MAP_SOURCE: &str =
     r#"{"type":"ffi.Map","args":[{"type":"ir.SourceName"},{"type":"ir.Source"}]}"#;
+const SCHEMA_MAP_STRING_VAR: &str =
+    r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ir.Var"}]}"#;
+const SCHEMA_OP: &str = r#"{"type":"ir.Op"}"#;
 const SCHEMA_OPTIONAL_EXPR: &str = r#"{"type":"Optional","args":[{"type":"ir.Expr"}]}"#;
 const SCHEMA_OPTIONAL_ITER_VAR: &str = r#"{"type":"Optional","args":[{"type":"tirx.IterVar"}]}"#;
+const SCHEMA_OPTIONAL_STRING: &str = r#"{"type":"Optional","args":[{"type":"ffi.String"}]}"#;
 const SCHEMA_OPTIONAL_STMT: &str = r#"{"type":"Optional","args":[{"type":"tirx.Stmt"}]}"#;
+const SCHEMA_OPTIONAL_OBJECT: &str = r#"{"type":"Optional","args":[{"type":"ffi.Object"}]}"#;
 const SCHEMA_PRIM_TYPE: &str = r#"{"type":"ir.PrimType"}"#;
 const SCHEMA_RANGE: &str = r#"{"type":"ir.Range"}"#;
 const SCHEMA_SOURCE_MAP: &str = r#"{"type":"ir.SourceMap"}"#;
@@ -94,6 +108,8 @@ const SCHEMA_STRING: &str = r#"{"type":"ffi.String"}"#;
 const SCHEMA_STRING_IMM: &str = r#"{"type":"ir.prim.StringImm"}"#;
 const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
+const SCHEMA_PRIM_FUNC: &str = r#"{"type":"tirx.PrimFunc"}"#;
+const SCHEMA_TILE_LAYOUT: &str = r#"{"type":"tirx.TileLayout"}"#;
 
 fn assert_contract<N: ObjectCore, P: ObjectCore>(
     expected_final: bool,
@@ -257,6 +273,11 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("end_column", 0, SCHEMA_INT),
         ],
     );
+    assert_contract::<SequentialSpanObj, SpanObj>(
+        true,
+        Some(Tree),
+        &[("spans", 0, SCHEMA_ARRAY_SPAN)],
+    );
     assert_contract::<PrimExprConvertibleObj, Object>(false, None, &[]);
     assert_contract::<RangeObj, Object>(
         true,
@@ -277,14 +298,37 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("ty_args", 0, SCHEMA_ARRAY_TYPE),
         ],
     );
+    assert_contract::<TupleObj, ExprObj>(true, Some(Tree), &[("fields", 0, SCHEMA_ARRAY_EXPR)]);
+    assert_contract::<TupleGetItemObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("tuple_value", 0, SCHEMA_EXPR), ("index", 0, SCHEMA_INT)],
+    );
     assert_contract::<TypeObj, Object>(
         false,
         Some(Tree),
         &[("span", DEFAULT | IGNORE, SCHEMA_SPAN)],
     );
     assert_contract::<OpaqueTypeObj, TypeObj>(true, Some(Tree), &[]);
+    assert_contract::<PointerTypeObj, TypeObj>(
+        true,
+        Some(Tree),
+        &[
+            ("element_type", 0, SCHEMA_TYPE),
+            ("storage_scope", 0, SCHEMA_STRING),
+        ],
+    );
     assert_contract::<PrimTypeObj, TypeObj>(true, Some(Tree), &[("dtype", 0, SCHEMA_DTYPE)]);
     assert_contract::<TupleTypeObj, TypeObj>(true, Some(Tree), &[("fields", 0, SCHEMA_ARRAY_TYPE)]);
+    assert_contract::<FuncTypeObj, TypeObj>(
+        true,
+        Some(Tree),
+        &[
+            ("arg_types", 0, SCHEMA_ARRAY_TYPE),
+            ("ret_type", 0, SCHEMA_TYPE),
+        ],
+    );
+    assert_contract::<TensorMapTypeObj, TypeObj>(true, Some(Tree), &[]);
     assert_contract::<IntImmObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_INT)]);
     assert_contract::<AttrsObj, Object>(false, Some(Tree), &[]);
     assert_contract::<DictAttrsObj, AttrsObj>(true, Some(Tree), &[("__dict__", 0, SCHEMA_ANY_MAP)]);
@@ -535,6 +579,33 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("offset", 0, SCHEMA_MAP_AXIS_EXPR),
         ],
     );
+    assert_contract::<ComposeLayoutObj, LayoutObj>(
+        true,
+        Some(Tree),
+        &[
+            ("per_element", 0, SCHEMA_INT),
+            ("swizzle_len", 0, SCHEMA_INT),
+            ("atom_len", 0, SCHEMA_INT),
+            ("swizzle_inner", 0, SCHEMA_BOOL),
+            ("inner_mask", 0, SCHEMA_INT),
+            ("outer_mask", 0, SCHEMA_INT),
+            ("tile_layout", 0, SCHEMA_TILE_LAYOUT),
+        ],
+    );
+    assert_contract::<IndexMapObj, Object>(
+        true,
+        Some(Tree),
+        &[
+            ("initial_indices", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("final_indices", 0, SCHEMA_ARRAY_EXPR),
+            ("inverse_index_map", IGNORE, SCHEMA_OPTIONAL_OBJECT),
+        ],
+    );
+    assert_contract::<TensorIntrinObj, Object>(
+        true,
+        Some(Unsupported),
+        &[("desc", 0, SCHEMA_PRIM_FUNC), ("impl", 0, SCHEMA_PRIM_FUNC)],
+    );
     assert_contract::<BufferTypeObj, TypeObj>(
         true,
         Some(Tree),
@@ -600,6 +671,18 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("source", 0, SCHEMA_BUFFER_REGION),
         ],
     );
+    assert_contract::<TilePrimitiveCallObj, StmtObj>(
+        true,
+        Some(Tree),
+        &[
+            ("op", 0, SCHEMA_OP),
+            ("args", 0, SCHEMA_ARRAY_ANY),
+            ("workspace", 0, SCHEMA_MAP_STRING_VAR),
+            ("config", 0, SCHEMA_ANY_MAP),
+            ("dispatch", 0, SCHEMA_OPTIONAL_STRING),
+            ("scope", 0, SCHEMA_EXEC_SCOPE),
+        ],
+    );
     assert_contract::<IterVarObj, PrimExprConvertibleObj>(
         true,
         Some(Tree),
@@ -634,15 +717,21 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert!(IterVarType::try_from(i64::from(i32::MIN) - 1).is_err());
 
     assert_complete_allocator!(SourceMap::from_complete_fields: fn(Map<SourceName, Source>) -> SourceMap);
-    assert_complete_allocator!(Span::from_complete_fields: fn(SourceName, i32, i32, i32, i32) -> Span);
+    assert_complete_allocator!(Span::from_complete_fields: fn(Option<SourceName>, i32, i32, i32, i32) -> Span);
+    assert_complete_allocator!(SequentialSpan::from_complete_fields: fn(Option<SourceName>, i32, i32, i32, i32, Array<Span>) -> SequentialSpan);
     assert_complete_allocator!(Range::from_complete_fields: fn(PrimExpr, PrimExpr, Option<Span>) -> Range);
     assert_complete_allocator!(TupleType::from_complete_fields: fn(Option<Span>, Array<Type>) -> TupleType);
+    assert_complete_allocator!(FuncType::from_complete_fields: fn(Option<Span>, Array<Type>, Type) -> FuncType);
+    assert_complete_allocator!(TensorMapType::from_complete_fields: fn(Option<Span>) -> TensorMapType);
     assert_complete_allocator!(DummyGlobalInfo::from_complete_fields: fn() -> DummyGlobalInfo);
     assert_complete_allocator!(IntImm::from_complete_fields: fn(Option<Span>, PrimType, i64) -> IntImm);
     assert_complete_allocator!(PrimType::from_complete_fields: fn(Option<Span>, DLDataType) -> PrimType);
+    assert_complete_allocator!(PointerType::from_complete_fields: fn(Option<Span>, Type, String) -> PointerType);
     assert_complete_allocator!(Var::from_complete_fields: fn(Option<Span>, Type, String) -> Var);
     assert_complete_allocator!(GlobalVar::from_complete_fields: fn(Option<Span>, Type, String) -> GlobalVar);
     assert_complete_allocator!(Call::from_complete_fields: fn(Option<Span>, Type, Expr, Array<Expr>, Option<Attrs>, Array<Type>) -> Call);
+    assert_complete_allocator!(Tuple::from_complete_fields: fn(Option<Span>, Type, Array<Expr>) -> Tuple);
+    assert_complete_allocator!(TupleGetItem::from_complete_fields: fn(Option<Span>, Type, Expr, i32) -> TupleGetItem);
     assert_complete_allocator!(IRModule::from_complete_fields: fn(Map<GlobalVar, BaseFunc>, SourceMap, DictAttrs, Map<String, Array<GlobalInfo>>, Map<String, GlobalVar>) -> IRModule);
     assert_complete_allocator!(DictAttrs::from_complete_fields: fn(Map<String, Any>) -> DictAttrs);
 
@@ -672,6 +761,8 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(AllocBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Map<String, Any>) -> AllocBuffer);
     assert_complete_allocator!(BufferRegion::from_complete_fields: fn(Option<Span>, BufferRegionType, BufferVar, Array<Range>) -> BufferRegion);
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
+    assert_complete_allocator!(IndexMap::from_complete_fields: fn(Array<PrimVar>, Array<PrimExpr>, Option<IndexMap>) -> IndexMap);
+    assert_complete_allocator!(TensorIntrin::from_complete_fields: fn(PrimFunc, PrimFunc) -> TensorIntrin);
 }
 
 #[test]
@@ -701,4 +792,85 @@ fn typed_expression_views_check_types_and_preserve_identity() {
     let recovered_buffer: BufferVar = (&buffer_expr).try_into().unwrap();
     assert!(recovered_buffer.same_as(&buffer_var));
     assert!(BufferVar::try_from(&integer).is_err());
+}
+
+#[test]
+fn tuple_constructors_match_native_type_derivation_and_bounds() {
+    load_tvm_compiler();
+
+    let first: Expr = IntImm::new("int32", 1).unwrap().into();
+    let second: Expr = IntImm::new("int64", 2).unwrap().into();
+    let tuple = Tuple::new(vec![first, second]);
+    let tuple_type = tuple.ty.as_node::<TupleTypeObj>().unwrap();
+    assert_eq!(tuple_type.fields.len(), 2);
+    assert!(tuple_type
+        .fields
+        .get(0)
+        .unwrap()
+        .same_as(&tuple.fields.get(0).unwrap().ty));
+    assert!(tuple_type
+        .fields
+        .get(1)
+        .unwrap()
+        .same_as(&tuple.fields.get(1).unwrap().ty));
+
+    let native_tuple: Tuple = Function::get_global("ir.Tuple")
+        .unwrap()
+        .call_tuple((tuple.fields.clone(), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&tuple, &native_tuple);
+
+    let projection = TupleGetItem::new(tuple.clone(), 1).unwrap();
+    assert!(projection.ty.same_as(&tuple.fields.get(1).unwrap().ty));
+    let native_projection: TupleGetItem = Function::get_global("ir.TupleGetItem")
+        .unwrap()
+        .call_tuple((Expr::from(tuple), 1_i32, Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&projection, &native_projection);
+
+    assert!(TupleGetItem::new(native_tuple.clone(), -1).is_err());
+    assert!(TupleGetItem::new(native_tuple, 2).is_err());
+
+    let argument_type: Type = PrimType::new("int32").unwrap().into();
+    let return_type: Type = TupleType::empty().into();
+    let function_type = FuncType::new(vec![argument_type.clone()], return_type.clone());
+    let native_function_type: FuncType = Function::get_global("ir.FuncType")
+        .unwrap()
+        .call_tuple((Array::new(vec![argument_type]), return_type))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&function_type, &native_function_type);
+
+    let tensor_map_type = TensorMapType::new();
+    let native_tensor_map_type: TensorMapType = Function::get_global("ir.TensorMapType")
+        .unwrap()
+        .call_tuple((Option::<Span>::None,))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&tensor_map_type, &native_tensor_map_type);
+}
+
+#[test]
+fn pointer_type_constructor_matches_native_defaults() {
+    load_tvm_compiler();
+
+    let element_type = PrimType::new("float32").unwrap();
+    let pointer = PointerType::new(element_type.clone(), "").unwrap();
+    assert_eq!(pointer.storage_scope(), "global");
+    assert!(pointer.element_type().same_as(&element_type));
+
+    let native: PointerType = Function::get_global("ir.PointerType")
+        .unwrap()
+        .call_tuple((Type::from(element_type), String::from("")))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&pointer, &native);
+    assert!(PointerType::new(Type::missing(), "global").is_err());
 }

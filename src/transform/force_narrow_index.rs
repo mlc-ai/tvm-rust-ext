@@ -25,8 +25,9 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, cast_prim_expr, get_operator, is_primitive_type, mutate_expr_default,
-    mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
+    array_same_as, cast_prim_expr, get_operator, is_primitive_type,
+    mutate_buffer_region_with_buffer, mutate_expr_default, mutate_stmt_expr_default,
+    option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{
@@ -35,7 +36,8 @@ use crate::ir::prim::{
 };
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, For, IfThenElse, IterVar, PrimFunc, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, For, IfThenElse, IterVar,
+    PrimFunc, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -682,6 +684,15 @@ impl IndexDataTypeNormalizer {
             indices.iter().map(Into::into).collect(),
             value.span.as_ref(),
         )
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {

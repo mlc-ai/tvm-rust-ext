@@ -240,13 +240,14 @@ existing TVM operation:
 
 | Class | Examples | Generated behavior |
 | --- | --- | --- |
-| Plain data node | `Span`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate` | complete layout and direct Rust allocation |
+| Plain data node | `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate` | complete layout and direct Rust allocation |
 | Plain node with local validation | integer literals, binary ops, `SeqStmt` | direct allocation plus equivalent Rust validation |
 | Native registry identity | `Axis` | emit an opaque wrapper and call the existing `tirx.AxisGet` singleton lookup |
 | Native interned identity | `SourceName` | emit an opaque wrapper and call the existing `ir.SourceName` lookup |
-| C++ polymorphic hierarchy | `Layout`, `PrimExprConvertible`, `IterVar` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |
+| C++ polymorphic hierarchy | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |
 | Typed ordinary expression | `BufferRegion` | emit its complete `Expr` layout, use the registered `BufferRegionType` singleton, and allocate the region in Rust |
 | Native STL storage | `Source` | keep the node opaque and construct it through the existing `SourceMapAdd` operation |
+| Non-object optional ABI | `TilePrimitiveCall` (`Optional<String>`) | keep the node opaque until Rust has the matching TVM-FFI optional representation; Rust `Option<String>` has a different layout |
 | Complex semantic constructor | `PrimFunc`, match buffer | use reviewed handwritten Rust analysis/validation, then allocate complete fields in Rust |
 | Build-dependent defaults | `BufferType` | use reviewed handwritten Rust defaults and validation, then allocate in Rust |
 | Derived mutable state | `IRModule` | rebuild and validate derived indexes in generated Rust code |

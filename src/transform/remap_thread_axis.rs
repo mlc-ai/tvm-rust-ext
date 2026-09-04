@@ -25,13 +25,14 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, option_same_as, with_prim_func_attr,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, mutate_buffer_region_with_buffer, mutate_stmt_expr_default, option_same_as,
+    with_prim_func_attr, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Expr, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, For, IterVar, PrimFunc, Stmt,
+    AllocBuffer, AttrStmt, BufferRegion, BufferStore, BufferVar, DeclBuffer, For, IterVar,
+    PrimFunc, Stmt,
 };
 
 const KERNEL_LAUNCH_PARAMS: &str = "tirx.kernel_launch_params";
@@ -170,6 +171,15 @@ impl ThreadAxisRewriter {
             return Ok(value);
         }
         Ok(value.copy_with(buffer, stored_value, indices))
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_allocation(

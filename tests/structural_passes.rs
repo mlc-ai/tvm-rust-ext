@@ -23,15 +23,15 @@ use tvm::ir::prim::{
 };
 use tvm::ir::{
     BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
-    OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SourceMap, SourceName,
-    Span, TensorLoad, Type, Var,
+    OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SequentialSpan,
+    SourceMap, SourceName, Span, TensorLoad, Type, Var,
 };
 use tvm::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferRegionType,
-    BufferStore, BufferType, DeclBuffer, DispatchContext, Evaluate, ExecScope, For, ForKind,
-    IfThenElse, Iter, IterVar, IterVarType, Layout, MatchBufferRegion, PrimFunc, Return,
-    ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt, TileLayout,
-    TilePrimitiveCall, While,
+    BufferStore, BufferType, ComposeLayout, DeclBuffer, DispatchContext, Evaluate, ExecScope, For,
+    ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType, Layout, MatchBufferRegion, PrimFunc,
+    PrimVar, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt,
+    TensorIntrin, TileLayout, TilePrimitiveCall, While,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{

@@ -46,18 +46,31 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     );
     assert_structural_equal(&source_name, &cpp_source_name);
     assert_eq!(
-        object_pointer(&span.source_name),
+        object_pointer(span.source_name.as_ref().unwrap()),
         object_pointer(&source_name)
     );
     assert_eq!(span.line, 2);
     assert_eq!(span.column, 3);
     assert_eq!(span.end_line, 4);
     assert_eq!(span.end_column, 5);
-    let complete_span = Span::from_complete_fields(source_name, 11, 22, 33, 44);
+    let complete_span = Span::from_complete_fields(Some(source_name), 11, 22, 33, 44);
     assert_eq!(complete_span.line, 11);
     assert_eq!(complete_span.column, 22);
     assert_eq!(complete_span.end_line, 33);
     assert_eq!(complete_span.end_column, 44);
+
+    let sequential = SequentialSpan::new(vec![span.clone(), complete_span.clone()]);
+    assert!(sequential.source_name.is_none());
+    assert_eq!(sequential.spans.len(), 2);
+    let native_sequential: SequentialSpan = Function::get_global("ir.SequentialSpan")
+        .unwrap()
+        .call_tuple((Array::new(vec![span.clone(), complete_span]),))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&sequential, &native_sequential);
+    let nested = SequentialSpan::new(vec![Span::from(sequential), span]);
+    assert_eq!(nested.spans.len(), 3);
 
     let int_type = PrimType::new("int32").unwrap();
     assert!(int_type.span.is_none());
@@ -222,6 +235,15 @@ fn statement_sequence_normalizes_empty_single_and_nested_inputs() {
     let normalized = Stmt::sequence(vec![single]).unwrap();
     assert_eq!(object_pointer(&normalized), single_pointer);
 
+    let canonical = SeqStmt::new(vec![
+        Evaluate::from_i64(1).unwrap().into(),
+        Evaluate::from_i64(2).unwrap().into(),
+    ])
+    .unwrap();
+    let canonical_pointer = object_pointer(&canonical);
+    let flattened = canonical.flatten().unwrap();
+    assert_eq!(object_pointer(&flattened), canonical_pointer);
+
     let nested = SeqStmt::new(vec![
         Evaluate::from_i64(1).unwrap().into(),
         Evaluate::from_i64(0).unwrap().into(),
@@ -358,21 +380,15 @@ fn every_layout_registered_operation_is_callable() {
     );
     assert_structural_equal(&layout.canonicalize().unwrap(), &layout);
 
-    // ComposeLayout is not part of the handwritten Rust slice, but it shares
-    // the reflected Layout method contract. Construct a no-op swizzle through
-    // the reference API and verify its concrete methods.
-    let compose: Layout = Function::get_global("tirx.ComposeLayout")
-        .unwrap()
-        .call_packed(&[
-            AnyView::from(&0_i64),
-            AnyView::from(&0_i64),
-            AnyView::from(&0_i64),
-            AnyView::from(&tile),
-            AnyView::from(&false),
-        ])
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let compose = ComposeLayout::new(0, 0, 0, tile.clone(), false).unwrap();
+    assert_eq!(compose.per_element().unwrap(), 0);
+    assert_eq!(compose.swizzle_len().unwrap(), 0);
+    assert_eq!(compose.atom_len().unwrap(), 0);
+    assert!(!compose.swizzle_inner().unwrap());
+    assert_eq!(compose.inner_mask().unwrap(), 0);
+    assert_eq!(compose.outer_mask().unwrap(), 0);
+    assert!(compose.tile_layout().unwrap().same_as(&tile));
+    let compose: Layout = compose.into();
     assert!(compose.verify_well_formed().unwrap());
     assert_structural_equal(
         &compose
@@ -441,6 +457,57 @@ fn every_layout_registered_operation_is_callable() {
         .is_direct_sum_left(&direct_sum, &interleaved_shape, &left_shape)
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn index_maps_and_tensor_intrinsics_cross_the_native_abi() {
+    load_tvm_compiler();
+
+    let index = PrimVar::try_from(Var::new("i", "int32").unwrap()).unwrap();
+    let identity_map = IndexMap::new(vec![index.clone()], vec![index.clone().into()], None);
+    assert_eq!(
+        identity_map
+            .map_shape(vec![prim_int_expression(4)], None)
+            .unwrap()
+            .len(),
+        1
+    );
+    let one = IntImm::new("int32", 1).unwrap();
+    let output = Add::new(index.clone(), one).unwrap();
+    let index_map = IndexMap::new(vec![index], vec![output.into()], None);
+    let mapped = index_map
+        .map_indices(vec![prim_int_expression(3)], None)
+        .unwrap();
+    assert_structural_equal(&mapped.get(0).unwrap(), &prim_int_expression(4));
+    let domain = vec![Range::from_min_extent(int_expression(0), int_expression(4)).unwrap()];
+    let inverse = index_map.inverse(domain.clone(), None).unwrap();
+    let recovered = inverse
+        .map_indices(vec![prim_int_expression(4)], None)
+        .unwrap();
+    assert_structural_equal(&recovered.get(0).unwrap(), &prim_int_expression(3));
+    let (non_surjective_inverse, _) = index_map.non_surjective_inverse(domain, None).unwrap();
+    assert_eq!(non_surjective_inverse.initial_indices.len(), 1);
+
+    let handle_type = PointerType::new(PrimType::void(), "global").unwrap();
+    let parameter = Var::with_type("data", handle_type);
+    let function = PrimFunc::new(vec![parameter], Evaluate::from_i64(0).unwrap()).unwrap();
+    let intrinsic = TensorIntrin::new(function.clone(), function).unwrap();
+    intrinsic
+        .register("testing.rust_tensor_intrin", true)
+        .unwrap();
+    assert!(TensorIntrin::get("testing.rust_tensor_intrin")
+        .unwrap()
+        .same_as(&intrinsic));
+    assert!(TensorIntrin::try_get("testing.missing_tensor_intrin")
+        .unwrap()
+        .is_none());
+
+    let invalid = PrimFunc::new(
+        vec![Var::new("scalar", "int32").unwrap()],
+        Evaluate::from_i64(0).unwrap(),
+    )
+    .unwrap();
+    assert!(TensorIntrin::new(invalid.clone(), invalid).is_err());
 }
 
 #[test]

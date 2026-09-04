@@ -1153,7 +1153,7 @@ impl StorageLegalizer {
         let Ok(pointer) = variable.ty.clone().try_cast::<PointerType>() else {
             return Ok(variable);
         };
-        let Ok(element) = pointer.element_type()?.try_cast::<PrimType>() else {
+        let Ok(element) = pointer.element_type().clone().try_cast::<PrimType>() else {
             return Ok(variable);
         };
         if !self.unsupported.matches(&element) {
@@ -1161,10 +1161,7 @@ impl StorageLegalizer {
         }
         let mapped = Var::with_type(
             variable.name.as_str(),
-            PointerType::new(
-                self.storage_type(&element)?,
-                pointer.storage_scope()?.as_str(),
-            )?,
+            PointerType::new(self.storage_type(&element)?, pointer.storage_scope())?,
         );
         self.variable_remaps
             .insert(ObjectIdentity::of(&variable), mapped.clone());
@@ -1349,17 +1346,14 @@ impl StorageLegalizer {
 
         if let Ok(pointer) = value.ty.clone().try_cast::<PointerType>() {
             let mutated = mutate_expr_default(self, mutator, value.clone().into())?;
-            let Ok(element) = pointer.element_type()?.try_cast::<PrimType>() else {
+            let Ok(element) = pointer.element_type().clone().try_cast::<PrimType>() else {
                 return Ok(mutated);
             };
             if !self.unsupported.matches(&element) {
                 return Ok(mutated);
             }
             let call = mutated.try_cast::<Call>()?;
-            let pointer = PointerType::new(
-                self.storage_type(&element)?,
-                pointer.storage_scope()?.as_str(),
-            )?;
+            let pointer = PointerType::new(self.storage_type(&element)?, pointer.storage_scope())?;
             return Ok(call
                 .copy_with(pointer.into(), call.op.clone(), call.args.clone())
                 .into());
