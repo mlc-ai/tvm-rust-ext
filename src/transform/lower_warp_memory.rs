@@ -57,7 +57,7 @@ pub fn lower_warp_memory_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
     let analyzer = Analyzer::new()?;
     bind_variable_bounds(&function.body, &analyzer)?;
-    let mut rewriter = WarpMemoryRewriter::new(warp_size, analyzer)?;
+    let mut rewriter = WarpMemoryRewriter::new(warp_size, analyzer);
     let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
     let body = update_pointer_storage_scope(body, rewriter.new_storage_scopes)?;
     Ok(with_prim_func_body(function, body))
@@ -358,12 +358,12 @@ struct WarpMemoryRewriter {
 }
 
 impl WarpMemoryRewriter {
-    fn new(warp_size: i32, analyzer: Analyzer) -> Result<Self> {
-        Ok(Self {
+    fn new(warp_size: i32, analyzer: Analyzer) -> Self {
+        Self {
             warp_size,
             analyzer,
             new_storage_scopes: HashMap::new(),
-        })
+        }
     }
 }
 
@@ -535,7 +535,7 @@ impl WarpAccessRewriter {
             if position + 1 >= arguments.len() {
                 continue;
             }
-            if expression_var_identity(&arguments[position])? == Some(self.old_identity()) {
+            if expression_var_identity(&arguments[position]) == Some(self.old_identity()) {
                 let index = arguments[position + 1].clone().try_cast::<PrimExpr>()?;
                 let (local_index, _) = self.split_index_by_group(&index)?;
                 arguments[position] = self.new_buffer().into();
@@ -645,7 +645,7 @@ impl WarpAccessRewriter {
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<Expr> {
         let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if expression_var_identity(&value.source)? != Some(self.old_identity()) {
+        if expression_var_identity(&value.source) != Some(self.old_identity()) {
             if array_same_as(&indices, &value.indices) {
                 return Ok(value.into());
             }
@@ -808,7 +808,7 @@ impl PointerScopeUpdater {
         let buffer = self.updated_buffer(&buffer)?;
         if array_same_as(&indices, &value.indices)
             && ObjectIdentity::of(buffer.as_var())
-                == expression_var_identity(&value.source)?.unwrap()
+                == expression_var_identity(&value.source).unwrap()
         {
             return Ok(value);
         }
@@ -850,12 +850,12 @@ fn expression_uses_variable(expression: &PrimExpr, variable: &Var) -> Result<boo
     .is_some())
 }
 
-fn expression_var_identity(expression: &Expr) -> Result<Option<ObjectIdentity>> {
-    Ok(expression
+fn expression_var_identity(expression: &Expr) -> Option<ObjectIdentity> {
+    expression
         .clone()
         .try_cast::<Var>()
         .ok()
-        .map(|variable| ObjectIdentity::of(&variable)))
+        .map(|variable| ObjectIdentity::of(&variable))
 }
 
 fn ramp_expression(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {

@@ -419,7 +419,7 @@ impl PackedAbiBinder {
         num_args: Var,
         device_type: i32,
     ) -> Result<Self> {
-        let signature = function_signature(function_name, parameters)?;
+        let signature = function_signature(function_name, parameters);
         let signature_imm = StringImm::new(&signature);
         let mut binder = Self {
             signature,
@@ -1177,7 +1177,7 @@ impl PackedAbiBinder {
     }
 }
 
-fn function_signature(name: &str, parameters: &Array<Var>) -> Result<String> {
+fn function_signature(name: &str, parameters: &Array<Var>) -> String {
     let mut rendered = Vec::with_capacity(parameters.len());
     for parameter in parameters.iter() {
         let value = if let Ok(buffer) = parameter.clone().try_cast::<crate::tirx::BufferVar>() {
@@ -1205,7 +1205,7 @@ fn function_signature(name: &str, parameters: &Array<Var>) -> Result<String> {
         };
         rendered.push(value);
     }
-    Ok(format!("{name}({})", rendered.join(", ")))
+    format!("{name}({})", rendered.join(", "))
 }
 
 fn render_signature_expression(expression: PrimExpr) -> String {

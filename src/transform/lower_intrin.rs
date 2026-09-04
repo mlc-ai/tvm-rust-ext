@@ -187,15 +187,15 @@ impl IntrinInjecter {
         })?;
 
         let scalar_dtype = with_lanes(&dtype, 1)?;
-        let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1)?)?;
+        let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1))?;
         if dtype.dtype.lanes != 1 {
             let lanes = i64::from(dtype.dtype.lanes);
-            offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes)?)?;
-            scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes)?)?;
+            offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes))?;
+            scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes))?;
             offset = ramp(
                 offset,
-                int_like(&scalar_extent, 1)?,
-                int_like(&scalar_extent, lanes)?,
+                int_like(&scalar_extent, 1),
+                int_like(&scalar_extent, lanes),
             )?;
         }
 
@@ -337,7 +337,7 @@ impl IntrinInjecter {
 
     fn can_prove_nonnegative(&self, value: &PrimExpr) -> Result<bool> {
         self.analyzer
-            .can_prove(&GE::new(value.clone(), int_like(value, 0)?)?.into())
+            .can_prove(&GE::new(value.clone(), int_like(value, 0))?.into())
     }
 }
 
@@ -387,7 +387,7 @@ impl IntrinInjecter {
             return shift_right(
                 &self.shift_right_operator,
                 mapped.a.clone(),
-                int_like(&mapped.a, i64::from(shift))?,
+                int_like(&mapped.a, i64::from(shift)),
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
@@ -396,13 +396,11 @@ impl IntrinInjecter {
             }
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
-                    let shifted = Add::new(
-                        mapped.a.clone(),
-                        int_like(&mapped.a, divisor * coefficient)?,
-                    )?;
+                    let shifted =
+                        Add::new(mapped.a.clone(), int_like(&mapped.a, divisor * coefficient))?;
                     return Ok(crate::tirx::Sub::new(
                         Div::new(shifted, mapped.b.clone())?,
-                        int_like(&mapped.a, coefficient)?,
+                        int_like(&mapped.a, coefficient),
                     )?
                     .into());
                 }
@@ -413,14 +411,14 @@ impl IntrinInjecter {
                 let correction = shift_right(
                     &self.shift_right_operator,
                     remainder,
-                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
+                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1)),
                 )?;
                 return Ok(Add::new(quotient, correction)?.into());
             }
             return Ok(Select::new(
-                GE::new(remainder.clone(), int_like(&remainder, 0)?)?,
+                GE::new(remainder.clone(), int_like(&remainder, 0))?,
                 quotient.clone(),
-                crate::tirx::Sub::new(quotient, int_like(&mapped.a, 1)?)?,
+                crate::tirx::Sub::new(quotient, int_like(&mapped.a, 1))?,
             )?
             .into());
         }
@@ -431,7 +429,7 @@ impl IntrinInjecter {
         }
         let remainder = Var::with_type("rmod", dtype.clone());
         let quotient = Var::with_type("rdiv", dtype);
-        let zero = int_like(&mapped.a, 0)?;
+        let zero = int_like(&mapped.a, 0);
         let condition = Or::new(
             And::new(
                 GE::new(mapped.b.clone(), zero.clone())?,
@@ -445,7 +443,7 @@ impl IntrinInjecter {
         let selected = Select::new(
             condition,
             quotient.clone(),
-            crate::tirx::Sub::new(quotient.clone(), int_like(&mapped.a, 1)?)?,
+            crate::tirx::Sub::new(quotient.clone(), int_like(&mapped.a, 1))?,
         )?;
         Ok(Let::new(
             remainder,
@@ -474,7 +472,7 @@ impl IntrinInjecter {
             return bitwise_and(
                 &self.bitwise_and_operator,
                 mapped.a.clone(),
-                int_like(&mapped.a, mask)?,
+                int_like(&mapped.a, mask),
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
@@ -484,10 +482,7 @@ impl IntrinInjecter {
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
                     return Ok(Mod::new(
-                        Add::new(
-                            mapped.a.clone(),
-                            int_like(&mapped.a, divisor * coefficient)?,
-                        )?,
+                        Add::new(mapped.a.clone(), int_like(&mapped.a, divisor * coefficient))?,
                         mapped.b.clone(),
                     )?
                     .into());
@@ -498,13 +493,13 @@ impl IntrinInjecter {
                 let sign = shift_right(
                     &self.shift_right_operator,
                     remainder.clone(),
-                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
+                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1)),
                 )?;
                 let correction = bitwise_and(&self.bitwise_and_operator, mapped.b.clone(), sign)?;
                 return Ok(Add::new(remainder, correction)?.into());
             }
             return Ok(Select::new(
-                GE::new(remainder.clone(), int_like(&remainder, 0)?)?,
+                GE::new(remainder.clone(), int_like(&remainder, 0))?,
                 remainder.clone(),
                 Add::new(remainder, mapped.b.clone())?,
             )?
@@ -525,7 +520,7 @@ impl IntrinInjecter {
             .into());
         }
         let remainder = Var::with_type("rmod", dtype);
-        let zero = int_like(&mapped.a, 0)?;
+        let zero = int_like(&mapped.a, 0);
         let condition = Or::new(
             And::new(
                 GE::new(mapped.b.clone(), zero.clone())?,
@@ -704,8 +699,8 @@ fn constant_power_of_two(value: &PrimExpr) -> Option<u32> {
     (value > 0 && (value as u64).is_power_of_two()).then(|| (value as u64).trailing_zeros())
 }
 
-fn int_like(value: &PrimExpr, literal: i64) -> Result<PrimExpr> {
-    Ok(IntImm::from_complete_fields(None, value.type_annotation(), literal).into())
+fn int_like(value: &PrimExpr, literal: i64) -> PrimExpr {
+    IntImm::from_complete_fields(None, value.type_annotation(), literal).into()
 }
 
 fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
