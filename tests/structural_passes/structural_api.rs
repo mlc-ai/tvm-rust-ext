@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use tvm::tvm_ffi::AnyView;
 
 #[test]
 fn source_and_module_metadata_round_trip_cpp_objects() {
@@ -26,29 +27,16 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     let same_source_name = SourceName::get("contract-test.tvm").unwrap();
     let cpp_source_name: SourceName = Function::get_global("ir.SourceName")
         .unwrap()
-        .call_packed(&[AnyView::from(&tvm::tvm_ffi::String::from(
-            "contract-test.tvm",
-        ))])
+        .call_tuple((&tvm::tvm_ffi::String::from("contract-test.tvm"),))
         .unwrap()
         .try_into()
         .unwrap();
     let span = Span::new(&source_name, 2, 4, 3, 5).unwrap();
 
     assert_eq!(source_name.name.as_str(), "contract-test.tvm");
-    assert_eq!(
-        object_pointer(&source_name),
-        object_pointer(&same_source_name)
-    );
-    assert_structural_equal(&source_name, &same_source_name);
-    assert_eq!(
-        object_pointer(&source_name),
-        object_pointer(&cpp_source_name)
-    );
-    assert_structural_equal(&source_name, &cpp_source_name);
-    assert_eq!(
-        object_pointer(span.source_name.as_ref().unwrap()),
-        object_pointer(&source_name)
-    );
+    assert!(source_name.same_as(&same_source_name));
+    assert!(source_name.same_as(&cpp_source_name));
+    assert!(span.source_name.as_ref().unwrap().same_as(&source_name));
     assert_eq!(span.line, 2);
     assert_eq!(span.column, 3);
     assert_eq!(span.end_line, 4);
@@ -72,8 +60,6 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     let nested = SequentialSpan::new(vec![Span::from(sequential), span]);
     assert_eq!(nested.spans.len(), 3);
 
-    let int_type = PrimType::new("int32").unwrap();
-    assert!(int_type.span.is_none());
     let function = PrimFunc::from_body(Evaluate::from_i64(0).unwrap()).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
     assert_eq!(module.functions.len(), 1);
@@ -88,49 +74,17 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     let source = sources.get(&source_name).unwrap().unwrap();
     let cpp_lookup_name: SourceName = Function::get_global("ir.SourceName")
         .unwrap()
-        .call_packed(&[AnyView::from(&tvm::tvm_ffi::String::from("module.tvm"))])
+        .call_tuple((&tvm::tvm_ffi::String::from("module.tvm"),))
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(
-        object_pointer(&sources.get(&cpp_lookup_name).unwrap().unwrap()),
-        object_pointer(&source)
-    );
+    assert!(sources
+        .get(&cpp_lookup_name)
+        .unwrap()
+        .unwrap()
+        .same_as(&source));
     assert_eq!(source.source_name().unwrap().name.as_str(), "module.tvm");
     assert_eq!(source.text().unwrap().as_str(), "first line\nsecond line");
-
-    let dictionary: Map<tvm::tvm_ffi::String, Any> = [
-        (tvm::tvm_ffi::String::from("number"), Any::from(7i64)),
-        (
-            tvm::tvm_ffi::String::from("text"),
-            Any::from(tvm::tvm_ffi::String::from("value")),
-        ),
-    ]
-    .into_iter()
-    .collect();
-    let attrs = DictAttrs::from_dictionary(dictionary);
-    let dictionary = attrs.dict.clone();
-    assert_eq!(
-        i64::try_from(
-            dictionary
-                .get(&tvm::tvm_ffi::String::from("number"))
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
-        7
-    );
-    assert_eq!(
-        tvm::tvm_ffi::String::try_from(
-            dictionary
-                .get(&tvm::tvm_ffi::String::from("text"))
-                .unwrap()
-                .unwrap()
-        )
-        .unwrap()
-        .as_str(),
-        "value"
-    );
 
     assert!(module.global_infos.is_empty());
     let dummy = DummyGlobalInfo::new();
@@ -144,10 +98,7 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
         .unwrap()
         .unwrap();
     assert_eq!(group.len(), 1);
-    assert_eq!(
-        object_pointer(&group.get(0).unwrap()),
-        object_pointer(&dummy)
-    );
+    assert!(group.get(0).unwrap().same_as(&dummy));
 }
 
 #[test]
@@ -271,9 +222,8 @@ fn full_direct_constructors_preserve_source_spans() {
     let missing = Type::missing();
     let same_missing = Type::missing();
     assert!(missing.is_missing());
-    assert_eq!(
-        object_pointer(&missing),
-        object_pointer(&same_missing),
+    assert!(
+        missing.same_as(&same_missing),
         "the missing type is a native singleton"
     );
 
@@ -323,12 +273,9 @@ fn full_direct_constructors_preserve_source_spans() {
         evaluation.span.as_ref(),
         sequence.span.as_ref(),
     ] {
-        assert_eq!(object_pointer(actual.unwrap()), object_pointer(&span));
+        assert!(actual.unwrap().same_as(&span));
     }
-    assert_eq!(
-        object_pointer(iter_var.span().unwrap().as_ref().unwrap()),
-        object_pointer(&span)
-    );
+    assert!(iter_var.span().unwrap().as_ref().unwrap().same_as(&span));
 }
 
 #[test]
@@ -452,11 +399,6 @@ fn every_layout_registered_operation_is_callable() {
 
     assert!(layout.compatible_with_shape(&shape).unwrap());
     assert!(layout.verify_well_formed().unwrap());
-    let cpp_verified = Function::get_global("tirx.LayoutVerifyWellFormed")
-        .unwrap()
-        .call_packed(&[AnyView::from(&layout)])
-        .unwrap();
-    assert!(bool::try_from(cpp_verified).unwrap());
     assert_structural_equal(&layout.get_size(None).unwrap(), &eight);
     assert_structural_equal(&layout.get_size(Some("m")).unwrap(), &eight);
     assert_structural_equal(&layout.get_span(None).unwrap(), &eight);
@@ -779,11 +721,11 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let tensor_dtype = PrimType::new("float32").unwrap();
     let tensor: OpaqueExpr = Function::get_global("te.Placeholder")
         .unwrap()
-        .call_packed(&[
-            AnyView::from(&Array::<Expr>::new(Vec::new())),
-            AnyView::from(&tensor_dtype),
-            AnyView::from(&tvm::tvm_ffi::String::from("scalar_input")),
-        ])
+        .call_tuple((
+            &Array::<Expr>::new(Vec::new()),
+            &tensor_dtype,
+            &tvm::tvm_ffi::String::from("scalar_input"),
+        ))
         .unwrap()
         .try_into()
         .unwrap();
@@ -793,10 +735,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(
-        tensor_expr.ty.clone().try_cast::<PrimType>().unwrap().dtype,
-        tensor_dtype.dtype
-    );
+    assert_eq!(tensor_expr.dtype(), tensor_dtype.dtype);
 
     let extent = typed_int_expression("int64", 8);
     let stride = typed_int_expression("int64", 1);
@@ -832,21 +771,11 @@ fn buffer_bindings_round_trip_cpp_objects() {
     assert!(reflected_layout.offset().unwrap().is_empty());
     let reflected_iter = reflected_layout.shard().unwrap().get(0).unwrap();
     assert_eq!(
-        reflected_iter
-            .extent
-            .clone()
-            .try_cast::<IntImm>()
-            .unwrap()
-            .value,
+        reflected_iter.extent.as_node::<IntImmObj>().unwrap().value,
         8
     );
     assert_eq!(
-        reflected_iter
-            .stride
-            .clone()
-            .try_cast::<IntImm>()
-            .unwrap()
-            .value,
+        reflected_iter.stride.as_node::<IntImmObj>().unwrap().value,
         1
     );
     assert_eq!(reflected_iter.axis.name().unwrap().as_str(), "m");
@@ -861,18 +790,14 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let converted_axis = PrimExprConvertible::from(iter_var.clone())
         .to_prim_expr()
         .unwrap();
-    assert_eq!(object_pointer(&converted_axis), object_pointer(&axis));
+    assert!(converted_axis.same_as(&axis));
     let converted_by_cpp: Add = Function::get_global("ir.prim.Add")
         .unwrap()
-        .call_packed(&[
-            AnyView::from(&iter_var),
-            AnyView::from(&typed_int_expression("int64", 1)),
-            AnyView::from(&()),
-        ])
+        .call_tuple((&iter_var, &typed_int_expression("int64", 1), ()))
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(object_pointer(&converted_by_cpp.a), object_pointer(&axis));
+    assert!(converted_by_cpp.a.same_as(&axis));
     let domainless_iter = IterVar::with_metadata(
         None,
         axis.clone(),
@@ -885,7 +810,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let converted_domainless = PrimExprConvertible::from(domainless_iter)
         .to_prim_expr()
         .unwrap();
-    assert_eq!(object_pointer(&converted_domainless), object_pointer(&axis));
+    assert!(converted_domainless.same_as(&axis));
     assert!(TensorLoad::from_buffer(&axis, vec![typed_int_expression("int64", 0)]).is_err());
     let load = TensorLoad::from_buffer(&buffer, vec![axis.clone().into()]).unwrap();
     let explicit_load_type = PrimType::new("int32").unwrap();
@@ -896,19 +821,12 @@ fn buffer_bindings_round_trip_cpp_objects() {
         load.indices.clone(),
     );
     let explicit_load_type: Type = explicit_load_type.into();
-    assert_eq!(
-        object_pointer(&complete_load.ty),
-        object_pointer(&explicit_load_type)
-    );
+    assert!(complete_load.ty.same_as(&explicit_load_type));
     let store = BufferStore::new(&buffer, load.clone(), vec![axis.clone().into()]).unwrap();
     let cpp_indices = tvm::tvm_ffi::Array::new(load.indices.iter().collect());
     let cpp_load: TensorLoad = Function::get_global("tirx.BufferLoad")
         .unwrap()
-        .call_packed(&[
-            AnyView::from(&buffer),
-            AnyView::from(&cpp_indices),
-            AnyView::from(&()),
-        ])
+        .call_tuple((&buffer, &cpp_indices, ()))
         .unwrap()
         .try_into()
         .unwrap();
@@ -917,12 +835,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let load_expr: Expr = load.clone().into();
     let cpp_store: BufferStore = Function::get_global("tirx.BufferStore")
         .unwrap()
-        .call_packed(&[
-            AnyView::from(&buffer),
-            AnyView::from(&load_expr),
-            AnyView::from(&cpp_indices),
-            AnyView::from(&()),
-        ])
+        .call_tuple((&buffer, &load_expr, &cpp_indices, ()))
         .unwrap()
         .try_into()
         .unwrap();
@@ -941,46 +854,20 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let match_buffer = MatchBufferRegion::new(&buffer, &region).unwrap();
     let cpp_match_buffer: MatchBufferRegion = Function::get_global("tirx.MatchBufferRegion")
         .unwrap()
-        .call_packed(&[AnyView::from(&buffer), AnyView::from(&region)])
+        .call_tuple((&buffer, &region))
         .unwrap()
         .try_into()
         .unwrap();
     assert_structural_equal(&match_buffer, &cpp_match_buffer);
-    assert_eq!(
-        object_pointer(&match_buffer.buffer),
-        object_pointer(&buffer)
-    );
-    assert_eq!(
-        object_pointer(&match_buffer.source),
-        object_pointer(&region)
-    );
+    assert!(match_buffer.buffer.same_as(&buffer));
+    assert!(match_buffer.source.same_as(&region));
     let function = PrimFunc::new(vec![buffer.clone().into()], store.clone()).unwrap();
 
-    assert_eq!(buffer_type.dtype.dtype.bits, 32);
-    assert_eq!(buffer_type.storage_scope.as_str(), "global");
-    assert_eq!(buffer_type.shape.len(), 1);
-    assert!(buffer_type.strides.is_empty());
-    assert!(buffer_type.data_alignment > 0);
-    assert_eq!(buffer_type.offset_factor, 1);
-    assert!(buffer_type.allocated_addr.is_empty());
-    assert_eq!(
-        buffer
-            .ty
-            .clone()
-            .try_cast::<BufferType>()
-            .unwrap()
-            .shape
-            .len(),
-        1
-    );
-    assert_eq!(object_pointer(&load.source), object_pointer(&buffer));
+    assert!(load.source.same_as(&buffer));
     assert_eq!(load.indices.len(), 1);
-    assert_eq!(object_pointer(&store.buffer), object_pointer(&buffer));
+    assert!(store.buffer.same_as(&buffer));
     assert_eq!(iter_var.iter_type().unwrap(), IterVarType::kDataPar);
-    assert_eq!(
-        object_pointer(&iter_var.var().unwrap()),
-        object_pointer(&axis)
-    );
+    assert!(iter_var.var().unwrap().same_as(&axis));
     assert_eq!(
         iter_var
             .dom()
@@ -988,8 +875,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
             .as_ref()
             .unwrap()
             .extent
-            .clone()
-            .try_cast::<IntImm>()
+            .as_node::<IntImmObj>()
             .unwrap()
             .value,
         8

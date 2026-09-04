@@ -17,23 +17,29 @@
  * under the License.
  */
 
-//! The native libraries are resolved from the pip packages installed in the
-//! active Python environment, not from a TVM source tree.
+//! Native libraries use explicit path overrides or build-time package discovery.
+
+use std::path::PathBuf;
 
 use tvm::libinfo;
 use tvm::tvm_ffi::Function;
 
 #[test]
-fn compiler_library_is_resolved_from_the_python_environment() {
-    let dir = libinfo::build_time_library_dir()
-        .expect("build.rs should have located the tvm package's library directory");
-    assert!(dir.is_absolute(), "{}", dir.display());
+fn native_libraries_resolve_from_configured_paths() {
     let path = libinfo::compiler_library_path().unwrap();
     assert!(path.is_file(), "{}", path.display());
-    assert_eq!(path.file_name().unwrap(), libinfo::COMPILER_LIBRARY);
-    assert_eq!(path.parent().unwrap(), dir);
+    if let Some(explicit) = std::env::var_os("TVM_COMPILER_LIBRARY") {
+        assert_eq!(path, PathBuf::from(explicit));
+    } else {
+        assert!(libinfo::library_dirs()
+            .iter()
+            .any(|dir| dir.join(libinfo::COMPILER_LIBRARY) == path));
+    }
     let runtime = libinfo::runtime_library_path().unwrap();
-    assert_eq!(runtime.parent().unwrap(), dir);
+    assert!(runtime.is_file(), "{}", runtime.display());
+    assert!(libinfo::library_dirs()
+        .iter()
+        .any(|dir| dir.join(libinfo::RUNTIME_LIBRARY) == runtime));
 }
 
 #[test]

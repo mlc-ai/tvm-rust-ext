@@ -694,11 +694,11 @@ where
 {
     let outcome = structural_walk(
         root,
-        |node: &IntImmObj| -> Result<WalkResult> {
+        |node: &IntImmObj| {
             if node.value == target {
-                Ok(WalkResult::Interrupt)
+                WalkResult::Interrupt
             } else {
-                Ok(WalkResult::Advance)
+                WalkResult::Advance
             }
         },
         WalkOrder::PreOrder,
@@ -713,7 +713,7 @@ where
 {
     structural_walk(
         root,
-        |node: &IntImmObj| -> Result<WalkResult> { Ok(WalkResult::interrupt_with(node.value)) },
+        |node: &IntImmObj| WalkResult::interrupt_with(node.value),
         WalkOrder::PreOrder,
     )?
     .map(|interrupt| i64::try_from(interrupt.value))

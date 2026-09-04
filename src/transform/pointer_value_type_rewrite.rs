@@ -32,7 +32,9 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::{Let, Ramp};
-use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
+use crate::ir::{
+    Call, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
+};
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt,
 };
@@ -210,7 +212,7 @@ impl AccessChecker {
                 .unwrap_or(IntImm::new("int32", 0)?.into());
             return self.declare(variable, ty.dtype.clone(), extent, PRIM_FUNC_BUFFER_PARAM);
         }
-        if let Some(element) = pointer_element_type(&variable)? {
+        if let Some(element) = pointer_element_type(&variable) {
             if !is_void(&element) || self.options.allow_untyped_pointers {
                 self.declare(
                     variable,
@@ -274,7 +276,7 @@ impl AccessChecker {
     }
 
     fn declare_pointer_binding(&mut self, variable: Var) -> Result<()> {
-        if let Some(element) = pointer_element_type(&variable)? {
+        if let Some(element) = pointer_element_type(&variable) {
             if !is_void(&element) || self.options.allow_untyped_pointers {
                 self.declare(variable, element, IntImm::new("int32", 0)?.into(), LET_NODE)?;
             }
@@ -985,11 +987,9 @@ impl PointerVarSubstituter {
     }
 }
 
-fn pointer_element_type(variable: &Var) -> Result<Option<PrimType>> {
-    let Ok(pointer) = variable.ty.clone().try_cast::<PointerType>() else {
-        return Ok(None);
-    };
-    Ok(pointer.element_type().clone().try_cast::<PrimType>().ok())
+fn pointer_element_type(variable: &Var) -> Option<PrimType> {
+    let pointer = variable.ty.as_node::<PointerTypeObj>()?;
+    pointer.element_type.clone().try_cast().ok()
 }
 
 fn is_void(value: &PrimType) -> bool {

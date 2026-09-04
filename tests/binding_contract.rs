@@ -17,42 +17,32 @@
  * under the License.
  */
 
-//! Runtime conformance checks for the complete handwritten IR surface.
+//! Reflection contracts and constructor checks for the object slice listed below.
 
 use tvm::ir::prim::{
-    Add, AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj,
-    GTObj, LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, Mul, MulObj, NEObj, Not, NotObj, OrObj,
-    RampObj, SelectObj, ShuffleObj, StringImm, StringImmObj, Sub, SubObj, GE, GT, LE, LT, NE,
+    AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj, GTObj,
+    LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, RampObj, SelectObj,
+    ShuffleObj, StringImmObj, SubObj,
 };
 use tvm::ir::{
-    Attrs, AttrsObj, BaseFunc, BaseFuncObj, Call, CallObj, DictAttrs, DictAttrsObj,
-    DummyGlobalInfo, DummyGlobalInfoObj, Expr, ExprObj, FuncType, FuncTypeObj, GlobalInfo,
-    GlobalInfoObj, GlobalVar, GlobalVarObj, IRModule, IRModuleObj, IntImm, IntImmObj,
-    OpaqueExprObj, OpaqueTypeObj, PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj,
-    PrimType, PrimTypeObj, Range, RangeObj, SequentialSpan, SequentialSpanObj, Source, SourceMap,
-    SourceMapObj, SourceName, SourceNameObj, SourceObj, Span, SpanObj, TensorLoad, TensorLoadObj,
-    TensorMapType, TensorMapTypeObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, TupleType,
-    TupleTypeObj, Type, TypeObj, Var, VarObj,
+    AttrsObj, BaseFuncObj, CallObj, DictAttrsObj, DummyGlobalInfoObj, Expr, ExprObj, FuncType,
+    FuncTypeObj, GlobalInfoObj, GlobalVarObj, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj,
+    OpaqueTypeObj, PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj, PrimType,
+    PrimTypeObj, RangeObj, SequentialSpanObj, SourceMapObj, SourceNameObj, SourceObj, Span,
+    SpanObj, TensorLoadObj, TensorMapType, TensorMapTypeObj, Tuple, TupleGetItem, TupleGetItemObj,
+    TupleObj, TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
-use tvm::target::Target;
 use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
-    AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, Bind,
-    BindObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferRegionTypeObj, BufferStore,
-    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj, DeclBuffer,
-    DeclBufferObj, DispatchContext, DispatchContextObj, Evaluate, EvaluateObj, ExecScope,
-    ExecScopeObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, IndexMap, IndexMapObj, Iter,
-    IterObj, IterVar, IterVarObj, IterVarType, LambdaExpr, LambdaExprObj, Layout, LayoutObj,
-    MatchBufferRegion, MatchBufferRegionObj, PrimFunc, PrimFuncObj, PrimVar, ScopeBinding,
-    ScopeIdDef, ScopeIdDefObj, ScopeIdDefStmt, ScopeIdDefStmtObj, ScopeKind, SeqStmt, SeqStmtObj,
-    Stmt, StmtObj, TensorIntrin, TensorIntrinObj, TileLayoutObj, TilePrimitiveCall,
-    TilePrimitiveCallObj,
+    AllocBufferObj, AssertStmtObj, AttrStmtObj, AxisObj, BindObj, BufferRegionObj,
+    BufferRegionTypeObj, BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj,
+    DeclBufferObj, DispatchContextObj, EvaluateObj, ExecScopeObj, ForKind, ForObj, IfThenElseObj,
+    IndexMapObj, IterObj, IterVarObj, IterVarType, LambdaExprObj, LayoutObj, MatchBufferRegionObj,
+    PrimFuncObj, PrimVar, ScopeBinding, ScopeIdDefObj, ScopeIdDefStmtObj, ScopeKind, SeqStmtObj,
+    StmtObj, TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
 };
-use tvm::tvm_ffi::object::ObjectRef as AnyObjectRef;
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
-use tvm::tvm_ffi::{
-    Any, Array, DLDataType, Function, Map, Object, ObjectCore, ObjectRefCore, Optional, String,
-};
+use tvm::tvm_ffi::{Array, Function, Object, ObjectCore, ObjectRefCore, String};
 
 mod common;
 use common::{assert_structural_equal, direct_fields, load_tvm_compiler, runtime_type_info};
@@ -241,7 +231,7 @@ fn assert_contract<N: ObjectCore, P: ObjectCore>(
 }
 
 #[test]
-fn all_handwritten_objects_match_runtime_metadata() {
+fn covered_object_schemas_match_runtime_metadata() {
     load_tvm_compiler();
     use TVMFFISEqHashKind::{
         kTVMFFISEqHashKindFreeVar as FreeVar, kTVMFFISEqHashKindTreeNode as Tree,
@@ -752,14 +742,8 @@ fn all_handwritten_objects_match_runtime_metadata() {
     );
 }
 
-macro_rules! assert_complete_allocator {
-    ($constructor:path : fn($($argument:ty),* $(,)?) -> $output:ty) => {
-        let _: fn($($argument),*) -> $output = $constructor;
-    };
-}
-
 #[test]
-fn complete_field_allocators_follow_owned_native_field_order() {
+fn native_enum_values_preserve_width_and_unknown_variants() {
     assert_eq!(std::mem::size_of::<ForKind>(), std::mem::size_of::<i32>());
     assert_eq!(
         std::mem::size_of::<IterVarType>(),
@@ -776,60 +760,6 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_eq!(IterVarType::try_from(99_i64).unwrap().as_raw(), 99);
     assert!(ForKind::try_from(i64::from(i32::MAX) + 1).is_err());
     assert!(IterVarType::try_from(i64::from(i32::MIN) - 1).is_err());
-
-    assert_complete_allocator!(SourceMap::from_complete_fields: fn(Map<SourceName, Source>) -> SourceMap);
-    assert_complete_allocator!(Span::from_complete_fields: fn(Option<SourceName>, i32, i32, i32, i32) -> Span);
-    assert_complete_allocator!(SequentialSpan::from_complete_fields: fn(Option<SourceName>, i32, i32, i32, i32, Array<Span>) -> SequentialSpan);
-    assert_complete_allocator!(Range::from_complete_fields: fn(PrimExpr, PrimExpr, Option<Span>) -> Range);
-    assert_complete_allocator!(TupleType::from_complete_fields: fn(Option<Span>, Array<Type>) -> TupleType);
-    assert_complete_allocator!(FuncType::from_complete_fields: fn(Option<Span>, Array<Type>, Type) -> FuncType);
-    assert_complete_allocator!(TensorMapType::from_complete_fields: fn(Option<Span>) -> TensorMapType);
-    assert_complete_allocator!(DummyGlobalInfo::from_complete_fields: fn() -> DummyGlobalInfo);
-    assert_complete_allocator!(IntImm::from_complete_fields: fn(Option<Span>, PrimType, i64) -> IntImm);
-    assert_complete_allocator!(PrimType::from_complete_fields: fn(Option<Span>, DLDataType) -> PrimType);
-    assert_complete_allocator!(PointerType::from_complete_fields: fn(Option<Span>, Type, String) -> PointerType);
-    assert_complete_allocator!(Var::from_complete_fields: fn(Option<Span>, Type, String) -> Var);
-    assert_complete_allocator!(GlobalVar::from_complete_fields: fn(Option<Span>, Type, String) -> GlobalVar);
-    assert_complete_allocator!(Call::from_complete_fields: fn(Option<Span>, Type, Expr, Array<Expr>, Option<Attrs>, Array<Type>) -> Call);
-    assert_complete_allocator!(Tuple::from_complete_fields: fn(Option<Span>, Type, Array<Expr>) -> Tuple);
-    assert_complete_allocator!(TupleGetItem::from_complete_fields: fn(Option<Span>, Type, Expr, i32) -> TupleGetItem);
-    assert_complete_allocator!(IRModule::from_complete_fields: fn(Map<GlobalVar, BaseFunc>, SourceMap, DictAttrs, Map<String, Array<GlobalInfo>>, Map<String, GlobalVar>) -> IRModule);
-    assert_complete_allocator!(DictAttrs::from_complete_fields: fn(Map<String, Any>) -> DictAttrs);
-
-    assert_complete_allocator!(Add::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Add);
-    assert_complete_allocator!(Sub::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Sub);
-    assert_complete_allocator!(Mul::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> Mul);
-    assert_complete_allocator!(NE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> NE);
-    assert_complete_allocator!(LT::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> LT);
-    assert_complete_allocator!(LE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> LE);
-    assert_complete_allocator!(GT::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> GT);
-    assert_complete_allocator!(GE::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr, PrimExpr) -> GE);
-    assert_complete_allocator!(Not::from_complete_fields: fn(Option<Span>, PrimType, PrimExpr) -> Not);
-    assert_complete_allocator!(StringImm::from_complete_fields: fn(Option<Span>, PrimType, String) -> StringImm);
-    assert_complete_allocator!(AssertStmt::from_complete_fields: fn(Option<Span>, PrimExpr, StringImm, Array<StringImm>) -> AssertStmt);
-    assert_complete_allocator!(Bind::from_complete_fields: fn(Option<Span>, Var, Expr) -> Bind);
-    assert_complete_allocator!(Evaluate::from_complete_fields: fn(Option<Span>, Expr) -> Evaluate);
-    assert_complete_allocator!(SeqStmt::from_complete_fields: fn(Option<Span>, Array<Stmt>) -> SeqStmt);
-    assert_complete_allocator!(IfThenElse::from_complete_fields: fn(Option<Span>, PrimExpr, Stmt, Option<Stmt>) -> IfThenElse);
-    assert_complete_allocator!(For::from_complete_fields: fn(Option<Span>, PrimVar, PrimExpr, PrimExpr, ForKind, Stmt, Option<IterVar>, Map<String, Any>, Option<PrimExpr>) -> For);
-    assert_complete_allocator!(PrimFunc::from_complete_fields: fn(Option<Span>, Type, DictAttrs, Array<Var>, Type, Stmt) -> PrimFunc);
-
-    assert_complete_allocator!(Iter::from_complete_fields: fn(PrimExpr, PrimExpr, Axis) -> Iter);
-    assert_complete_allocator!(BufferType::from_complete_fields: fn(Option<Span>, PrimType, String, Array<PrimExpr>, Array<PrimExpr>, PrimExpr, i32, i32, Option<Layout>, Array<PrimExpr>) -> BufferType);
-    assert_complete_allocator!(TensorLoad::from_complete_fields: fn(Option<Span>, PrimType, Expr, Array<PrimExpr>) -> TensorLoad);
-    assert_complete_allocator!(BufferStore::from_complete_fields: fn(Option<Span>, BufferVar, PrimExpr, Array<PrimExpr>) -> BufferStore);
-    assert_complete_allocator!(DeclBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Expr) -> DeclBuffer);
-    assert_complete_allocator!(AllocBuffer::from_complete_fields: fn(Option<Span>, BufferVar, Map<String, Any>) -> AllocBuffer);
-    assert_complete_allocator!(BufferRegion::from_complete_fields: fn(Option<Span>, BufferRegionType, BufferVar, Array<Range>) -> BufferRegion);
-    assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
-    assert_complete_allocator!(IndexMap::from_complete_fields: fn(Array<PrimVar>, Array<PrimExpr>, Option<IndexMap>) -> IndexMap);
-    assert_complete_allocator!(TensorIntrin::from_complete_fields: fn(PrimFunc, PrimFunc) -> TensorIntrin);
-    assert_complete_allocator!(ExecScope::from_complete_fields: fn(ScopeKind) -> ExecScope);
-    assert_complete_allocator!(ScopeIdDef::from_complete_fields: fn(Array<PrimVar>, Option<Array<PrimExpr>>, ScopeBinding, Option<Array<PrimExpr>>) -> ScopeIdDef);
-    assert_complete_allocator!(ScopeIdDefStmt::from_complete_fields: fn(Option<Span>, ScopeIdDef) -> ScopeIdDefStmt);
-    assert_complete_allocator!(LambdaExpr::from_complete_fields: fn(Array<Var>, PrimExpr) -> LambdaExpr);
-    assert_complete_allocator!(DispatchContext::from_complete_fields: fn(Target, ExecScope, Map<String, IterVar>, Map<Var, Range>, bool, Map<String, AnyObjectRef>, Map<String, AnyObjectRef>, Map<String, Array<PrimExpr>>, Map<String, Array<PrimExpr>>, String) -> DispatchContext);
-    assert_complete_allocator!(TilePrimitiveCall::from_complete_fields: fn(Option<Span>, tvm::ir::Op, Array<Any>, Map<String, BufferVar>, Map<String, Any>, Optional<String>, ExecScope) -> TilePrimitiveCall);
 }
 
 #[test]

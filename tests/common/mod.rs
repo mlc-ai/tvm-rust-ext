@@ -53,8 +53,7 @@ pub fn assert_structural_equal<L: AnyCompatible, R: AnyCompatible>(lhs: &L, rhs:
                 AnyView::from(&false),
             ])
             .unwrap();
-        let mismatch =
-            String::try_from(repr.call_packed(&[AnyView::from(&mismatch)]).unwrap()).unwrap();
+        let mismatch = String::try_from(repr.call_tuple((&mismatch,)).unwrap()).unwrap();
         let lhs = String::try_from(repr.call_packed(&[AnyView::from(lhs)]).unwrap()).unwrap();
         let rhs = String::try_from(repr.call_packed(&[AnyView::from(rhs)]).unwrap()).unwrap();
         panic!("structural mismatch at {mismatch}:\nleft:  {lhs}\nright: {rhs}");
