@@ -34,19 +34,24 @@ use tvm::ir::{
     TensorMapType, TensorMapTypeObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, TupleType,
     TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
+use tvm::target::Target;
 use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
     AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmtObj, Axis, AxisObj, Bind,
     BindObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferRegionTypeObj, BufferStore,
     BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj, DeclBuffer,
-    DeclBufferObj, Evaluate, EvaluateObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj,
-    IndexMap, IndexMapObj, Iter, IterObj, IterVar, IterVarObj, IterVarType, Layout, LayoutObj,
-    MatchBufferRegion, MatchBufferRegionObj, PrimFunc, PrimFuncObj, PrimVar, SeqStmt, SeqStmtObj,
-    Stmt, StmtObj, TensorIntrin, TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
+    DeclBufferObj, DispatchContext, DispatchContextObj, Evaluate, EvaluateObj, ExecScope,
+    ExecScopeObj, For, ForKind, ForObj, IfThenElse, IfThenElseObj, IndexMap, IndexMapObj, Iter,
+    IterObj, IterVar, IterVarObj, IterVarType, LambdaExpr, LambdaExprObj, Layout, LayoutObj,
+    MatchBufferRegion, MatchBufferRegionObj, PrimFunc, PrimFuncObj, PrimVar, ScopeBinding,
+    ScopeIdDef, ScopeIdDefObj, ScopeIdDefStmt, ScopeIdDefStmtObj, ScopeKind, SeqStmt, SeqStmtObj,
+    Stmt, StmtObj, TensorIntrin, TensorIntrinObj, TileLayoutObj, TilePrimitiveCall,
+    TilePrimitiveCallObj,
 };
+use tvm::tvm_ffi::object::ObjectRef as AnyObjectRef;
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{
-    Any, Array, DLDataType, Function, Map, Object, ObjectCore, ObjectRefCore, String,
+    Any, Array, DLDataType, Function, Map, Object, ObjectCore, ObjectRefCore, Optional, String,
 };
 
 mod common;
@@ -90,14 +95,23 @@ const SCHEMA_MAP_GLOBAL_VAR: &str =
     r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ir.GlobalVar"}]}"#;
 const SCHEMA_MAP_SOURCE: &str =
     r#"{"type":"ffi.Map","args":[{"type":"ir.SourceName"},{"type":"ir.Source"}]}"#;
+const SCHEMA_MAP_STRING_ARRAY_EXPR: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"ir.Expr"}]}]}"#;
+const SCHEMA_MAP_STRING_ITER_VAR: &str =
+    r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"tirx.IterVar"}]}"#;
+const SCHEMA_MAP_STRING_OBJECT: &str =
+    r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Object"}]}"#;
 const SCHEMA_MAP_STRING_VAR: &str =
     r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ir.Var"}]}"#;
+const SCHEMA_MAP_VAR_RANGE: &str =
+    r#"{"type":"ffi.Map","args":[{"type":"ir.Var"},{"type":"ir.Range"}]}"#;
 const SCHEMA_OP: &str = r#"{"type":"ir.Op"}"#;
 const SCHEMA_OPTIONAL_EXPR: &str = r#"{"type":"Optional","args":[{"type":"ir.Expr"}]}"#;
 const SCHEMA_OPTIONAL_ITER_VAR: &str = r#"{"type":"Optional","args":[{"type":"tirx.IterVar"}]}"#;
 const SCHEMA_OPTIONAL_STRING: &str = r#"{"type":"Optional","args":[{"type":"ffi.String"}]}"#;
 const SCHEMA_OPTIONAL_STMT: &str = r#"{"type":"Optional","args":[{"type":"tirx.Stmt"}]}"#;
 const SCHEMA_OPTIONAL_OBJECT: &str = r#"{"type":"Optional","args":[{"type":"ffi.Object"}]}"#;
+const SCHEMA_OPTIONAL_ARRAY_EXPR: &str =
+    r#"{"type":"Optional","args":[{"type":"ffi.Array","args":[{"type":"ir.Expr"}]}]}"#;
 const SCHEMA_PRIM_TYPE: &str = r#"{"type":"ir.PrimType"}"#;
 const SCHEMA_RANGE: &str = r#"{"type":"ir.Range"}"#;
 const SCHEMA_SOURCE_MAP: &str = r#"{"type":"ir.SourceMap"}"#;
@@ -110,6 +124,8 @@ const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
 const SCHEMA_PRIM_FUNC: &str = r#"{"type":"tirx.PrimFunc"}"#;
 const SCHEMA_TILE_LAYOUT: &str = r#"{"type":"tirx.TileLayout"}"#;
+const SCHEMA_TARGET: &str = r#"{"type":"target.Target"}"#;
+const SCHEMA_SCOPE_ID_DEF: &str = r#"{"type":"tirx.ScopeIdDef"}"#;
 
 fn assert_contract<N: ObjectCore, P: ObjectCore>(
     expected_final: bool,
@@ -671,6 +687,46 @@ fn all_handwritten_objects_match_runtime_metadata() {
             ("source", 0, SCHEMA_BUFFER_REGION),
         ],
     );
+    assert_contract::<ExecScopeObj, Object>(false, Some(Tree), &[("kind", 0, SCHEMA_INT)]);
+    assert_contract::<ScopeIdDefObj, Object>(
+        true,
+        Some(Tree),
+        &[
+            ("def_ids", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("extents", 0, SCHEMA_OPTIONAL_ARRAY_EXPR),
+            ("scope", 0, SCHEMA_INT),
+            ("preferred_extents", 0, SCHEMA_OPTIONAL_ARRAY_EXPR),
+        ],
+    );
+    assert_contract::<ScopeIdDefStmtObj, StmtObj>(
+        true,
+        Some(Tree),
+        &[("def", 0, SCHEMA_SCOPE_ID_DEF)],
+    );
+    assert_contract::<LambdaExprObj, Object>(
+        true,
+        Some(Tree),
+        &[
+            ("vars", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("pred", 0, SCHEMA_EXPR),
+        ],
+    );
+    assert_contract::<DispatchContextObj, Object>(
+        true,
+        Some(Unsupported),
+        &[
+            ("target", 0, SCHEMA_TARGET),
+            ("exec_scope", 0, SCHEMA_EXEC_SCOPE),
+            ("launch_params", 0, SCHEMA_MAP_STRING_ITER_VAR),
+            ("var_range_map", 0, SCHEMA_MAP_VAR_RANGE),
+            ("alloc_only", 0, SCHEMA_BOOL),
+            ("callbacks", 0, SCHEMA_MAP_STRING_OBJECT),
+            ("shared_state", 0, SCHEMA_MAP_STRING_OBJECT),
+            ("inter", 0, SCHEMA_MAP_STRING_ARRAY_EXPR),
+            ("intra", 0, SCHEMA_MAP_STRING_ARRAY_EXPR),
+            ("scope_kind", 0, SCHEMA_STRING),
+        ],
+    );
     assert_contract::<TilePrimitiveCallObj, StmtObj>(
         true,
         Some(Tree),
@@ -707,6 +763,11 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_eq!(std::mem::size_of::<ForKind>(), std::mem::size_of::<i32>());
     assert_eq!(
         std::mem::size_of::<IterVarType>(),
+        std::mem::size_of::<i32>()
+    );
+    assert_eq!(std::mem::size_of::<ScopeKind>(), std::mem::size_of::<i32>());
+    assert_eq!(
+        std::mem::size_of::<ScopeBinding>(),
         std::mem::size_of::<i32>()
     );
     assert_eq!(ForKind::from_raw(99).as_raw(), 99);
@@ -763,6 +824,12 @@ fn complete_field_allocators_follow_owned_native_field_order() {
     assert_complete_allocator!(MatchBufferRegion::from_complete_fields: fn(BufferVar, BufferRegion) -> MatchBufferRegion);
     assert_complete_allocator!(IndexMap::from_complete_fields: fn(Array<PrimVar>, Array<PrimExpr>, Option<IndexMap>) -> IndexMap);
     assert_complete_allocator!(TensorIntrin::from_complete_fields: fn(PrimFunc, PrimFunc) -> TensorIntrin);
+    assert_complete_allocator!(ExecScope::from_complete_fields: fn(ScopeKind) -> ExecScope);
+    assert_complete_allocator!(ScopeIdDef::from_complete_fields: fn(Array<PrimVar>, Option<Array<PrimExpr>>, ScopeBinding, Option<Array<PrimExpr>>) -> ScopeIdDef);
+    assert_complete_allocator!(ScopeIdDefStmt::from_complete_fields: fn(Option<Span>, ScopeIdDef) -> ScopeIdDefStmt);
+    assert_complete_allocator!(LambdaExpr::from_complete_fields: fn(Array<Var>, PrimExpr) -> LambdaExpr);
+    assert_complete_allocator!(DispatchContext::from_complete_fields: fn(Target, ExecScope, Map<String, IterVar>, Map<Var, Range>, bool, Map<String, AnyObjectRef>, Map<String, AnyObjectRef>, Map<String, Array<PrimExpr>>, Map<String, Array<PrimExpr>>, String) -> DispatchContext);
+    assert_complete_allocator!(TilePrimitiveCall::from_complete_fields: fn(Option<Span>, tvm::ir::Op, Array<Any>, Map<String, BufferVar>, Map<String, Any>, Optional<String>, ExecScope) -> TilePrimitiveCall);
 }
 
 #[test]

@@ -28,10 +28,10 @@ use tvm::ir::{
 };
 use tvm::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferRegionType,
-    BufferStore, BufferType, ComposeLayout, DeclBuffer, DispatchContext, Evaluate, ExecScope, For,
-    ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType, Layout, MatchBufferRegion, PrimFunc,
-    PrimVar, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt,
-    TensorIntrin, TileLayout, TilePrimitiveCall, While,
+    BufferStore, BufferType, BufferVar, ComposeLayout, DeclBuffer, DispatchContext, Evaluate,
+    ExecScope, For, ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType, LambdaExpr, Layout,
+    MatchBufferRegion, PrimFunc, PrimVar, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
+    ScopeKind, SeqStmt, Stmt, TensorIntrin, TileLayout, TilePrimitiveCall, While,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{

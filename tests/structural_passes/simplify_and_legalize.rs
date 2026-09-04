@@ -185,7 +185,7 @@ fn rust_stmt_simplify_matches_cpp_for_scope_definition_extents() {
         Some(vec![preferred]),
     )
     .unwrap();
-    let body = ScopeIdDefStmt::new(definition, None).unwrap();
+    let body = ScopeIdDefStmt::new(definition, None);
     let function = PrimFunc::new(vec![extent_variable], body).unwrap();
     let module = IRModule::from_expr(&function).unwrap();
 
@@ -254,10 +254,7 @@ fn rust_stmt_simplify_preserves_unchanged_tile_metadata() {
         object_pointer(result_call.span.as_ref().unwrap()),
         object_pointer(&span)
     );
-    assert_eq!(
-        object_pointer(&result_call.config().unwrap()),
-        object_pointer(&config)
-    );
+    assert_eq!(object_pointer(&result_call.config), object_pointer(&config));
 }
 
 #[test]
@@ -429,7 +426,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
         .unwrap()
         .try_cast::<TilePrimitiveCall>()
         .unwrap();
-    let region = BufferRegion::try_from(call.args().unwrap().get(0).unwrap()).unwrap();
+    let region = BufferRegion::try_from(call.args.get(0).unwrap()).unwrap();
     assert!(region.buffer.same_as(&allocation.buffer));
 }
 

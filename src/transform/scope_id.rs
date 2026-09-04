@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use tvm_ffi::{Array, Result};
+use tvm_ffi::Result;
 
 use crate::analysis::Analyzer;
 use crate::ir::prim::{Add, FloorDiv, FloorMod, Mul, StringImm, EQ, NE};
@@ -31,45 +31,7 @@ use super::utils::{get_operator, value_error};
 pub(super) type LaunchParams = HashMap<String, IterVar>;
 
 pub(super) struct ScopeIdSet {
-    definitions: HashMap<ScopeBinding, ScopeDefinition>,
-}
-
-#[derive(Clone)]
-pub(super) struct ScopeDefinition {
-    pub(super) object: ScopeIdDef,
-    pub(super) def_ids: Array<PrimVar>,
-    pub(super) extents: Option<Array<PrimExpr>>,
-    pub(super) scope: ScopeBinding,
-    pub(super) preferred_extents: Option<Array<PrimExpr>>,
-}
-
-impl ScopeDefinition {
-    pub(super) fn read(object: ScopeIdDef) -> Result<Self> {
-        Ok(Self {
-            def_ids: object.def_ids()?,
-            extents: object.extents()?,
-            scope: object.scope()?,
-            preferred_extents: object.preferred_extents()?,
-            object,
-        })
-    }
-
-    fn new(
-        def_ids: Vec<PrimVar>,
-        extents: Option<Vec<PrimExpr>>,
-        scope: ScopeBinding,
-        preferred_extents: Option<Vec<PrimExpr>>,
-    ) -> Result<Self> {
-        Self::read(ScopeIdDef::new(def_ids, extents, scope, preferred_extents)?)
-    }
-
-    fn is_deferred(&self) -> bool {
-        self.extents.is_none()
-    }
-
-    fn fused_extent(&self) -> Result<PrimExpr> {
-        self.object.fused_extent()
-    }
+    definitions: HashMap<ScopeBinding, ScopeIdDef>,
 }
 
 impl ScopeIdSet {
@@ -78,12 +40,7 @@ impl ScopeIdSet {
         let mut resolved = HashMap::new();
         let mut queue = VecDeque::new();
 
-        let definitions = definitions
-            .iter()
-            .cloned()
-            .map(ScopeDefinition::read)
-            .collect::<Result<Vec<_>>>()?;
-        for definition in &definitions {
+        for definition in definitions {
             validate_preferred_extents(definition)?;
             insert_or_upgrade(&mut resolved, &mut queue, definition.clone(), &analyzer)?;
         }
@@ -122,7 +79,7 @@ impl ScopeIdSet {
             if definition.is_deferred()
                 && resolved
                     .get(&definition.scope)
-                    .is_none_or(ScopeDefinition::is_deferred)
+                    .is_none_or(ScopeIdDef::is_deferred)
             {
                 return Err(value_error(
                     "cannot infer the extent of a deferred ScopeIdDef",
@@ -134,7 +91,7 @@ impl ScopeIdSet {
         })
     }
 
-    pub(super) fn get(&self, binding: ScopeBinding) -> Option<&ScopeDefinition> {
+    pub(super) fn get(&self, binding: ScopeBinding) -> Option<&ScopeIdDef> {
         self.definitions.get(&binding)
     }
 
@@ -142,15 +99,14 @@ impl ScopeIdSet {
         self.definitions.is_empty()
     }
 
-    pub(super) fn resolve_deferred(&self, definition: &ScopeIdDef) -> Result<ScopeDefinition> {
-        let definition = ScopeDefinition::read(definition.clone())?;
+    pub(super) fn resolve_deferred(&self, definition: &ScopeIdDef) -> Result<ScopeIdDef> {
         if !definition.is_deferred() {
-            return Ok(definition);
+            return Ok(definition.clone());
         }
         let source = self
             .get(definition.scope)
             .ok_or_else(|| value_error("deferred ScopeIdDef was not resolved"))?;
-        ScopeDefinition::new(
+        ScopeIdDef::new(
             definition.def_ids.iter().collect(),
             Some(vec![source.fused_extent()?]),
             definition.scope,
@@ -251,9 +207,9 @@ pub(super) fn compute_warp_id_in_cta(launch_params: &LaunchParams) -> Result<Pri
 }
 
 fn insert_or_upgrade(
-    definitions: &mut HashMap<ScopeBinding, ScopeDefinition>,
-    queue: &mut VecDeque<ScopeDefinition>,
-    candidate: ScopeDefinition,
+    definitions: &mut HashMap<ScopeBinding, ScopeIdDef>,
+    queue: &mut VecDeque<ScopeIdDef>,
+    candidate: ScopeIdDef,
     analyzer: &Analyzer,
 ) -> Result<()> {
     let Some(existing) = definitions.get(&candidate.scope).cloned() else {
@@ -264,7 +220,7 @@ fn insert_or_upgrade(
         return Ok(());
     };
     if existing.is_deferred() && !candidate.is_deferred() {
-        let upgraded = ScopeDefinition::new(
+        let upgraded = ScopeIdDef::new(
             existing.def_ids.iter().collect(),
             Some(vec![candidate.fused_extent()?]),
             existing.scope,
@@ -284,7 +240,7 @@ fn insert_or_upgrade(
     Ok(())
 }
 
-fn validate_preferred_extents(definition: &ScopeDefinition) -> Result<()> {
+fn validate_preferred_extents(definition: &ScopeIdDef) -> Result<()> {
     let Some(preferred) = &definition.preferred_extents else {
         return Ok(());
     };
@@ -306,7 +262,7 @@ fn validate_preferred_extents(definition: &ScopeDefinition) -> Result<()> {
     Ok(())
 }
 
-fn compose(lhs: &ScopeDefinition, rhs: &ScopeDefinition) -> Result<Option<ScopeDefinition>> {
+fn compose(lhs: &ScopeIdDef, rhs: &ScopeIdDef) -> Result<Option<ScopeIdDef>> {
     if lhs.is_deferred()
         || rhs.is_deferred()
         || lhs.scope == ScopeBinding::CLUSTER_CTA_PAIR
@@ -330,10 +286,10 @@ fn compose(lhs: &ScopeDefinition, rhs: &ScopeDefinition) -> Result<Option<ScopeD
 }
 
 fn complement(
-    lhs: &ScopeDefinition,
-    rhs: &ScopeDefinition,
+    lhs: &ScopeIdDef,
+    rhs: &ScopeIdDef,
     analyzer: &Analyzer,
-) -> Result<Option<ScopeDefinition>> {
+) -> Result<Option<ScopeIdDef>> {
     if lhs.is_deferred()
         || rhs.is_deferred()
         || lhs.scope == ScopeBinding::CLUSTER_CTA_PAIR
@@ -370,9 +326,9 @@ fn complement(
     Ok(None)
 }
 
-fn generated_definition(binding: ScopeBinding, extent: PrimExpr) -> Result<ScopeDefinition> {
+fn generated_definition(binding: ScopeBinding, extent: PrimExpr) -> Result<ScopeIdDef> {
     let variable = PrimVar::try_from(Var::with_type("", extent.type_annotation()))?;
-    ScopeDefinition::new(vec![variable], Some(vec![extent]), binding, None)
+    ScopeIdDef::new(vec![variable], Some(vec![extent]), binding, None)
 }
 
 fn trivial_resolve(

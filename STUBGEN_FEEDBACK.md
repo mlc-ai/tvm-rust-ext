@@ -183,7 +183,8 @@ and semantic argument order belong in the reviewed semantic constructor.
 Field nullability belongs to the field/constructor contract, not to the C++
 reference wrapper in isolation.  C++ commonly gives an `ObjectRef` type a
 default undefined state, while nodes still require a defined value in a field
-of that type.  An explicit `ffi::Optional<T>` schema maps to Rust `Option<T>`;
+of that type. An explicit `ffi::Optional<T>` maps to Rust `Option<T>` when `T`
+uses an object pointer, and to `tvm_ffi::Optional<T>` for strings and scalars;
 a plain object field stays non-optional and its semantic constructor must
 enforce any required-value invariant.
 
@@ -240,14 +241,15 @@ existing TVM operation:
 
 | Class | Examples | Generated behavior |
 | --- | --- | --- |
-| Plain data node | `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate` | complete layout and direct Rust allocation |
+| Plain data node | `Span`, `SequentialSpan`, `FuncType`, `IndexMap`, `TensorIntrin`, `Range`, `Var`, `IntImm`, `Add`, `Evaluate`, `ExecScope`, `ScopeIdDef`, `ScopeIdDefStmt`, `LambdaExpr` | complete layout and direct Rust allocation |
 | Plain node with local validation | integer literals, binary ops, `SeqStmt` | direct allocation plus equivalent Rust validation |
 | Native registry identity | `Axis` | emit an opaque wrapper and call the existing `tirx.AxisGet` singleton lookup |
-| Native interned identity | `SourceName` | emit an opaque wrapper and call the existing `ir.SourceName` lookup |
+| Native interned identity | `SourceName` | emit its complete field layout, omit a direct allocator, and call the existing `ir.SourceName` lookup |
 | C++ polymorphic hierarchy | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |
 | Typed ordinary expression | `BufferRegion` | emit its complete `Expr` layout, use the registered `BufferRegionType` singleton, and allocate the region in Rust |
 | Native STL storage | `Source` | keep the node opaque and construct it through the existing `SourceMapAdd` operation |
-| Non-object optional ABI | `TilePrimitiveCall` (`Optional<String>`) | keep the node opaque until Rust has the matching TVM-FFI optional representation; Rust `Option<String>` has a different layout |
+| Non-object optional ABI | `TilePrimitiveCall::dispatch` | emit the complete node with `tvm_ffi::Optional<String>`, check the operator category through `ir.OpGetAttr`, and allocate in Rust |
+| Native mutable fields | `DispatchContext::callbacks`, `DispatchContext::shared_state` | complete layout and Rust allocation with private `UnsafeCell` storage; expose owned snapshots and prevent cross-thread sharing |
 | Complex semantic constructor | `PrimFunc`, match buffer | use reviewed handwritten Rust analysis/validation, then allocate complete fields in Rust |
 | Build-dependent defaults | `BufferType` | use reviewed handwritten Rust defaults and validation, then allocate in Rust |
 | Derived mutable state | `IRModule` | rebuild and validate derived indexes in generated Rust code |
@@ -389,7 +391,8 @@ IR surface they consume, not generate those transformations.
 3. Generate mechanical semantic constructors first for `PrimType`, `Var`,
    `IntImm`, `Add`, `Evaluate`, `For`, buffers, tuples, and modules; keep
    non-mechanical constructor logic in reviewed Rust and emit native-operation
-   wrappers for `Type::Missing`, `Axis`, `SourceName`, and `Source`.
+   wrappers for `Type::Missing`, `Axis`, `SourceName`, and `Source`;
+   `SourceName` still receives complete fields even though it has no allocator.
 4. Run `tests/stubgen_acceptance.rs` unchanged, including the C++-getter-on-Rust
    allocation test.
 5. Generate heterogeneous fields as `Map<K, Any>` and other container fields

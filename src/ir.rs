@@ -666,13 +666,17 @@ where
     }
 }
 
-/// Opaque Rust representation of an interned TVM source name.
+/// ABI-complete Rust representation of an interned TVM source name.
+///
+/// The field layout is shared with C++, but construction remains registry-only
+/// so equal names retain TVM's canonical object identity.
 #[repr(C)]
 #[derive(Object)]
 #[type_key = "ir.SourceName"]
 #[type_final]
 pub struct SourceNameObj {
     base: tvm_ffi::Object,
+    pub name: String,
 }
 
 /// Reference-counted handle to a source name.
@@ -696,11 +700,6 @@ impl SourceName {
         tvm_ffi::cached_global_func!("ir.SourceName")
             .call_tuple((String::from(name),))?
             .try_into()
-    }
-
-    /// Return the source name text through native reflection.
-    pub fn name(&self) -> Result<String> {
-        FieldGetter::new(SourceNameObj::type_index(), "name")?.get(&**self)
     }
 }
 
