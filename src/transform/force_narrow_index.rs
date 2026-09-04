@@ -29,11 +29,13 @@ use super::utils::{
     mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::{
+    Add, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Ramp, Select, Sub, EQ, GE, GT, LE,
+    LT, NE,
+};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::tirx::{
-    Add, AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, Cast, Div, FloorDiv, FloorMod, For,
-    IfThenElse, IterVar, Let, Max, Min, Mod, Mul, PrimFunc, Ramp, Select, Stmt, Sub, EQ, GE, GT,
-    LE, LT, NE,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, For, IfThenElse, IterVar, PrimFunc, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -134,14 +136,14 @@ impl IndexDataTypeNormalizer {
             var_remap: HashMap::new(),
             buffer_remaps: BufferRemaps::default(),
             iter_var_remap: HashMap::new(),
-            shift_right_operator: get_operator("tirx.shift_right")?,
-            shift_left_operator: get_operator("tirx.shift_left")?,
-            bitwise_and_operator: get_operator("tirx.bitwise_and")?,
-            bitwise_or_operator: get_operator("tirx.bitwise_or")?,
-            bitwise_xor_operator: get_operator("tirx.bitwise_xor")?,
+            shift_right_operator: get_operator("ir.prim.shift_right")?,
+            shift_left_operator: get_operator("ir.prim.shift_left")?,
+            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
+            bitwise_or_operator: get_operator("ir.prim.bitwise_or")?,
+            bitwise_xor_operator: get_operator("ir.prim.bitwise_xor")?,
             pow_operator: get_operator("tirx.pow")?,
             clz_operator: get_operator("tirx.clz")?,
-            if_then_else_operator: get_operator("tirx.if_then_else")?,
+            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
         })
     }
 

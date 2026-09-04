@@ -26,10 +26,11 @@ use tvm_ffi::{
 
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
 use super::{create_module_pass, Pass};
+use crate::ir::prim::Let;
 use crate::ir::{BaseFunc, DictAttrs, Expr, IRModule, PrimExpr, Range, TensorLoad, Type, Var};
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
-    Iter, IterVar, Layout, Let, PrimFunc, Stmt, TileLayout, While,
+    Iter, IterVar, Layout, PrimFunc, Stmt, TileLayout, While,
 };
 
 #[derive(Default)]

@@ -26,8 +26,8 @@ use tvm_ffi::{
 use super::{primitive_type, PrimVar, Stmt, StmtObj};
 use crate::analysis::Analyzer;
 use crate::ir::{
-    Expr, IntImm, PrimExpr, PrimExprConvertible, PrimExprConvertibleObj, PrimType, Range, Span,
-    TensorLoad, Type, TypeObj, TypedVar, Var,
+    Expr, ExprObj, IntImm, PrimExpr, PrimType, Range, Span, TensorLoad, Type, TypeObj, TypedVar,
+    Var,
 };
 
 /// Opaque Rust representation of TVM's polymorphic layout base class.
@@ -1088,13 +1088,56 @@ fn encoded_lanes(dtype: DLDataType) -> i16 {
     dtype.lanes as i16
 }
 
-/// Opaque Rust representation of one polymorphic declared buffer region.
+/// ABI-complete Rust representation of the singleton buffer-region type.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "tirx.BufferRegionType"]
+#[type_final]
+pub struct BufferRegionTypeObj {
+    base: TypeObj,
+}
+
+/// Reference-counted handle to the type of a buffer-region expression.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct BufferRegionType {
+    data: ObjectArc<BufferRegionTypeObj>,
+}
+
+impl std::ops::Deref for BufferRegionType {
+    type Target = BufferRegionTypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::Deref for BufferRegionTypeObj {
+    type Target = TypeObj;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl BufferRegionType {
+    /// Return TVM's singleton buffer-region type.
+    pub fn new() -> Result<Self> {
+        tvm_ffi::cached_global_func!("tirx.BufferRegionType")
+            .call_tuple(())?
+            .try_into()
+    }
+}
+
+/// ABI-complete Rust representation of a declared buffer region expression.
 #[repr(C)]
 #[derive(Object)]
 #[type_key = "tirx.BufferRegion"]
 #[type_final]
 pub struct BufferRegionObj {
-    base: PrimExprConvertibleObj,
+    base: ExprObj,
+    pub buffer: BufferVar,
+    pub region: Array<Range>,
 }
 
 /// Reference-counted handle to a multidimensional buffer region.
@@ -1113,7 +1156,7 @@ impl std::ops::Deref for BufferRegion {
 }
 
 impl std::ops::Deref for BufferRegionObj {
-    type Target = PrimExprConvertibleObj;
+    type Target = ExprObj;
 
     fn deref(&self) -> &Self::Target {
         &self.base
@@ -1121,22 +1164,7 @@ impl std::ops::Deref for BufferRegionObj {
 }
 
 impl BufferRegion {
-    fn field<T>(&self, name: &str) -> Result<T>
-    where
-        T: TryFrom<Any, Error = Error>,
-    {
-        FieldGetter::new(BufferRegionObj::type_index(), name)?.get(&**self)
-    }
-
-    pub fn buffer(&self) -> Result<BufferVar> {
-        self.field("buffer")
-    }
-
-    pub fn region(&self) -> Result<Array<Range>> {
-        self.field("region")
-    }
-
-    /// Validate and construct a declared region through its native constructor.
+    /// Validate and construct a declared region directly in Rust.
     pub fn new<B>(buffer: B, region: Vec<Range>) -> Result<Self>
     where
         B: Into<Var>,
@@ -1155,9 +1183,28 @@ impl BufferRegion {
             ));
         }
         let buffer = BufferVar::try_from(buffer)?;
-        tvm_ffi::cached_global_func!("tirx.BufferRegion")
-            .call_tuple((buffer, region))?
-            .try_into()
+        Ok(Self::from_complete_fields(
+            None,
+            BufferRegionType::new()?,
+            buffer,
+            region,
+        ))
+    }
+
+    /// Construct a buffer region from every physical field after external validation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: BufferRegionType,
+        buffer: BufferVar,
+        region: Array<Range>,
+    ) -> Self {
+        Self {
+            data: ObjectArc::new(BufferRegionObj {
+                base: ExprObj::new(span, ty.into()),
+                buffer,
+                region,
+            }),
+        }
     }
 }
 
@@ -1215,8 +1262,7 @@ impl MatchBufferRegion {
 
 fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<()> {
     let target = buffer_type(buffer)?;
-    let source_buffer = source.buffer()?;
-    let source_type = buffer_type(&source_buffer)?;
+    let source_type = buffer_type(source.buffer.as_var())?;
     if target.storage_scope != source_type.storage_scope {
         return Err(Error::new(
             TYPE_ERROR,
@@ -1237,7 +1283,7 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
         ));
     }
 
-    let region = source.region()?;
+    let region = &source.region;
     if region.len() < target.shape.len() {
         return Err(Error::new(
             VALUE_ERROR,
@@ -1278,8 +1324,9 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
 tvm_ffi::impl_object_upcast!(
     TileLayout => Layout,
     BufferType => Type,
+    BufferRegionType => Type,
     DeclBuffer => Stmt,
     AllocBuffer => Stmt,
     BufferStore => Stmt,
-    BufferRegion => PrimExprConvertible,
+    BufferRegion => Expr,
 );

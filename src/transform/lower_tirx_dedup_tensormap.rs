@@ -28,8 +28,9 @@ use super::utils::{
     get_operator, int_value, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::StringImm;
 use crate::ir::{Call, Expr, PrimExpr, Var};
-use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, StringImm, While};
+use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
 
 const ENCODE_TILED_FUNCTION: &str = "runtime.cuTensorMapEncodeTiled";
 

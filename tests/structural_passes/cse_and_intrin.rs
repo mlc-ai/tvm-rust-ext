@@ -72,7 +72,7 @@ fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
     let let_lhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
     let let_rhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
     let let_body = Add::new(let_lhs, let_rhs).unwrap();
-    let let_expression: Expr = Function::get_global("tirx.Let")
+    let let_expression: Expr = Function::get_global("ir.prim.Let")
         .unwrap()
         .call_tuple((
             let_variable,

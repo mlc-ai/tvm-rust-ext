@@ -31,11 +31,12 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
+use crate::ir::prim::Ramp;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IterVar, PrimFunc,
-    PrimVar, Ramp, SeqStmt, Stmt,
+    PrimVar, SeqStmt, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -859,7 +860,7 @@ fn expression_var_identity(expression: &Expr) -> Option<ObjectIdentity> {
 }
 
 fn ramp_expression(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Ramp")
+    tvm_ffi::cached_global_func!("ir.prim.Ramp")
         .call_tuple((base, stride, lanes, Option::<crate::ir::Span>::None))?
         .try_into()
 }

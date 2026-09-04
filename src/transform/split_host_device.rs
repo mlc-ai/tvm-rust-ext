@@ -29,6 +29,7 @@ use super::utils::{
     mutate_stmt_expr_default, value_error, with_prim_func_attr, with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
+use crate::ir::prim::StringImm;
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, IRModule, IntImm, PointerType, PrimExpr, PrimType, TupleType,
     Type, Var,
@@ -36,7 +37,7 @@ use crate::ir::{
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Bind, BufferVar, DeclBuffer, Evaluate, IterVar, PrimFunc,
-    Return, Stmt, StringImm,
+    Return, Stmt,
 };
 
 const TARGET: &str = "target";
@@ -264,7 +265,7 @@ impl HostDeviceSplitter<'_> {
             Stmt::sequence(vec![
                 Bind::new(error_code.clone(), call)?.into(),
                 AssertStmt::new(
-                    crate::tirx::EQ::new(error_code, success)?,
+                    crate::ir::prim::EQ::new(error_code, success)?,
                     "RuntimeError",
                     "Error executing compute kernel",
                 )?
@@ -636,10 +637,10 @@ impl KernelInfoCollector {
         }
         let mut size: PrimExpr = IntImm::new("int32", 1)?.into();
         for extent in ty.shape.iter() {
-            size = crate::tirx::Mul::new(size, extent)?.into();
+            size = crate::ir::prim::Mul::new(size, extent)?.into();
         }
         let bytes = (i64::from(ty.dtype.dtype.bits) * i64::from(ty.dtype.dtype.lanes) + 7) / 8;
-        size = crate::tirx::Mul::new(size, IntImm::new("int64", bytes)?)?.into();
+        size = crate::ir::prim::Mul::new(size, IntImm::new("int64", bytes)?)?.into();
         if !self.bindings.is_empty() {
             size = substitute_prim(&size, &self.bindings)?;
         }

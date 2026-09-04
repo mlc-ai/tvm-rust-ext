@@ -35,12 +35,13 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
+use crate::ir::prim::{And, FloorMod, Mod, EQ, GE, GT, LE, LT, NE};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, Var};
 use crate::target::Target;
 use crate::tirx::{
-    AllocBuffer, And, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, FloorMod,
-    For, IfThenElse, IterVar, IterVarType, Mod, PrimFunc, ScopeBinding, ScopeIdDef, ScopeIdDefStmt,
-    SeqStmt, Stmt, TilePrimitiveCall, EQ, GE, GT, LE, LT, NE,
+    AllocBuffer, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, For, IfThenElse,
+    IterVar, IterVarType, PrimFunc, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, SeqStmt, Stmt,
+    TilePrimitiveCall,
 };
 
 const DEVICE_ENTRY: &str = "tirx.device_entry";
@@ -140,7 +141,7 @@ impl TileDispatcher {
             storage_roots: HashMap::new(),
             device_depth: 0,
             filter_operator: get_operator("tirx.filter")?,
-            bitwise_and_operator: get_operator("tirx.bitwise_and")?,
+            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
             elect_sync_operator: get_operator("tirx.cuda.elect_sync")?,
             selector_operator: get_operator("tirx.selector")?,
         })
@@ -175,7 +176,7 @@ impl TileDispatcher {
             for (variable, mut value) in definition.def_ids.iter().zip(values) {
                 let variable_type = variable.type_annotation();
                 if variable_type.dtype != value.dtype() {
-                    value = crate::tirx::Cast::new(variable_type, value)?.into();
+                    value = crate::ir::prim::Cast::new(variable_type, value)?.into();
                 }
                 if variable.as_var().name.as_str().is_empty() {
                     implicit_scope_ids.push(variable.as_var().clone());
@@ -697,7 +698,7 @@ impl TileDispatcher {
         } else {
             return Ok(None);
         };
-        let difference: PrimExpr = crate::tirx::Sub::new(lhs, rhs)?.into();
+        let difference: PrimExpr = crate::ir::prim::Sub::new(lhs, rhs)?.into();
         for (variable, target) in self.scope_targets() {
             let linear = detect_linear_equation(&difference, vec![variable.clone()])?;
             if linear.len() != 2 {

@@ -244,7 +244,7 @@ impl ScopeIdDef {
             .next()
             .ok_or_else(|| value_error("cannot fuse an empty ScopeIdDef"))?;
         for extent in values {
-            result = super::Mul::new(result, extent)?.into();
+            result = crate::ir::prim::Mul::new(result, extent)?.into();
         }
         Ok(result)
     }

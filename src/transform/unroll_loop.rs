@@ -25,9 +25,10 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
+use crate::ir::prim::Add;
 use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
-    Add, AttrStmt, BufferStore, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt, Stmt,
+    AttrStmt, BufferStore, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt, Stmt,
 };
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{

@@ -24,16 +24,17 @@ use tvm_ffi::{
     ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
 };
 
+use crate::ir::prim::{Let, LetObj, Select, SelectObj, StringImm, StringImmObj};
 use crate::ir::{
     Call, CallObj, DictAttrs, Expr, IntImmObj, OpaqueExprObj, PointerTypeObj, PrimExpr, PrimType,
     PrimTypeObj, Range, TensorLoad, TensorLoadObj, Type, Var, VarObj,
 };
+use crate::te::{Reduce, ReduceObj};
 use crate::tirx::{
     AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BufferStore,
     BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Evaluate,
-    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, IterVar, Layout, Let, LetObj,
-    PrimFunc, Reduce, ReduceObj, Select, SelectObj, SeqStmt, SeqStmtObj, Stmt, StringImm,
-    StringImmObj, TileLayout, While, WhileObj,
+    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, IterVar, Layout, PrimFunc, SeqStmt,
+    SeqStmtObj, Stmt, TileLayout, While, WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {

@@ -31,10 +31,10 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
+use crate::ir::prim::{Let, Ramp};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, Let, PrimFunc,
-    Ramp, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt,
 };
 
 const PRIM_FUNC_BUFFER_PARAM: u8 = 1 << 0;
@@ -1032,7 +1032,7 @@ fn make_ramp(
     lanes: PrimExpr,
     span: Option<&crate::ir::Span>,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Ramp")
+    tvm_ffi::cached_global_func!("ir.prim.Ramp")
         .call_tuple((base, stride, lanes, span.cloned()))?
         .try_into()
 }
@@ -1042,7 +1042,7 @@ fn extract_element(
     index: i64,
     span: Option<&crate::ir::Span>,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Shuffle")
+    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
         .call_tuple((
             Array::new(vec![vector]),
             Array::<PrimExpr>::new(vec![IntImm::new("int32", index)?.into()]),

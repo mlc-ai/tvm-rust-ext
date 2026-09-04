@@ -375,27 +375,27 @@ fn new_non_sblock_bindings_match_native_constructors() {
 
     assert_binary_constructor!(
         Expr::from(NE::new(lhs.clone(), rhs.clone()).unwrap()),
-        "tirx.NE"
+        "ir.prim.NE"
     );
     assert_binary_constructor!(
         Expr::from(LT::new(lhs.clone(), rhs.clone()).unwrap()),
-        "tirx.LT"
+        "ir.prim.LT"
     );
     assert_binary_constructor!(
         Expr::from(LE::new(lhs.clone(), rhs.clone()).unwrap()),
-        "tirx.LE"
+        "ir.prim.LE"
     );
     assert_binary_constructor!(
         Expr::from(GT::new(lhs.clone(), rhs.clone()).unwrap()),
-        "tirx.GT"
+        "ir.prim.GT"
     );
     assert_binary_constructor!(
         Expr::from(GE::new(lhs.clone(), rhs.clone()).unwrap()),
-        "tirx.GE"
+        "ir.prim.GE"
     );
 
     let condition = PrimExpr::try_from(typed_int_expression("bool", 1)).unwrap();
-    let native_not: Expr = Function::get_global("tirx.Not")
+    let native_not: Expr = Function::get_global("ir.prim.Not")
         .unwrap()
         .call_tuple((condition.clone(), Option::<Span>::None))
         .unwrap()
@@ -407,7 +407,7 @@ fn new_non_sblock_bindings_match_native_constructors() {
     );
 
     let rust_select = Select::new(condition.clone(), lhs.clone(), rhs.clone()).unwrap();
-    let native_select: Expr = Function::get_global("tirx.Select")
+    let native_select: Expr = Function::get_global("ir.prim.Select")
         .unwrap()
         .call_tuple((
             condition.clone(),
@@ -422,7 +422,7 @@ fn new_non_sblock_bindings_match_native_constructors() {
 
     let let_variable = Var::new("let_bound", "int32").unwrap();
     let rust_let = Let::new(let_variable.clone(), lhs.clone(), rhs.clone()).unwrap();
-    let native_let: Expr = Function::get_global("tirx.Let")
+    let native_let: Expr = Function::get_global("ir.prim.Let")
         .unwrap()
         .call_tuple((let_variable, lhs, rhs, Option::<Span>::None))
         .unwrap()

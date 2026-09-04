@@ -32,11 +32,12 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
+use crate::ir::prim::{Add, And, FloorDiv, Let, Mul, Not, Select, Sub, EQ, GE, GT, LE, LT};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::te::Reduce;
 use crate::tirx::{
-    Add, AllocBuffer, And, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
-    Evaluate, FloorDiv, For, IfThenElse, IterVar, Let, Mul, Not, PrimFunc, Reduce, Select, SeqStmt,
-    Stmt, Sub, EQ, GE, GT, LE, LT,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
+    IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
@@ -131,9 +132,9 @@ fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> 
         profiler_operators,
         variable_domains: HashMap::new(),
         buffer_remaps: BufferRemaps::default(),
-        likely_operator: get_operator("tirx.likely")?,
-        if_then_else_operator: get_operator("tirx.if_then_else")?,
-        bitwise_and_operator: get_operator("tirx.bitwise_and")?,
+        likely_operator: get_operator("ir.prim.likely")?,
+        if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+        bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
     };
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
@@ -360,7 +361,7 @@ impl NoOpRemover {
                 ));
             }
             let zero = zero_like(&inner.value);
-            let negative: PrimExpr = crate::tirx::LT::new(inner.value.clone(), zero)?.into();
+            let negative: PrimExpr = crate::ir::prim::LT::new(inner.value.clone(), zero)?.into();
             if Analyzer::new()?.can_prove(&negative)? {
                 return mutator.mutate(self, &inner.body)?.try_into();
             }
@@ -450,7 +451,8 @@ impl NoOpRemover {
 
         let one = one_like(&value.extent);
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
-        let maximum: PrimExpr = crate::tirx::Add::new(value.min.clone(), extent_minus_one)?.into();
+        let maximum: PrimExpr =
+            crate::ir::prim::Add::new(value.min.clone(), extent_minus_one)?.into();
         let integer_domain = IntSet::interval(value.min.clone(), maximum)?;
         let identity = ObjectIdentity::of(&value.loop_var);
         let previous = self.variable_domains.insert(
@@ -515,7 +517,7 @@ impl NoOpRemover {
         )?;
         let difference: PrimExpr = Sub::new(value.value.clone(), load)?.into();
         let equal_to_zero: PrimExpr =
-            crate::tirx::EQ::new(difference.clone(), zero_like(&difference))?.into();
+            crate::ir::prim::EQ::new(difference.clone(), zero_like(&difference))?.into();
         if int_value(&self.analyzer.simplify(&equal_to_zero)?) == Some(1) {
             return self.store_side_effects(&value);
         }

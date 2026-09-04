@@ -22,10 +22,9 @@ use std::collections::{HashMap, VecDeque};
 use tvm_ffi::{Array, Result};
 
 use crate::analysis::Analyzer;
+use crate::ir::prim::{Add, FloorDiv, FloorMod, Mul, StringImm, EQ, NE};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Var};
-use crate::tirx::{
-    Add, FloorDiv, FloorMod, IterVar, Mul, PrimVar, ScopeBinding, ScopeIdDef, StringImm, EQ, NE,
-};
+use crate::tirx::{IterVar, PrimVar, ScopeBinding, ScopeIdDef};
 
 use super::utils::{get_operator, value_error};
 

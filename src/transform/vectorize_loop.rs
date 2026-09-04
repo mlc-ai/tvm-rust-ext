@@ -30,12 +30,12 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
-use crate::tirx::{
-    Add, And, Bind, Broadcast, BufferStore, Cast, Div, FloorDiv, FloorMod, For, ForKind,
-    IfThenElse, Let, Max, Min, Mod, Mul, Not, Or, PrimFunc, PrimVar, Ramp, Select, Shuffle, Stmt,
-    Sub, While, EQ, GE, GT, LE, LT, NE,
+use crate::ir::prim::{
+    Add, And, Broadcast, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not, Or, Ramp,
+    Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
 };
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::tirx::{Bind, BufferStore, For, ForKind, IfThenElse, PrimFunc, PrimVar, Stmt, While};
 
 /// Vectorize loops marked with `ForKind::kVectorized`, or turn them into
 /// serial loops when vectorization is disabled.
@@ -143,7 +143,7 @@ impl Vectorizer {
             ramp,
             need_scalarize: false,
             let_bindings: HashMap::new(),
-            if_then_else: operator_identity("tirx.if_then_else")?,
+            if_then_else: operator_identity("ir.prim.if_then_else")?,
             reinterpret: operator_identity("tirx.reinterpret")?,
             call_llvm_pure_intrin: operator_identity("tirx.call_llvm_pure_intrin")?,
         })
@@ -938,7 +938,7 @@ fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
     }
     let vscale = Call::new(
         PrimType::new("int32")?,
-        get_operator("tirx.vscale")?,
+        get_operator("ir.prim.vscale")?,
         Vec::new(),
     );
     let vscale: Expr = vscale.into();
@@ -955,7 +955,7 @@ fn make_ramp(
     lanes: PrimExpr,
     span: Option<&crate::ir::Span>,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Ramp")
+    tvm_ffi::cached_global_func!("ir.prim.Ramp")
         .call_tuple((base, stride, lanes, span.cloned()))?
         .try_into()
 }
@@ -965,13 +965,13 @@ fn make_broadcast(
     lanes: PrimExpr,
     span: Option<&crate::ir::Span>,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Broadcast")
+    tvm_ffi::cached_global_func!("ir.prim.Broadcast")
         .call_tuple((value, lanes, span.cloned()))?
         .try_into()
 }
 
 fn extract_element(vector: PrimExpr, index: i64) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Shuffle")
+    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
         .call_tuple((
             Array::new(vec![vector]),
             Array::new(vec![PrimExpr::from(IntImm::new("int32", index)?)]),
@@ -989,7 +989,7 @@ fn concat_vectors(vectors: Vec<PrimExpr>) -> Result<PrimExpr> {
         }
         offset += i64::from(lane_count(vector));
     }
-    tvm_ffi::cached_global_func!("tirx.Shuffle")
+    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
         .call_tuple((
             Array::new(vectors),
             Array::<PrimExpr>::new(indices),

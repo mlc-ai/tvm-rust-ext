@@ -27,11 +27,12 @@ use super::utils::{
     mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
+use crate::ir::prim::{Cast, StringImm};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
 use crate::target::Target;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, Cast, DeclBuffer, Evaluate,
-    For, ForKind, IfThenElse, PrimFunc, Stmt, StringImm,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, For,
+    ForKind, IfThenElse, PrimFunc, Stmt,
 };
 
 const DEVICE_ID: &str = "device_id";
@@ -375,7 +376,7 @@ impl BuiltinLower {
         );
         let free_call = PrimExpr::try_from(Expr::from(free_call))?;
         let free = IfThenElse::new(
-            crate::tirx::NE::new(free_call, IntImm::new("int32", 0)?)?,
+            crate::ir::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
             throw,
         )?;
         self.pending_frees
@@ -941,7 +942,7 @@ impl BuiltinLower {
         );
         let free_call: PrimExpr = self.lower_call(free_call, mutator)?.try_into()?;
         let free = IfThenElse::new(
-            crate::tirx::NE::new(free_call, IntImm::new("int32", 0)?)?,
+            crate::ir::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
             Evaluate::new(Call::new(
                 PrimType::new("int32")?,
                 get_operator("tirx.tvm_throw_last_error")?,

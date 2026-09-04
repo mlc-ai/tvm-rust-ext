@@ -23,10 +23,11 @@
 //! stubgen should replace first.  Once those bindings are generated, deleting
 //! their handwritten definitions must not require changing this file.
 
+use tvm::ir::prim::{Add, AddObj};
 use tvm::ir::{
     BaseFuncObj, Expr, ExprObj, IntImm, IntImmObj, PrimExpr, PrimType, Type, Var, VarObj,
 };
-use tvm::tirx::{Add, AddObj, Evaluate, EvaluateObj, PrimFunc, PrimFuncObj, StmtObj};
+use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc, PrimFuncObj, StmtObj};
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFIFieldInfo};
 use tvm::tvm_ffi::{
     structural_map, structural_walk, Any, AnyView, DefRegionKind, Function, Object, ObjectArc,
@@ -284,7 +285,7 @@ fn rust_allocated_nodes_are_consumed_by_cpp_abi() {
             AnyView::from(&none),
         ])
         .unwrap();
-    let cpp_add: Add = Function::get_global("tirx.Add")
+    let cpp_add: Add = Function::get_global("ir.prim.Add")
         .unwrap()
         .call_packed(&[
             AnyView::from(&cpp_lhs),
