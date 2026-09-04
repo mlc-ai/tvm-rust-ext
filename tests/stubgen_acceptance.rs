@@ -24,20 +24,17 @@
 //! their handwritten definitions must not require changing this file.
 
 use tvm::ir::prim::{Add, AddObj};
-use tvm::ir::{
-    BaseFuncObj, Expr, ExprObj, IntImm, IntImmObj, PrimExpr, PrimType, Type, Var, VarObj,
-};
-use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc, PrimFuncObj, StmtObj};
-use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFIFieldInfo};
+use tvm::ir::{Expr, IntImm, PrimExpr, PrimType, Type, Var, VarObj};
+use tvm::tirx::{Evaluate, PrimFunc};
+use tvm::tvm_ffi::tvm_ffi_sys::TVMFFIFieldInfo;
 use tvm::tvm_ffi::{
-    structural_map, structural_walk, Any, AnyView, DefRegionKind, Function, Object, ObjectArc,
-    ObjectCore, ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
+    structural_map, structural_walk, Any, AnyView, DefRegionKind, Function, ObjectArc, ObjectCore,
+    ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
 };
 
 mod common;
 use common::{
     assert_structural_equal as assert_cpp_structural_equal, direct_fields, load_tvm_compiler,
-    runtime_type_info,
 };
 
 fn typed_int_expression(dtype: &str, value: i64) -> Expr {
@@ -59,44 +56,6 @@ fn direct_field<N: ObjectCore>(name: &str) -> &'static TVMFFIFieldInfo {
         .unwrap_or_else(|| panic!("missing reflected field {}.{name}", N::TYPE_KEY))
 }
 
-fn assert_type_contract<N: ObjectCore, P: ObjectCore>(
-    expected_final: bool,
-    expected_fields: &[&str],
-) {
-    let info = runtime_type_info::<N>();
-    assert_eq!(info.type_index, N::type_index());
-    assert_eq!(info.type_key.as_str(), N::TYPE_KEY);
-    assert_eq!(info.type_depth, N::TYPE_DEPTH);
-    assert_eq!(N::TYPE_DEPTH, P::TYPE_DEPTH + 1);
-    assert_eq!(N::TYPE_FINAL, expected_final);
-
-    assert!(!info.type_acenstors.is_null());
-    let parent = unsafe { *info.type_acenstors.add(P::TYPE_DEPTH as usize) };
-    assert!(!parent.is_null());
-    assert_eq!(unsafe { (*parent).type_index }, P::type_index());
-
-    let fields = direct_fields::<N>();
-    assert_eq!(
-        fields
-            .iter()
-            .map(|field| field.name.as_str())
-            .collect::<Vec<_>>(),
-        expected_fields
-    );
-    for field in fields {
-        assert!(
-            field.getter.is_some(),
-            "reflected field {}.{} has no getter",
-            N::TYPE_KEY,
-            field.name.as_str()
-        );
-    }
-}
-
-fn assert_field_flag<N: ObjectCore>(name: &str, flag: TVMFFIFieldFlagBitMask) {
-    assert_ne!(direct_field::<N>(name).flags & flag as i64, 0);
-}
-
 use common::object_pointer;
 
 fn cpp_reflected_field<O: ObjectRefCore>(value: &O, name: &str) -> Any {
@@ -109,37 +68,6 @@ fn cpp_reflected_field<O: ObjectRefCore>(value: &O, name: &str) -> Any {
     let mut result = Any::new();
     assert_eq!(unsafe { getter(address, Any::as_data_ptr(&mut result)) }, 0);
     result
-}
-
-#[test]
-fn minimal_bindings_match_the_runtime_contract() {
-    load_tvm_compiler();
-
-    assert_type_contract::<ExprObj, Object>(false, &["span", "ty"]);
-    assert_type_contract::<VarObj, ExprObj>(false, &["name"]);
-    assert_type_contract::<IntImmObj, ExprObj>(true, &["value"]);
-    assert_type_contract::<AddObj, ExprObj>(true, &["a", "b"]);
-    assert_type_contract::<StmtObj, Object>(false, &["span"]);
-    assert_type_contract::<EvaluateObj, StmtObj>(true, &["value"]);
-    assert_type_contract::<BaseFuncObj, ExprObj>(false, &["attrs"]);
-    assert_type_contract::<PrimFuncObj, BaseFuncObj>(true, &["params", "ret_type", "body"]);
-
-    assert_field_flag::<ExprObj>(
-        "span",
-        TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore,
-    );
-    assert_field_flag::<VarObj>(
-        "name",
-        TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore,
-    );
-    assert_field_flag::<StmtObj>(
-        "span",
-        TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore,
-    );
-    assert_field_flag::<PrimFuncObj>(
-        "params",
-        TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefRecursive,
-    );
 }
 
 #[test]

@@ -30,7 +30,9 @@ use super::utils::{
     with_prim_func_body, BufferRemaps,
 };
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, PrimExpr, TensorLoad, Var};
+use crate::ir::{
+    BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, PrimExpr, TensorLoad, Var,
+};
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, Evaluate, For, PrimFunc, Stmt,
 };
@@ -158,11 +160,11 @@ struct CallGraphState {
 }
 
 fn visit_call(call: Call, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
-    if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
+    if call.op.as_node::<GlobalVarObj>().is_some() {
         visitor
             .state_mut()
             .callees
-            .insert(ObjectIdentity::of(&global));
+            .insert(ObjectIdentity::of(&call.op));
     }
     if is_opaque_expr(&call.op) {
         visitor.visit(&call.op)?;
@@ -292,9 +294,9 @@ impl PrimFuncInliner {
     }
 
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Stmt> {
-        if let Ok(call) = value.value.clone().try_cast::<Call>() {
-            if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
-                let identity = ObjectIdentity::of(&global);
+        if let Some(call) = value.value.as_node::<crate::ir::CallObj>() {
+            if let Some(global) = call.op.as_node::<GlobalVarObj>() {
+                let identity = ObjectIdentity::of(&call.op);
                 if let Some((_, callee)) = self.inlinable.get(&identity).cloned() {
                     if self.targets_match(&callee)? {
                         if callee.params.len() != call.args.len() {
@@ -331,8 +333,8 @@ impl PrimFuncInliner {
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
-        if let Ok(global) = value.op.clone().try_cast::<GlobalVar>() {
-            self.removable.remove(&ObjectIdentity::of(&global));
+        if value.op.as_node::<GlobalVarObj>().is_some() {
+            self.removable.remove(&ObjectIdentity::of(&value.op));
         }
         let op = if is_opaque_expr(&value.op) {
             mutator.mutate(self, &value.op)?.try_into()?

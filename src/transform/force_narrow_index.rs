@@ -33,7 +33,7 @@ use crate::ir::prim::{
     Add, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Ramp, Select, Sub, EQ, GE, GT, LE,
     LT, NE,
 };
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, Var};
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, For, IfThenElse, IterVar, PrimFunc, Stmt,
 };
@@ -77,9 +77,8 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
             params.push(narrower.mutate_buffer_definition(&buffer)?.as_var().clone());
         } else if parameter
             .ty
-            .clone()
-            .try_cast::<PrimType>()
-            .is_ok_and(|ty| is_signed_integer(ty.dtype))
+            .as_node::<PrimTypeObj>()
+            .is_some_and(|ty| is_signed_integer(ty.dtype))
         {
             params.push(narrower.rewrite_variable(parameter));
         } else {
@@ -168,7 +167,7 @@ impl IndexDataTypeNormalizer {
         if let Some(mapped) = self.var_remap.get(&identity) {
             return mapped.clone();
         }
-        let Ok(ty) = value.ty.clone().try_cast::<PrimType>() else {
+        let Some(ty) = value.ty.as_node::<PrimTypeObj>() else {
             return value;
         };
         let replacement = if self.selected_types.is_some() {
@@ -290,7 +289,11 @@ impl IndexDataTypeNormalizer {
 #[tvm_ffi::dispatch(mutate)]
 impl IndexDataTypeNormalizer {
     fn mutate_integer(&mut self, value: IntImm) -> Result<IntImm> {
-        let dtype = value.ty.clone().try_cast::<PrimType>()?.dtype;
+        let dtype = value
+            .ty
+            .as_node::<PrimTypeObj>()
+            .expect("IntImm type invariant was violated")
+            .dtype;
         let replacement = if let Some(selected) = self.selected_type(&value) {
             self.enabled.then_some(selected)
         } else if self.selected_types.is_none()
@@ -323,7 +326,11 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_cast(&mut self, value: Cast, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let dtype = value.ty.clone().try_cast::<PrimType>()?.dtype;
+        let dtype = value
+            .ty
+            .as_node::<PrimTypeObj>()
+            .expect("Cast type invariant was violated")
+            .dtype;
         let replacement = if let Some(selected) = self.selected_type(&value) {
             self.enabled.then_some(selected)
         } else if self.selected_types.is_none() && self.enabled && can_rewrite(dtype) {
@@ -450,7 +457,12 @@ impl IndexDataTypeNormalizer {
         let base = cast_if_needed(base, &dtype)?;
         let stride = cast_if_needed(stride, &dtype)?;
         let result_type = PrimType::from_dtype(DLDataType {
-            lanes: value.ty.clone().try_cast::<PrimType>()?.dtype.lanes,
+            lanes: value
+                .ty
+                .as_node::<PrimTypeObj>()
+                .expect("Ramp type invariant was violated")
+                .dtype
+                .lanes,
             ..dtype.dtype
         })?;
         Ok(Ramp::from_complete_fields(None, result_type, base, stride, value.lanes.clone()).into())
@@ -479,8 +491,13 @@ impl IndexDataTypeNormalizer {
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<PrimExpr> {
         let bound_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let variable = if bound_value.dtype() != value.var.ty.clone().try_cast::<PrimType>()?.dtype
-        {
+        let variable_dtype = value
+            .var
+            .ty
+            .as_node::<PrimTypeObj>()
+            .expect("Let variable type invariant was violated")
+            .dtype;
+        let variable = if bound_value.dtype() != variable_dtype {
             let variable = value
                 .var
                 .copy_with(value.var.name.clone(), bound_value.type_annotation().into());
@@ -500,7 +517,13 @@ impl IndexDataTypeNormalizer {
     fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
         let bound_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         let variable = if let Ok(primitive) = PrimExpr::try_from(&bound_value) {
-            if primitive.dtype() != value.var.ty.clone().try_cast::<PrimType>()?.dtype {
+            let variable_dtype = value
+                .var
+                .ty
+                .as_node::<PrimTypeObj>()
+                .expect("primitive binding type invariant was violated")
+                .dtype;
+            if primitive.dtype() != variable_dtype {
                 let variable = value
                     .var
                     .copy_with(value.var.name.clone(), primitive.type_annotation().into());

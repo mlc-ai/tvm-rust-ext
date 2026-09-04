@@ -32,12 +32,15 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
-use crate::ir::prim::{Add, And, FloorDiv, Let, Mul, Not, Select, Sub, EQ, GE, GT, LE, LT};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::ir::prim::{
+    Add, AndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Let, Mul, Not, Select, Sub, GE,
+    GT, LE, LT,
+};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, TensorLoadObj, Var};
 use crate::te::Reduce;
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
-    IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
+    AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer,
+    Evaluate, For, IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
@@ -522,7 +525,7 @@ impl NoOpRemover {
             return self.store_side_effects(&value);
         }
 
-        if let Ok(load) = value.value.clone().try_cast::<TensorLoad>() {
+        if let Some(load) = value.value.as_node::<TensorLoadObj>() {
             let source: BufferVar = (&load.source).try_into()?;
             if source.same_as(&value.buffer)
                 && self.buffer_geometry_equal(&source, &value.buffer)?
@@ -541,7 +544,7 @@ impl NoOpRemover {
             let mut statements = Vec::with_capacity(value.seq.len());
             for statement in value.seq.iter() {
                 let mutated: Stmt = mutator.mutate(self, &statement)?.try_into()?;
-                if let Ok(assertion) = mutated.clone().try_cast::<AssertStmt>() {
+                if let Some(assertion) = mutated.as_node::<AssertStmtObj>() {
                     exits.push(self.analyzer.enter_constraint(&assertion.condition)?);
                 }
                 statements.push(mutated);
@@ -597,7 +600,7 @@ impl NoOpRemover {
 
 impl NoOpRemover {
     fn unwrap_likely(&self, condition: &PrimExpr) -> Result<PrimExpr> {
-        let Ok(call) = condition.clone().try_cast::<Call>() else {
+        let Some(call) = condition.as_node::<CallObj>() else {
             return Ok(condition.clone());
         };
         if !call.op.same_as(&self.likely_operator) || call.args.len() != 1 {
@@ -777,12 +780,12 @@ fn collect_derived_constraint_facts(
     bitwise_and_operator: &Expr,
     output: &mut Vec<PrimExpr>,
 ) -> Result<()> {
-    if let Ok(and) = condition.clone().try_cast::<And>() {
+    if let Some(and) = condition.as_node::<AndObj>() {
         collect_derived_constraint_facts(&and.a, bitwise_and_operator, output)?;
         collect_derived_constraint_facts(&and.b, bitwise_and_operator, output)?;
         return Ok(());
     }
-    if let Ok(call) = condition.clone().try_cast::<Call>() {
+    if let Some(call) = condition.as_node::<CallObj>() {
         if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
             let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
             let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
@@ -794,15 +797,15 @@ fn collect_derived_constraint_facts(
         }
     }
 
-    if let Ok(compare) = condition.clone().try_cast::<EQ>() {
+    if let Some(compare) = condition.as_node::<EQObj>() {
         collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::Equal, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<LT>() {
+    } else if let Some(compare) = condition.as_node::<LTObj>() {
         collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessThan, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<LE>() {
+    } else if let Some(compare) = condition.as_node::<LEObj>() {
         collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessEqual, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<GT>() {
+    } else if let Some(compare) = condition.as_node::<GTObj>() {
         collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterThan, output)?;
-    } else if let Ok(compare) = condition.clone().try_cast::<GE>() {
+    } else if let Some(compare) = condition.as_node::<GEObj>() {
         collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterEqual, output)?;
     }
     Ok(())
@@ -814,17 +817,17 @@ fn collect_floor_div_constraints(
     kind: CompareKind,
     output: &mut Vec<PrimExpr>,
 ) -> Result<()> {
-    if let (Ok(div), Some(value)) = (lhs.clone().try_cast::<FloorDiv>(), int_value(rhs)) {
-        append_floor_div_constraints(&div, value, kind, output)?;
+    if let (Some(div), Some(value)) = (lhs.as_node::<FloorDivObj>(), int_value(rhs)) {
+        append_floor_div_constraints(div, value, kind, output)?;
     }
-    if let (Ok(div), Some(value)) = (rhs.clone().try_cast::<FloorDiv>(), int_value(lhs)) {
-        append_floor_div_constraints(&div, value, invert_compare(kind), output)?;
+    if let (Some(div), Some(value)) = (rhs.as_node::<FloorDivObj>(), int_value(lhs)) {
+        append_floor_div_constraints(div, value, invert_compare(kind), output)?;
     }
     Ok(())
 }
 
 fn append_floor_div_constraints(
-    division: &FloorDiv,
+    division: &FloorDivObj,
     value: i64,
     kind: CompareKind,
     output: &mut Vec<PrimExpr>,
@@ -835,12 +838,7 @@ fn append_floor_div_constraints(
     if divisor_value <= 0 {
         return Ok(());
     }
-    let dtype = division
-        .a
-        .ty
-        .clone()
-        .try_cast::<crate::ir::PrimType>()?
-        .dtype;
+    let dtype = division.a.dtype();
     let divisor: PrimExpr = IntImm::from_dtype(dtype, divisor_value)?.into();
     let k: PrimExpr = IntImm::from_dtype(dtype, value)?.into();
     let one: PrimExpr = IntImm::from_dtype(dtype, 1)?.into();
@@ -890,7 +888,7 @@ fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Res
 }
 
 fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {
-    let Ok(call) = value.clone().try_cast::<Call>() else {
+    let Some(call) = value.as_node::<CallObj>() else {
         return false;
     };
     profiler_operators

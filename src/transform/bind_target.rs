@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
     structural_mutate, structural_visit, Any, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, Result, String as FfiString, VisitCallbacks, VisitContext, VisitInterrupt,
-    VisitValue,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, VisitCallbacks, VisitContext,
+    VisitInterrupt, VisitValue,
 };
 
 use super::utils::{
@@ -30,7 +30,7 @@ use super::utils::{
     with_prim_func_attr, with_prim_func_body, without_prim_func_attr,
 };
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, Call, GlobalVar, IRModule};
+use crate::ir::{BaseFunc, Call, GlobalVar, GlobalVarObj, IRModule};
 use crate::target::Target;
 use crate::tirx::{AttrStmt, For, ForKind, PrimFunc, Stmt};
 
@@ -166,8 +166,8 @@ fn classify_calls(module: &IRModule) -> Result<ClassifiedCalls> {
 }
 
 fn visit_call(value: Call, visitor: &mut VisitContext<'_, ClassifiedCalls>) -> Result<()> {
-    if let Ok(global) = value.op.clone().try_cast::<GlobalVar>() {
-        let identity = ObjectIdentity::of(&global);
+    if value.op.as_node::<GlobalVarObj>().is_some() {
+        let identity = ObjectIdentity::of(&value.op);
         if visitor.state().under_gpu_scope {
             visitor.state_mut().device.insert(identity);
         } else {
@@ -240,10 +240,10 @@ impl CallSubstitutor<'_> {
         if self.under_gpu_scope {
             return Ok(call);
         }
-        let Ok(global) = call.op.clone().try_cast::<GlobalVar>() else {
+        if call.op.as_node::<GlobalVarObj>().is_none() {
             return Ok(call);
-        };
-        let Some(replacement) = self.replacements.get(&ObjectIdentity::of(&global)) else {
+        }
+        let Some(replacement) = self.replacements.get(&ObjectIdentity::of(&call.op)) else {
             return Ok(call);
         };
         Ok(call.copy_with(

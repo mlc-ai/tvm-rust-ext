@@ -27,11 +27,11 @@ use tvm_ffi::{
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
 use super::utils::{
-    array_same_as, get_operator, int_value, mutate_stmt_expr_default, operator_identity,
-    value_error, visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, int_value, mutate_stmt_expr_default, operator_identity, value_error,
+    visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
     AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, PrimFunc, Stmt,
 };
@@ -338,8 +338,8 @@ impl StoragePlan {
             {
                 first.buffer.clone()
             } else {
-                rebuild_buffer(
-                    &first.buffer,
+                first.buffer.with_name_and_type(
+                    first.buffer.name.clone(),
                     BufferType::from_complete_fields(
                         first_type.span.clone(),
                         backing_dtype,
@@ -352,7 +352,6 @@ impl StoragePlan {
                         first_type.layout.clone(),
                         first_type.allocated_addr.clone(),
                     ),
-                    first.buffer.name.as_str(),
                 )?
             };
             let annotations = merge_annotations(
@@ -491,11 +490,7 @@ impl StoragePlanRewriter {
         let mapped = if buffer.same_as(&storage.backing) {
             buffer.clone()
         } else {
-            rebuild_buffer(
-                buffer,
-                buffer.type_annotation(),
-                storage.backing.name.as_str(),
-            )?
+            buffer.with_name_and_type(storage.backing.name.clone(), buffer.type_annotation())?
         };
         self.buffer_views.insert(identity, mapped.clone());
         Ok(Some((mapped, remap.bit_offset)))
@@ -548,7 +543,7 @@ impl StoragePlanRewriter {
                 return Ok(DeclBuffer::from_complete_fields(
                     value.span.clone(),
                     mapped,
-                    buffer_data(&storage.backing)?,
+                    storage.backing.data()?,
                 )
                 .into());
             }
@@ -566,9 +561,7 @@ impl StoragePlanRewriter {
         };
         let (_, remap) = self.plan.remap(&value.buffer).expect("remapped buffer");
         let storage = &self.plan.storage[remap.storage];
-        Ok(value
-            .copy_with(buffer, buffer_data(&storage.backing)?)
-            .into())
+        Ok(value.copy_with(buffer, storage.backing.data()?).into())
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -653,8 +646,8 @@ fn merge_reused_storage(lhs: &BufferVar, rhs: &BufferVar) -> Result<BufferVar> {
         i64::try_from(bits.div_ceil(element_bits))
             .map_err(|_| value_error("reused storage extent does not fit i64"))?,
     )?;
-    rebuild_buffer(
-        lhs,
+    lhs.with_name_and_type(
+        lhs.name.clone(),
         BufferType::from_complete_fields(
             lhs_type.span.clone(),
             dtype,
@@ -667,7 +660,6 @@ fn merge_reused_storage(lhs: &BufferVar, rhs: &BufferVar) -> Result<BufferVar> {
             lhs_type.layout.clone(),
             lhs_type.allocated_addr.clone(),
         ),
-        lhs.name.as_str(),
     )
 }
 
@@ -690,21 +682,6 @@ fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
         .checked_mul(element_bits)
         .map(Some)
         .ok_or_else(|| value_error("allocation size overflow"))
-}
-
-fn rebuild_buffer(buffer: &BufferVar, ty: BufferType, name: &str) -> Result<BufferVar> {
-    BufferVar::try_from(buffer.copy_with(FfiString::from(name), ty.into()))
-}
-
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    let ty = buffer.type_annotation();
-    let pointer = PointerType::new(ty.dtype.clone(), ty.storage_scope.as_str())?;
-    Ok(Call::new(
-        pointer,
-        get_operator("tirx.buffer_data")?,
-        vec![buffer.as_var().clone().into()],
-    )
-    .into())
 }
 
 fn buffer_data_var(value: &Expr) -> Option<Var> {

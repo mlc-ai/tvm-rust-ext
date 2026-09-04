@@ -31,8 +31,8 @@ use super::utils::{
 use super::{convert_ssa_module, create_module_pass, Pass};
 use crate::ir::prim::StringImm;
 use crate::ir::{
-    BaseFunc, Call, Expr, GlobalVar, IRModule, IntImm, PointerType, PrimExpr, PrimType, TupleType,
-    Type, Var,
+    BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
+    PrimType, TupleType, Type, Var,
 };
 use crate::target::Target;
 use crate::tirx::{
@@ -198,7 +198,7 @@ impl HostDeviceSplitter<'_> {
                         buffer_type.storage_scope.as_str(),
                     )?,
                 );
-                call_arguments.push(buffer_data(&buffer)?);
+                call_arguments.push(buffer.data()?);
                 kernel_parameters.push(data_parameter.clone());
                 substitutions.push((buffer.as_var().clone(), kernel_buffer.clone().into()));
                 declarations.push((kernel_buffer, data_parameter));
@@ -457,8 +457,8 @@ fn collect_called_globals(module: &IRModule) -> Result<HashSet<ObjectIdentity>> 
         structural_walk(
             &function.body,
             |call: Call| {
-                if let Ok(global) = call.op.clone().try_cast::<GlobalVar>() {
-                    called.insert(ObjectIdentity::of(&global));
+                if call.op.as_node::<GlobalVarObj>().is_some() {
+                    called.insert(ObjectIdentity::of(&call.op));
                 }
                 WalkResult::Advance
             },
@@ -666,10 +666,10 @@ struct KernelLaunchRewriter<'a> {
 impl KernelLaunchRewriter<'_> {
     fn mutate_call(&mut self, _value: Call, mutator: &mut Mutator) -> Result<Expr> {
         let value: Call = mutator.default_mutate(self)?.try_into()?;
-        let Ok(global) = value.op.clone().try_cast::<GlobalVar>() else {
+        let Some(global) = value.op.as_node::<GlobalVarObj>() else {
             return Ok(value.into());
         };
-        let identity = ObjectIdentity::of(&global);
+        let identity = ObjectIdentity::of(&value.op);
         let info = self
             .kernel_info
             .get(&identity)
@@ -820,16 +820,6 @@ fn target_equal(lhs: &Target, rhs: &Target) -> Result<bool> {
     tvm_ffi::cached_global_func!("ffi.StructuralEqual")
         .call_tuple((lhs, rhs, false, false))?
         .try_into()
-}
-
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    let ty = buffer.type_annotation();
-    Ok(Call::new(
-        PointerType::new(ty.dtype.clone(), ty.storage_scope.as_str())?,
-        get_operator("tirx.buffer_data")?,
-        vec![buffer.as_var().clone().into()],
-    )
-    .into())
 }
 
 fn substitute_prim(expression: &PrimExpr, substitutions: &Map<Var, Expr>) -> Result<PrimExpr> {

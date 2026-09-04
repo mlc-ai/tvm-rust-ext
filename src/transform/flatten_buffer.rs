@@ -31,7 +31,7 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::Select;
-use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, Var};
 use crate::te::Reduce;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
@@ -98,7 +98,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
             }
             let flattened = flattener.lookup(&original)?.flattened.clone();
             if !flattened.same_as(&original) {
-                let data = buffer_data(&original)?;
+                let data = original.data()?;
                 body = Stmt::sequence(vec![DeclBuffer::new(flattened, data)?.into(), body])?;
             }
         }
@@ -163,9 +163,9 @@ impl BufferFlattener {
             layout,
             allocated_addr,
         );
-        let fold_view = rebuild_buffer(buffer, fold_type)?;
+        let fold_view = buffer.with_type(fold_type)?;
 
-        let native_flattened = native_flatten_buffer(&fold_view)?;
+        let native_flattened = fold_view.flattened()?;
         let flat_type = native_flattened.type_annotation();
         let shape = flat_type
             .shape
@@ -194,7 +194,7 @@ impl BufferFlattener {
         let flattened = if !is_external && structural_equal(&flat_type, &old_type)? {
             buffer.clone()
         } else {
-            rebuild_buffer(buffer, flat_type)?
+            buffer.with_type(flat_type)?
         };
         let info = FlatInfo {
             fold_view,
@@ -237,7 +237,7 @@ impl BufferFlattener {
     }
 
     fn fold_indices(&self, info: &FlatInfo, indices: Array<PrimExpr>) -> Result<Array<PrimExpr>> {
-        let offsets = buffer_offset_of(&info.fold_view, indices)?;
+        let offsets = info.fold_view.offset_of(indices)?;
         let predicate = self.iter_predicate()?;
         tvm_ffi::cached_global_func!("arith.IterMapSimplify")
             .call_tuple((
@@ -333,9 +333,7 @@ impl BufferFlattener {
     ) -> Result<DeclBuffer> {
         let external_source = value
             .data
-            .clone()
-            .try_cast::<Call>()
-            .ok()
+            .as_node::<CallObj>()
             .filter(|call| call.op.same_as(&self.buffer_data_operator) && call.args.len() == 1)
             .and_then(|call| call.args.get(0).ok())
             .and_then(|argument| argument.try_cast::<Var>().ok())
@@ -512,7 +510,7 @@ impl BufferFlattener {
             let variable = value.args.get(0)?.try_cast::<Var>()?;
             if let Ok(buffer) = BufferVar::try_from(variable) {
                 self.mark_used(&buffer);
-                return buffer_data(&self.lookup(&buffer)?.flattened);
+                return self.lookup(&buffer)?.flattened.data();
             }
         }
 
@@ -581,28 +579,6 @@ impl BufferFlattener {
             .copy_with(value.ty.clone(), value.op.clone(), Array::new(arguments))
             .into())
     }
-}
-
-fn native_flatten_buffer(buffer: &BufferVar) -> Result<BufferVar> {
-    tvm_ffi::cached_global_func!("tirx.BufferGetFlattenedBuffer")
-        .call_tuple((buffer,))?
-        .try_into()
-}
-
-fn buffer_offset_of(buffer: &BufferVar, indices: Array<PrimExpr>) -> Result<Array<PrimExpr>> {
-    tvm_ffi::cached_global_func!("tirx.BufferOffsetOf")
-        .call_tuple((buffer, indices))?
-        .try_into()
-}
-
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("tirx.BufferData")
-        .call_tuple((buffer,))?
-        .try_into()
-}
-
-fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn structural_equal(lhs: &BufferType, rhs: &BufferType) -> Result<bool> {

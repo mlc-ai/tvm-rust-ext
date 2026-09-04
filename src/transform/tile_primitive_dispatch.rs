@@ -35,8 +35,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
-use crate::ir::prim::{And, FloorMod, Mod, EQ, GE, GT, LE, LT, NE};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, Range, Var};
+use crate::ir::prim::{And, AndObj, EQObj, FloorModObj, GEObj, GTObj, LEObj, LTObj, ModObj, NE};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, Var};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, For, IfThenElse,
@@ -653,12 +653,11 @@ impl TileDispatcher {
         if self.execution_contexts.is_empty() {
             return Ok(0);
         }
-        if predicate.clone().try_cast::<And>().is_ok() || self.bitwise_and_call(predicate).is_some()
-        {
+        if predicate.as_node::<AndObj>().is_some() || self.bitwise_and_call(predicate).is_some() {
             return self.push_conjunction(predicate);
         }
         if let Some(call) = self.filter_call(predicate) {
-            return self.push_filter_context(&call);
+            return self.push_filter_context(call);
         }
         if let Some(range) = self.comparison_range(predicate)? {
             return Ok(usize::from(self.push_range(&range)?));
@@ -681,15 +680,15 @@ impl TileDispatcher {
     }
 
     fn comparison_range(&self, predicate: &PrimExpr) -> Result<Option<ScopeRange>> {
-        let (lhs, rhs, relation) = if let Ok(compare) = predicate.clone().try_cast::<EQ>() {
+        let (lhs, rhs, relation) = if let Some(compare) = predicate.as_node::<EQObj>() {
             (compare.a.clone(), compare.b.clone(), Comparison::Equal)
-        } else if let Ok(compare) = predicate.clone().try_cast::<LT>() {
+        } else if let Some(compare) = predicate.as_node::<LTObj>() {
             (compare.a.clone(), compare.b.clone(), Comparison::Less)
-        } else if let Ok(compare) = predicate.clone().try_cast::<LE>() {
+        } else if let Some(compare) = predicate.as_node::<LEObj>() {
             (compare.a.clone(), compare.b.clone(), Comparison::LessEqual)
-        } else if let Ok(compare) = predicate.clone().try_cast::<GT>() {
+        } else if let Some(compare) = predicate.as_node::<GTObj>() {
             (compare.a.clone(), compare.b.clone(), Comparison::Greater)
-        } else if let Ok(compare) = predicate.clone().try_cast::<GE>() {
+        } else if let Some(compare) = predicate.as_node::<GEObj>() {
             (
                 compare.a.clone(),
                 compare.b.clone(),
@@ -737,7 +736,7 @@ impl TileDispatcher {
     }
 
     fn modulo_equality(&self, predicate: &PrimExpr) -> Result<Option<(ScopeTarget, i64, i64)>> {
-        let Ok(equal) = predicate.clone().try_cast::<EQ>() else {
+        let Some(equal) = predicate.as_node::<EQObj>() else {
             return Ok(None);
         };
         if let Some((target, modulus)) = self.modulo_target(&equal.a)? {
@@ -754,12 +753,12 @@ impl TileDispatcher {
     }
 
     fn modulo_target(&self, expression: &PrimExpr) -> Result<Option<(ScopeTarget, i64)>> {
-        let operands = if let Ok(modulo) = expression.clone().try_cast::<Mod>() {
-            Some((modulo.a.clone(), modulo.b.clone()))
-        } else if let Ok(modulo) = expression.clone().try_cast::<FloorMod>() {
+        let operands = if let Some(modulo) = expression.as_node::<ModObj>() {
             Some((modulo.a.clone(), modulo.b.clone()))
         } else {
-            None
+            expression
+                .as_node::<FloorModObj>()
+                .map(|modulo| (modulo.a.clone(), modulo.b.clone()))
         };
         let Some((value, modulus)) = operands else {
             return Ok(None);
@@ -839,7 +838,7 @@ impl TileDispatcher {
     }
 
     fn flatten_conjunction(&self, predicate: &PrimExpr, terms: &mut Vec<PrimExpr>) -> Result<()> {
-        if let Ok(and) = predicate.clone().try_cast::<And>() {
+        if let Some(and) = predicate.as_node::<AndObj>() {
             self.flatten_conjunction(&and.a, terms)?;
             self.flatten_conjunction(&and.b, terms)?;
         } else if let Some(call) = self.bitwise_and_call(predicate) {
@@ -851,17 +850,17 @@ impl TileDispatcher {
         Ok(())
     }
 
-    fn filter_call(&self, predicate: &PrimExpr) -> Option<Call> {
-        let call = predicate.clone().try_cast::<Call>().ok()?;
+    fn filter_call<'a>(&self, predicate: &'a PrimExpr) -> Option<&'a CallObj> {
+        let call = predicate.as_node::<CallObj>()?;
         (call.op.same_as(&self.filter_operator) && call.args.len() == 2).then_some(call)
     }
 
-    fn bitwise_and_call(&self, predicate: &PrimExpr) -> Option<Call> {
-        let call = predicate.clone().try_cast::<Call>().ok()?;
+    fn bitwise_and_call<'a>(&self, predicate: &'a PrimExpr) -> Option<&'a CallObj> {
+        let call = predicate.as_node::<CallObj>()?;
         (call.op.same_as(&self.bitwise_and_operator) && call.args.len() == 2).then_some(call)
     }
 
-    fn push_filter_context(&mut self, call: &Call) -> Result<usize> {
+    fn push_filter_context(&mut self, call: &CallObj) -> Result<usize> {
         let variable = PrimExpr::try_from(call.args.get(0)?)?;
         let condition = PrimExpr::try_from(call.args.get(1)?)?;
         let mut pushed = 0;
@@ -911,7 +910,7 @@ impl TileDispatcher {
     }
 
     fn rewrite_filter_calls(&self, predicate: &PrimExpr) -> Result<PrimExpr> {
-        if let Ok(and) = predicate.clone().try_cast::<And>() {
+        if let Some(and) = predicate.as_node::<AndObj>() {
             let lhs = self.rewrite_filter_calls(&and.a)?;
             let rhs = self.rewrite_filter_calls(&and.b)?;
             if lhs.same_as(&and.a) && rhs.same_as(&and.b) {
@@ -1145,7 +1144,7 @@ fn replace_kernel_point(statement: Stmt, body: &Stmt) -> Result<Stmt> {
     structural_map(
         statement,
         move |value: Evaluate| -> Result<Stmt> {
-            let Ok(call) = value.value.clone().try_cast::<Call>() else {
+            let Some(call) = value.value.as_node::<CallObj>() else {
                 return Ok(value.into());
             };
             if call.op.same_as(&operator) {
@@ -1200,9 +1199,7 @@ fn resolve_storage_roots(
             let Some(root) = roots.get(&ObjectIdentity::of(buffer.as_var())) else {
                 return Ok(call.into());
             };
-            tvm_ffi::cached_global_func!("tirx.BufferData")
-                .call_tuple((root,))?
-                .try_into()
+            root.data()
         },
         WalkOrder::PostOrder,
     )?
@@ -1234,7 +1231,7 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
 }
 
 fn buffer_data_source(value: &Expr) -> Option<BufferVar> {
-    let call = value.clone().try_cast::<Call>().ok()?;
+    let call = value.as_node::<CallObj>()?;
     if !call.op.same_as(&get_operator("tirx.buffer_data").ok()?) || call.args.len() != 1 {
         return None;
     }
