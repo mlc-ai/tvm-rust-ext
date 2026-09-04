@@ -27,8 +27,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, int_value, is_evaluate_zero as is_no_op, mutate_stmt_expr_default,
-    option_same_as, with_prim_func_body, BufferRemaps,
+    array_same_as, get_operator, int_value, is_call, is_evaluate_zero as is_no_op,
+    mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
@@ -611,7 +611,7 @@ impl NoOpRemover {
             }
             return Ok(side_effect(&primitive)? > CallEffectKind::kReadState);
         }
-        Ok(value.clone().try_cast::<Call>().is_ok())
+        Ok(is_call(value))
     }
 
     fn make_evaluate(&self, value: PrimExpr) -> Result<Stmt> {
@@ -870,7 +870,7 @@ fn invert_compare(kind: CompareKind) -> CompareKind {
 }
 
 fn is_bool8(value: &PrimExpr) -> bool {
-    let dtype = value.type_annotation().dtype;
+    let dtype = value.dtype();
     dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8
 }
 
@@ -885,12 +885,6 @@ fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Res
         (Err(error), _) | (Ok(_), Some(error)) => Err(error),
         (Ok(value), None) => Ok(value),
     }
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
 }
 
 fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {

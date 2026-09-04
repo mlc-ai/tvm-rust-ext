@@ -26,13 +26,11 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
-    visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, get_operator, is_opaque_expr, is_pointer_type, mutate_expr_default,
+    mutate_stmt_default, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{
-    Call, Expr, FloatImm, OpaqueExpr, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var,
-};
+use crate::ir::{Call, Expr, FloatImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
 use crate::target::Target;
 use crate::tirx::{
     Add, AllocBuffer, AttrStmt, Bind, Broadcast, BufferStore, BufferVar, Cast, CommReducer,
@@ -266,7 +264,7 @@ fn plan_call(value: Call, visitor: &mut VisitContext<'_, ComputePlan>) -> Result
                 .insert(ObjectIdentity::of(&variable));
         }
     }
-    if value.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+    if is_opaque_expr(&value.op) {
         visitor.visit(&value.op)?;
     }
     visitor.visit(&value.args)?;
@@ -276,7 +274,7 @@ fn plan_call(value: Call, visitor: &mut VisitContext<'_, ComputePlan>) -> Result
 fn plan_variable(value: Var, visitor: &mut VisitContext<'_, ComputePlan>) -> Result<()> {
     if let Ok(buffer) = BufferVar::try_from(&value) {
         visitor.state_mut().populate_buffer_remap(&buffer)?;
-    } else if value.ty.clone().try_cast::<PointerType>().is_ok() {
+    } else if is_pointer_type(&value.ty) {
         visitor
             .state_mut()
             .opaque_variables
@@ -351,7 +349,7 @@ impl ComputeLegalizer {
             return Ok(value);
         }
         if let Ok(cast) = Expr::from(value.clone()).try_cast::<Cast>() {
-            if cast.value.type_annotation().dtype == self.promote_type_for(&ty)?.dtype {
+            if cast.value.dtype() == self.promote_type_for(&ty)?.dtype {
                 return Ok(cast.value.clone());
             }
         }
@@ -359,7 +357,7 @@ impl ComputeLegalizer {
     }
 
     fn cast_from_promoted(&self, value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
-        if value.type_annotation().dtype.code != DLDataTypeCode::kDLFloat as u8 {
+        if value.dtype().code != DLDataTypeCode::kDLFloat as u8 {
             return Ok(value);
         }
         self.conversion.convert(value, target)
@@ -418,10 +416,10 @@ impl ComputeLegalizer {
                 .into());
         }
         let mut stored = stored.expect("masked store has a value");
-        if self.unsupported.matches(&buffer.type_annotation().dtype) {
+        if self.unsupported.matches(buffer.dtype()) {
             stored = self.cast_from_promoted(stored, access_type.clone())?;
         }
-        if stored.type_annotation().dtype != access_type.dtype {
+        if stored.dtype() != access_type.dtype {
             stored = self.conversion.convert(stored, access_type)?;
         }
         arguments.push(stored.into());
@@ -569,8 +567,7 @@ impl ComputeLegalizer {
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<PrimExpr> {
         let bound_value = self.promote(value.value.clone())?;
-        let variable = if bound_value.type_annotation().dtype != value.value.type_annotation().dtype
-        {
+        let variable = if bound_value.dtype() != value.value.dtype() {
             let mapped = value
                 .var
                 .copy_with(value.var.name.clone(), value.value.type_annotation().into());
@@ -667,13 +664,7 @@ impl ComputeLegalizer {
             return mutate_stmt_default(self, mutator, value.into())?.try_cast();
         };
         let bound_value = self.promote(primitive)?;
-        let variable = if bound_value.type_annotation().dtype
-            != value
-                .value
-                .clone()
-                .try_cast::<PrimExpr>()?
-                .type_annotation()
-                .dtype
+        let variable = if bound_value.dtype() != value.value.clone().try_cast::<PrimExpr>()?.dtype()
         {
             let mapped = value
                 .var
@@ -705,10 +696,10 @@ impl ComputeLegalizer {
                 .ty
                 .clone()
                 .try_cast()?;
-        if self.unsupported.matches(&buffer.type_annotation().dtype) {
+        if self.unsupported.matches(buffer.dtype()) {
             stored = self.cast_from_promoted(stored, storage_type.clone())?;
         }
-        if stored.type_annotation().dtype != storage_type.dtype {
+        if stored.dtype() != storage_type.dtype {
             stored = self.conversion.convert(stored, storage_type)?;
         }
         BufferStore::new(buffer, stored, indices.iter().map(Into::into).collect())
@@ -735,7 +726,7 @@ impl ComputeLegalizer {
             for index in 0..identities.len() {
                 let identity_type = identities.get(index)?.type_annotation();
                 for variable in [reducer.lhs.get(index)?, reducer.rhs.get(index)?] {
-                    if variable.type_annotation().dtype != identity_type.dtype {
+                    if variable.dtype() != identity_type.dtype {
                         let mapped =
                             variable.copy_with(variable.name.clone(), identity_type.clone().into());
                         self.variable_remaps
@@ -920,7 +911,7 @@ impl DTypeConverter {
             };
             let exponent = shift_global(
                 "tirx.left_shift",
-                semantic_cast(target_uint.clone(), exponent)?,
+                semantic_cast(target_uint, exponent)?,
                 i64::from(target_config.mantissa),
             )?;
             binary_global(
@@ -1186,7 +1177,7 @@ impl StorageLegalizer {
         let mapped = if let Some(variable) = self.variable_remaps.get(&identity) {
             BufferVar::try_from(variable.clone())?
         } else {
-            if !allow_definition && self.unsupported.matches(&buffer.type_annotation().dtype) {
+            if !allow_definition && self.unsupported.matches(buffer.dtype()) {
                 return Err(tvm_ffi::Error::new(
                     tvm_ffi::VALUE_ERROR,
                     &format!(
@@ -1204,7 +1195,7 @@ impl StorageLegalizer {
 
     fn force_buffer_storage_type(&mut self, buffer: BufferVar) -> Result<BufferVar> {
         let current = self.remap_buffer(&buffer, true)?;
-        if !self.unsupported.matches(&current.type_annotation().dtype) {
+        if !self.unsupported.matches(current.dtype()) {
             return Ok(current);
         }
         let old_type = current.type_annotation();
@@ -1378,7 +1369,7 @@ impl StorageLegalizer {
         if value.op.same_as(&self.reinterpret_operator) && value.args.len() == 1 {
             let original_source: PrimExpr = value.args.get(0)?.try_into()?;
             let source: PrimExpr = mutator.mutate(self, &original_source)?.try_into()?;
-            if source.type_annotation().dtype == output_type.dtype {
+            if source.dtype() == output_type.dtype {
                 return Ok(source.into());
             }
             if self.unsupported.matches(&output_type) {
@@ -1458,10 +1449,4 @@ fn target_has_native_support(function: &PrimFunc, unsupported: UnsupportedFloat)
     };
     let version: tvm_ffi::String = get_version.call_tuple((target,))?.try_into()?;
     check_support.call_tuple((version,))?.try_into()
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
 }

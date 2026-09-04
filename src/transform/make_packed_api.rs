@@ -25,8 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    cast_prim_expr, int_dtype_and_value, int_value, mutate_stmt_expr_default, variable_name,
-    with_prim_func_body,
+    cast_prim_expr, get_operator, int_dtype_and_value, int_value, is_buffer_var, is_pointer_type,
+    mutate_stmt_expr_default, value_error, variable_name, with_prim_func_body,
 };
 use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
@@ -351,7 +351,7 @@ impl ReturnRewriter {
 }
 
 fn convert_return_value(value: Expr) -> Result<(i64, Expr)> {
-    if value.ty.clone().try_cast::<PointerType>().is_ok() {
+    if is_pointer_type(&value.ty) {
         return Ok((TypeIndex::kTVMFFIOpaquePtr as i64, value));
     }
     let primitive = value.ty.clone().try_cast::<PrimType>()?;
@@ -487,11 +487,7 @@ impl PackedAbiBinder {
         // Buffer parameter decoding is kept in a separate phase so scalar
         // shape variables are defined before buffer-shape checks use them.
         for (index, parameter) in parameters.into_iter().enumerate() {
-            if parameter
-                .clone()
-                .try_cast::<crate::tirx::BufferVar>()
-                .is_ok()
-            {
+            if is_buffer_var(&parameter) {
                 self.decode_buffer(index, parameter)?;
             }
         }
@@ -511,11 +507,7 @@ impl PackedAbiBinder {
             .push(Bind::new(type_index_var.clone(), loaded_type)?.into());
         let type_index_expr = PrimExpr::try_from(Expr::from(type_index_var))?;
 
-        if parameter
-            .clone()
-            .try_cast::<crate::tirx::BufferVar>()
-            .is_ok()
-        {
+        if is_buffer_var(&parameter) {
             let handle = Var::with_type(
                 &format!("{}.handle", parameter.name.as_str()),
                 PointerType::new(PrimType::void(), "")?,
@@ -527,7 +519,7 @@ impl PackedAbiBinder {
                 .insert(ObjectIdentity::of(&parameter), handle);
             return Ok(());
         }
-        if parameter.ty.clone().try_cast::<PointerType>().is_ok() {
+        if is_pointer_type(&parameter.ty) {
             let value = self.decode_opaque_handle(index, &type_index_expr, "pointer")?;
             let value = Call::new(
                 parameter.ty.clone(),
@@ -1297,12 +1289,6 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
     Ok(body)
 }
 
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
-}
-
 fn const_handle(value: i64) -> Result<Expr> {
     let pointer = PointerType::new(PrimType::void(), "")?;
     Ok(Call::new(
@@ -1398,8 +1384,4 @@ fn device_type_name(device_type: i32) -> &'static str {
         15 => "webgpu",
         _ => "device",
     }
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

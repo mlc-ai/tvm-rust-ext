@@ -25,8 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    int_value, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr,
-    with_prim_func_body,
+    get_operator, int_value, is_buffer_type, is_pointer_type, mutate_stmt_default,
+    mutate_stmt_expr_default, value_error, with_prim_func_attr, with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
 use crate::ir::{
@@ -35,8 +35,8 @@ use crate::ir::{
 };
 use crate::target::Target;
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferType, BufferVar, DeclBuffer, Evaluate, IterVar,
-    PrimFunc, Return, Stmt, StringImm,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferVar, DeclBuffer, Evaluate, IterVar, PrimFunc,
+    Return, Stmt, StringImm,
 };
 
 const TARGET: &str = "target";
@@ -798,8 +798,7 @@ fn function_string_attr(function: &PrimFunc, key: &str) -> Result<Option<FfiStri
 }
 
 fn is_handle_parameter(variable: &Var) -> bool {
-    variable.ty.clone().try_cast::<PointerType>().is_ok()
-        || variable.ty.clone().try_cast::<BufferType>().is_ok()
+    is_pointer_type(&variable.ty) || is_buffer_type(&variable.ty)
 }
 
 fn fresh_name(base: &str, used: &mut HashSet<String>) -> String {
@@ -836,14 +835,4 @@ fn substitute_prim(expression: &PrimExpr, substitutions: &Map<Var, Expr>) -> Res
     tvm_ffi::cached_global_func!("tirx.Substitute")
         .call_tuple((expression, substitutions))?
         .try_into()
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

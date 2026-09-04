@@ -25,7 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    int_value, mutate_expr_default, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
+    get_operator, int_value, mutate_expr_default, mutate_stmt_expr_default, option_same_as,
+    with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
@@ -68,7 +69,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
                     .extern_buffers
                     .insert(ObjectIdentity::of(buffer.as_var()));
                 for shape in buffer.type_annotation().shape.iter() {
-                    let zero = IntImm::from_dtype(shape.type_annotation().dtype, 0)?;
+                    let zero = IntImm::from_dtype(shape.dtype(), 0)?;
                     let condition: PrimExpr = crate::tirx::GE::new(shape, zero)?.into();
                     flattener
                         .persistent_constraints
@@ -172,7 +173,7 @@ impl BufferFlattener {
         let elem_offset = if is_zero(&flat_type.elem_offset) {
             flat_type.elem_offset.clone()
         } else {
-            IntImm::from_dtype(flat_type.elem_offset.type_annotation().dtype, 0)?.into()
+            IntImm::from_dtype(flat_type.elem_offset.dtype(), 0)?.into()
         };
         let flat_type = BufferType::from_complete_fields(
             flat_type.span.clone(),
@@ -382,7 +383,7 @@ impl BufferFlattener {
             let minimum: PrimExpr = mutator.mutate(flattener, &value.min)?.try_into()?;
             let extent: PrimExpr = mutator.mutate(flattener, &value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(flattener, &value.step)?.try_into()?;
-            let zero = IntImm::from_dtype(extent.type_annotation().dtype, 0)?;
+            let zero = IntImm::from_dtype(extent.dtype(), 0)?;
             let positive: PrimExpr = crate::tirx::GT::new(extent.clone(), zero)?.into();
             let analyzer = flattener.analyzer.clone();
             let body: Stmt = analyzer.with_constraint(&positive, || {
@@ -417,7 +418,7 @@ impl BufferFlattener {
         }
         let iteration = crate::tirx::IterVar::try_from(value.node.clone())?;
         let variable = iteration.var()?;
-        let zero = IntImm::from_dtype(value.value.type_annotation().dtype, 0)?;
+        let zero = IntImm::from_dtype(value.value.dtype(), 0)?;
         let domain = Range::from_min_extent(zero, value.value.clone())?;
         self.with_iter_var(variable, domain, |flattener| {
             let attr_value: PrimExpr = mutator.mutate(flattener, &value.value)?.try_into()?;
@@ -499,7 +500,7 @@ impl BufferFlattener {
                 self.iter_vars = Map::from_iter(entries);
             }
         }
-        let result = super::utils::mutate_expr_default(self, mutator, value.clone().into())
+        let result = super::utils::mutate_expr_default(self, mutator, value.into())
             .and_then(|expression| expression.try_cast::<Reduce>());
         self.iter_vars = old;
         result
@@ -615,12 +616,6 @@ fn is_zero(value: &PrimExpr) -> bool {
 
 fn is_one(value: &PrimExpr) -> bool {
     int_value(value) == Some(1)
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
 }
 
 fn finish_constraints<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {

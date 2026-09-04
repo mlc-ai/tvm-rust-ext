@@ -26,8 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, int_value as optional_int_value, mutate_expr_default, mutate_stmt_expr_default,
-    visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, get_operator, int_value as optional_int_value, mutate_expr_default,
+    mutate_stmt_expr_default, value_error, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
@@ -285,7 +285,7 @@ fn find_coefficient_store(
             ));
         }
         let mut index = value.indices.get(0)?;
-        if value.value.type_annotation().dtype.lanes != 1 {
+        if value.value.dtype().lanes != 1 {
             let ramp = index
                 .clone()
                 .try_cast::<Ramp>()
@@ -495,7 +495,7 @@ impl WarpAccessRewriter {
                 IntImm::new("int32", aligned / i64::from(width))?.into()
             ]),
             Array::new(Vec::new()),
-            IntImm::from_dtype(old_type.elem_offset.type_annotation().dtype, 0)?.into(),
+            IntImm::from_dtype(old_type.elem_offset.dtype(), 0)?.into(),
             old_type.data_alignment,
             old_type.offset_factor,
             old_type.layout.clone(),
@@ -560,7 +560,7 @@ impl WarpAccessRewriter {
             let (local, group) = self.split_index_by_group(&ramp.base)?;
             let local = ramp_expression(
                 local,
-                IntImm::from_dtype(ramp.stride.type_annotation().dtype, 1)?.into(),
+                IntImm::from_dtype(ramp.stride.dtype(), 1)?.into(),
                 ramp.lanes.clone(),
             )?;
             return Ok((local, group));
@@ -883,20 +883,10 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
         .try_into()
 }
 
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from(name),))?
-        .try_into()
-}
-
 fn int_expr_value(value: &Expr) -> Result<i64> {
     int_value(&value.clone().try_cast::<PrimExpr>()?)
 }
 
 fn int_value(value: &PrimExpr) -> Result<i64> {
     optional_int_value(value).ok_or_else(|| value_error("expected a constant integer expression"))
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

@@ -22,7 +22,10 @@ use tvm_ffi::{
     ObjectRefCore, Result, String,
 };
 
-use super::utils::{int_value, mutate_expr_default, mutate_stmt_default, with_prim_func_body};
+use super::utils::{
+    get_operator, int_value, mutate_expr_default, mutate_stmt_default, value_error,
+    with_prim_func_body,
+};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
@@ -168,7 +171,7 @@ impl IntrinInjecter {
                 ));
             }
             let mut inner_offset = inner.args.get(2)?.try_cast::<PrimExpr>()?;
-            if inner_offset.type_annotation().dtype != offset.type_annotation().dtype {
+            if inner_offset.dtype() != offset.dtype() {
                 inner_offset = semantic_cast(offset.type_annotation(), inner_offset)?;
             }
             offset = binary_op("tirx._OpAdd", inner_offset, offset)?;
@@ -198,7 +201,7 @@ impl IntrinInjecter {
 
         let mut access_buffer = None;
         let mut storage_scope = String::from("");
-        let mut access_data = source.clone();
+        let mut access_data = source;
         if let Ok(buffer) = BufferVar::try_from(&source_var) {
             let buffer_type = buffer.type_annotation();
             if buffer_type.dtype.dtype == scalar_dtype.dtype && buffer_type.shape.len() == 1 {
@@ -244,9 +247,8 @@ impl IntrinInjecter {
     }
 
     fn apply_intrinsic_rule(&mut self, call: &Call, mutator: &mut Mutator) -> Result<Option<Expr>> {
-        let primitive = match PrimExpr::try_from(Expr::from(call.clone())) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
+        let Ok(primitive) = PrimExpr::try_from(Expr::from(call.clone())) else {
+            return Ok(None);
         };
         for attribute_name in &self.attribute_names {
             let Some(rule) = operator_rule(&call.op, attribute_name)? else {
@@ -305,7 +307,7 @@ impl IntrinInjecter {
         if bounds.min_value >= 0 {
             return Ok(None);
         }
-        let dtype = a.type_annotation().dtype;
+        let dtype = a.dtype();
         let max_value = if dtype.code == DLDataTypeCode::kDLUInt as u8 {
             if dtype.bits >= 63 {
                 i64::MAX
@@ -317,9 +319,8 @@ impl IntrinInjecter {
         } else {
             (1_i64 << (dtype.bits - 1)) - 1
         };
-        let available = match max_value.checked_add(bounds.min_value) {
-            Some(value) => value,
-            None => return Ok(None),
+        let Some(available) = max_value.checked_add(bounds.min_value) else {
+            return Ok(None);
         };
         if divisor - 1 > available {
             return Ok(None);
@@ -429,7 +430,7 @@ impl IntrinInjecter {
             return mutator.mutate(self, &floor)?.try_into();
         }
         let remainder = Var::with_type("rmod", dtype.clone());
-        let quotient = Var::with_type("rdiv", dtype.clone());
+        let quotient = Var::with_type("rdiv", dtype);
         let zero = int_like(&mapped.a, 0)?;
         let condition = Or::new(
             And::new(
@@ -438,7 +439,7 @@ impl IntrinInjecter {
             )?,
             And::new(
                 LT::new(mapped.b.clone(), zero.clone())?,
-                LE::new(remainder.clone(), zero.clone())?,
+                LE::new(remainder.clone(), zero)?,
             )?,
         )?;
         let selected = Select::new(
@@ -447,7 +448,7 @@ impl IntrinInjecter {
             crate::tirx::Sub::new(quotient.clone(), int_like(&mapped.a, 1)?)?,
         )?;
         Ok(Let::new(
-            remainder.clone(),
+            remainder,
             Mod::new(mapped.a.clone(), mapped.b.clone())?,
             Let::new(
                 quotient,
@@ -532,7 +533,7 @@ impl IntrinInjecter {
             )?,
             And::new(
                 LT::new(mapped.b.clone(), zero.clone())?,
-                LE::new(remainder.clone(), zero.clone())?,
+                LE::new(remainder.clone(), zero)?,
             )?,
         )?;
         Ok(Let::new(
@@ -707,12 +708,6 @@ fn int_like(value: &PrimExpr, literal: i64) -> Result<PrimExpr> {
     Ok(IntImm::from_complete_fields(None, value.type_annotation(), literal).into())
 }
 
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from(name),))?
-        .try_into()
-}
-
 fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
     tvm_ffi::cached_global_func!("tirx.BufferData")
         .call_tuple((buffer,))?
@@ -726,8 +721,4 @@ fn pass_config_bool(context: &PassContext, key: &str) -> Result<bool> {
         .map(bool::try_from)
         .transpose()
         .map(|value| value.unwrap_or(false))
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

@@ -20,7 +20,7 @@
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectArc, ObjectCore,
-    ObjectRefCast, Result, String, TYPE_ERROR, VALUE_ERROR,
+    ObjectRefCast, ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
 use super::{primitive_type, PrimVar, Stmt, StmtObj};
@@ -423,6 +423,23 @@ pub type BufferVar = TypedVar<BufferType>;
 tvm_ffi::impl_try_from_any!(BufferVar);
 tvm_ffi::impl_arg_into_ref!(BufferVar);
 tvm_ffi::impl_into_arg_holder_default!(BufferVar);
+
+impl TypedVar<BufferType> {
+    /// Borrow the buffer type carried by this variable without cloning its handle.
+    #[inline]
+    pub fn buffer_type(&self) -> &BufferTypeObj {
+        self.as_var()
+            .ty
+            .as_node::<BufferTypeObj>()
+            .expect("BufferVar type invariant was violated")
+    }
+
+    /// Borrow this buffer's primitive element type.
+    #[inline]
+    pub fn dtype(&self) -> &PrimType {
+        &self.buffer_type().dtype
+    }
+}
 
 // These values mirror the build configuration used by this handwritten
 // target-code demo. Stubgen should emit them from the native build manifest.

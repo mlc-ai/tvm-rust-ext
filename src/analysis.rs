@@ -17,11 +17,13 @@
  * under the License.
  */
 
+use std::collections::HashMap;
+
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     structural_visit, structural_walk, AnyView, DefRegionKind, Error, Function, Map, ObjectArc,
-    ObjectRefCast, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult,
-    VALUE_ERROR,
+    ObjectIdentity, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder,
+    WalkResult, VALUE_ERROR,
 };
 
 use crate::ir::{CallObj, ExprObj, IntImmObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
@@ -348,21 +350,15 @@ struct OpObj {
     base: ExprObj,
 }
 
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-struct Op {
-    data: ObjectArc<OpObj>,
-}
-
 /// Read a boolean attribute from a registry-owned operator.
 ///
 /// Operator attributes belong to the native operator registry rather than to
 /// the reflected `Call` fields, so Rust intentionally uses TVM's existing
 /// language-independent lookup here.
 pub(crate) fn operator_bool_attr(operator: &crate::ir::Expr, name: &str) -> Result<Option<bool>> {
-    let Ok(operator) = operator.clone().try_cast::<Op>() else {
+    if operator.as_node::<OpObj>().is_none() {
         return Ok(None);
-    };
+    }
     tvm_ffi::cached_global_func!("ir.OpGetAttr")
         .call_tuple((operator, tvm_ffi::String::from(name)))?
         .try_into()
@@ -370,6 +366,7 @@ pub(crate) fn operator_bool_attr(operator: &crate::ir::Expr, name: &str) -> Resu
 
 struct SideEffectAnalyzer {
     kind: CallEffectKind,
+    operator_effects: HashMap<ObjectIdentity, CallEffectKind>,
 }
 
 impl SideEffectAnalyzer {
@@ -395,13 +392,19 @@ impl SideEffectAnalyzer {
     }
 
     fn walk_call(&mut self, node: &CallObj) -> Result<WalkResult> {
-        let Ok(op) = node.op.clone().try_cast::<Op>() else {
+        if node.op.as_node::<OpObj>().is_none() {
             return Ok(self.update(CallEffectKind::kUpdateState));
-        };
+        }
+        let identity = ObjectIdentity::of(&node.op);
+        if let Some(kind) = self.operator_effects.get(&identity).copied() {
+            return Ok(self.update(kind));
+        }
         let raw: i64 = tvm_ffi::cached_global_func!("ir.OpGetAttr")
-            .call_tuple((op, tvm_ffi::String::from("TCallEffectKind")))?
+            .call_tuple((&node.op, tvm_ffi::String::from("TCallEffectKind")))?
             .try_into()?;
-        Ok(self.update(raw.try_into()?))
+        let kind = raw.try_into()?;
+        self.operator_effects.insert(identity, kind);
+        Ok(self.update(kind))
     }
 }
 
@@ -409,6 +412,7 @@ impl SideEffectAnalyzer {
 pub fn side_effect(expression: &PrimExpr) -> Result<CallEffectKind> {
     let mut analyzer = SideEffectAnalyzer {
         kind: CallEffectKind::kPure,
+        operator_effects: HashMap::new(),
     };
     structural_walk(expression, &mut analyzer, WalkOrder::PreOrder)?;
     Ok(analyzer.kind)

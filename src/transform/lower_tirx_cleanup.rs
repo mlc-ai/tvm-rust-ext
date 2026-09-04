@@ -24,7 +24,7 @@ use tvm_ffi::{
     Result,
 };
 
-use super::utils::{mutate_expr_default, mutate_stmt_expr_default};
+use super::utils::{get_operator, mutate_expr_default, mutate_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
@@ -589,12 +589,6 @@ fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
 fn structural_equal(lhs: &BufferType, rhs: &BufferType) -> Result<bool> {
     tvm_ffi::cached_global_func!("ffi.StructuralEqual")
         .call_tuple((lhs, rhs, false, false))?
-        .try_into()
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
         .try_into()
 }
 

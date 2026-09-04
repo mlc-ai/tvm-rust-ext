@@ -27,6 +27,8 @@ use crate::tirx::{
     Add, FloorDiv, FloorMod, IterVar, Mul, PrimVar, ScopeBinding, ScopeIdDef, StringImm, EQ, NE,
 };
 
+use super::utils::{get_operator, value_error};
+
 pub(super) type LaunchParams = HashMap<String, IterVar>;
 
 pub(super) struct ScopeIdSet {
@@ -422,12 +424,6 @@ fn linear_thread_index(launch_params: &LaunchParams) -> Result<PrimExpr> {
     Analyzer::new()?.simplify(&expression)
 }
 
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
-}
-
 fn axis_name(dimension: usize) -> char {
     char::from(b'x' + u8::try_from(dimension).expect("scope dimensions are limited to three"))
 }
@@ -458,8 +454,4 @@ fn scope_rank(scope: &str) -> i32 {
         "thread" => 6,
         _ => 7,
     }
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }
