@@ -23,7 +23,9 @@ use tvm_ffi::{
     ObjectCore, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
 };
 
-use super::utils::{array_same_as, int_value, mutate_stmt_expr_default, with_prim_func_body};
+use super::utils::{
+    array_same_as, get_operator, int_value, mutate_stmt_expr_default, with_prim_func_body,
+};
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
 use crate::ir::{Call, Expr, PrimExpr, Range, TensorLoad, Var};
@@ -134,7 +136,7 @@ fn stmt_simplify_with_options(
     for parameter in function.params.iter() {
         if let Ok(buffer) = BufferVar::try_from(&parameter) {
             for shape in buffer.type_annotation().shape.iter() {
-                let zero = crate::ir::IntImm::from_dtype(shape.type_annotation().dtype, 0)?;
+                let zero = crate::ir::IntImm::from_dtype(shape.dtype(), 0)?;
                 let non_negative: PrimExpr = GE::new(shape, zero)?.into();
                 simplifier.enter_persistent_constraint(&non_negative)?;
             }
@@ -259,7 +261,7 @@ impl StmtSimplifier {
             let minimum: PrimExpr = mutator.mutate(simplifier, &value.min)?.try_into()?;
             let extent: PrimExpr = mutator.mutate(simplifier, &value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(simplifier, &value.step)?.try_into()?;
-            let zero = crate::ir::IntImm::from_dtype(extent.type_annotation().dtype, 0)?;
+            let zero = crate::ir::IntImm::from_dtype(extent.dtype(), 0)?;
             let positive: PrimExpr = crate::tirx::GT::new(extent.clone(), zero)?.into();
             let body: Stmt = simplifier.with_constraint(&positive, |simplifier| {
                 mutator.mutate(simplifier, &value.body)?.try_into()
@@ -357,7 +359,7 @@ impl StmtSimplifier {
             {
                 let iteration = IterVar::try_from(value.node.clone())?;
                 let variable = iteration.var()?;
-                let zero = crate::ir::IntImm::from_dtype(value.value.type_annotation().dtype, 0)?;
+                let zero = crate::ir::IntImm::from_dtype(value.value.dtype(), 0)?;
                 let domain = Range::from_min_extent(zero, value.value.clone())?;
                 simplifier.analyzer.bind(variable.as_var(), &domain)?;
             }
@@ -473,10 +475,4 @@ fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Res
         (Err(error), _) | (Ok(_), Some(error)) => Err(error),
         (Ok(value), None) => Ok(value),
     }
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
 }

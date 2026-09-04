@@ -25,7 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, int_value, mutate_stmt_expr_default, option_same_as, with_prim_func_body,
+    array_same_as, get_operator, int_value, mutate_stmt_expr_default, operator_identity,
+    option_same_as, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
@@ -94,8 +95,8 @@ struct VectorizeSkipper;
 #[tvm_ffi::dispatch(mutate)]
 impl VectorizeSkipper {
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {
-        let mapped = super::utils::mutate_stmt_default(self, mutator, value.clone().into())?
-            .try_cast::<For>()?;
+        let mapped =
+            super::utils::mutate_stmt_default(self, mutator, value.into())?.try_cast::<For>()?;
         if mapped.kind != ForKind::kVectorized {
             return Ok(mapped);
         }
@@ -220,7 +221,7 @@ impl Vectorizer {
             if is_scalar(&lhs) {
                 if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
                     let base = semantic_binary(operation, lhs, ramp.base.clone())?;
-                    let zero = IntImm::from_dtype(ramp.stride.type_annotation().dtype, 0)?;
+                    let zero = IntImm::from_dtype(ramp.stride.dtype(), 0)?;
                     let stride = semantic_binary(operation, zero.into(), ramp.stride.clone())?;
                     return make_ramp(base, stride, ramp.lanes.clone(), None);
                 }
@@ -439,7 +440,7 @@ impl Vectorizer {
                 let expected = semantic_binary(
                     "tirx._OpMul",
                     stride.clone(),
-                    IntImm::from_dtype(stride.type_annotation().dtype, base_lanes)?.into(),
+                    IntImm::from_dtype(stride.dtype(), base_lanes)?.into(),
                 )?;
                 if self
                     .analyzer
@@ -448,11 +449,7 @@ impl Vectorizer {
                     return make_ramp(
                         base_ramp.base.clone(),
                         stride,
-                        IntImm::from_dtype(
-                            value.lanes.type_annotation().dtype,
-                            new_lanes * base_lanes,
-                        )?
-                        .into(),
+                        IntImm::from_dtype(value.lanes.dtype(), new_lanes * base_lanes)?.into(),
                         None,
                     );
                 }
@@ -575,10 +572,9 @@ impl Vectorizer {
             let lanes = if is_scalable(&mapped) {
                 lane_count(&mapped)
             } else if return_type.dtype.code != tvm_ffi::DLDataTypeCode::kDLFloat4_e2m1fn as u8
-                && input.type_annotation().dtype.code
-                    != tvm_ffi::DLDataTypeCode::kDLFloat4_e2m1fn as u8
+                && input.dtype().code != tvm_ffi::DLDataTypeCode::kDLFloat4_e2m1fn as u8
             {
-                let mapped_ty = mapped.type_annotation().dtype;
+                let mapped_ty = mapped.dtype();
                 u16::from(mapped_ty.bits) * mapped_ty.lanes / u16::from(return_type.dtype.bits)
             } else {
                 lane_count(&mapped)
@@ -689,7 +685,7 @@ impl Vectorizer {
         let previous_ramp = self.ramp.clone();
         let previous_lanes = self.lanes.clone();
         let ty = primitive_type(&self.variable.clone().into())?;
-        self.lanes = IntImm::from_dtype(previous_lanes.type_annotation().dtype, new_length)?.into();
+        self.lanes = IntImm::from_dtype(previous_lanes.dtype(), new_length)?.into();
         self.ramp = make_ramp(
             IntImm::from_dtype(ty.dtype, 0)?.into(),
             IntImm::from_dtype(ty.dtype, 2)?.into(),
@@ -713,7 +709,7 @@ impl Vectorizer {
         if indices.is_empty() {
             return Err(value_error("a BufferStore requires at least one index"));
         }
-        let buffer_lanes = lane_count_type(&value.buffer.type_annotation().dtype.dtype);
+        let buffer_lanes = lane_count_type(&value.buffer.dtype().dtype);
         let mut other_index_lanes = buffer_lanes;
         for index in indices.iter().take(indices.len() - 1) {
             if is_scalable(&index) {
@@ -849,7 +845,7 @@ impl Vectorizer {
 
 impl Vectorizer {
     fn is_positive(&self, value: &PrimExpr) -> Result<bool> {
-        let zero = IntImm::from_dtype(value.type_annotation().dtype, 0)?;
+        let zero = IntImm::from_dtype(value.dtype(), 0)?;
         self.analyzer
             .can_prove(&semantic_binary("tirx._OpGT", value.clone(), zero.into())?)
     }
@@ -873,7 +869,7 @@ fn lane_count_type(dtype: &DLDataType) -> u16 {
 }
 
 fn lane_count(value: &PrimExpr) -> u16 {
-    lane_count_type(&value.type_annotation().dtype)
+    lane_count_type(&value.dtype())
 }
 
 fn is_scalable(value: &PrimExpr) -> bool {
@@ -1006,18 +1002,4 @@ fn semantic_binary(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr>
     tvm_ffi::Function::get_global(name)?
         .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
         .try_into()
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
-}
-
-fn operator_identity(name: &str) -> Result<ObjectIdentity> {
-    Ok(ObjectIdentity::of(&get_operator(name)?))
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

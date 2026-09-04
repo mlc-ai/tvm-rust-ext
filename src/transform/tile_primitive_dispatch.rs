@@ -30,7 +30,8 @@ use super::scope_id::{
     compute_warp_id_in_cta, resolve_scope_id, LaunchParams, ScopeDefinition, ScopeIdSet,
 };
 use super::utils::{
-    int_value as integer_value, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_body,
+    get_operator, int_value as integer_value, mutate_stmt_default, mutate_stmt_expr_default,
+    value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
@@ -173,7 +174,7 @@ impl TileDispatcher {
             )?;
             for (variable, mut value) in definition.def_ids.iter().zip(values) {
                 let variable_type = variable.type_annotation();
-                if variable_type.dtype != value.type_annotation().dtype {
+                if variable_type.dtype != value.dtype() {
                     value = crate::tirx::Cast::new(variable_type, value)?.into();
                 }
                 if variable.as_var().name.as_str().is_empty() {
@@ -949,7 +950,7 @@ impl TileDispatcher {
     }
 
     fn as_boolean(&self, predicate: PrimExpr) -> Result<PrimExpr> {
-        let dtype = predicate.type_annotation().dtype;
+        let dtype = predicate.dtype();
         if dtype.code == DLDataTypeCode::kDLBool as u8 {
             return Ok(predicate);
         }
@@ -1260,12 +1261,6 @@ fn options_same<T: ObjectRefCore>(lhs: &Option<T>, rhs: &Option<T>) -> bool {
     }
 }
 
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
-}
-
 fn axis_name(dimension: usize) -> char {
     char::from(b'x' + u8::try_from(dimension).expect("launch dimensions are limited to three"))
 }
@@ -1305,8 +1300,4 @@ fn launch_attribute_order(launch_params: &LaunchParams) -> Vec<IterVar> {
         }
     }
     result
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

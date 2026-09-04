@@ -21,12 +21,11 @@ use std::collections::HashMap;
 
 use tvm_ffi::{
     structural_mutate, structural_visit, Any, Array, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String, VisitCallbacks, VisitContext, VisitInterrupt,
-    VisitValue,
+    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
 };
 
 use super::utils::{
-    int_value, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+    get_operator, int_value, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, PrimExpr, Var};
@@ -38,7 +37,7 @@ const ENCODE_TILED_FUNCTION: &str = "runtime.cuTensorMapEncodeTiled";
 pub fn lower_tirx_dedup_cu_tensor_maps_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let operators = TensorMapOperators::new()?;
     let mut analyzer = VisitCallbacks::new(
-        DedupAnalysis::new(operators.clone()),
+        DedupAnalysis::new(operators),
         (
             analyze_loop,
             analyze_while,
@@ -371,10 +370,4 @@ where
         (None, None) => true,
         _ => false,
     }
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from(name),))?
-        .try_into()
 }

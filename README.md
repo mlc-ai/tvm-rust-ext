@@ -95,20 +95,17 @@ different recursion semantics matter:
 - `structural_mutate` limits neutral-arithmetic simplification to loop bodies
   by manually controlling recursion through loop fields.
 
-The crate also adapts Rust closures into TVM PrimFunc and module passes.
-Full Rust ports currently include `SkipAssert`, `LowerTIRxOpaque`,
-`RemapThreadAxis`, the internal `RemoveAssume` rewrite,
-`DecorateDeviceScope`, `AnnotateEntryFunc`, and `Filter`.  Differential tests
-compare their output with the corresponding C++ implementations using
-structural equality.  The broader set covers statement deletion, loop and
-pragma lowering, definition/use remapping, function-attribute updates, and
-module-level selection instead of only local arithmetic rewrites.  Arithmetic
-passes reuse an opaque handle to TVM's existing `arith.Analyzer` instead of
-copying its compiler rules into Rust. Control-flow simplification classifies
-expression effects with `structural_walk` and reuses the existing
-`ir.OpGetAttr` registry lookup for each operator's `TCallEffectKind`. A
-two-phase module pass builds a
-call graph with `structural_walk`,
+The crate also adapts Rust closures into TVM PrimFunc and module passes.  The
+current Rust ports cover statement and expression simplification, loop and
+pragma lowering, buffer and pointer rewrites, dtype legalization, target
+binding, host/device splitting, packed-API construction, and module-level
+function transforms; [`src/transform.rs`](src/transform.rs) is the authoritative
+public list.  Differential tests compare these implementations with their C++
+counterparts using structural equality.  Arithmetic passes reuse an opaque
+handle to TVM's existing `arith.Analyzer` instead of copying its compiler rules
+into Rust. Control-flow simplification classifies expression effects with
+`structural_walk` and caches the `TCallEffectKind` attached to each registry-owned
+operator. A two-phase module pass builds a call graph with `structural_walk`,
 treats `global_symbol` functions as external roots, and then prunes unreachable
 functions. Additional tests check definition/use identity, ownership,
 annotations, and scope-sensitive recursion.
@@ -131,6 +128,9 @@ prototype, including exact field schemas, flags, registered defaults, type
 identity, inheritance, and structural metadata. Physical layout validation
 belongs to stubgen's generation tests rather than runtime reflection metadata
 or generated target code.
+The larger pass-parity suite is rooted at
+[`tests/structural_passes.rs`](tests/structural_passes.rs) and split into focused
+modules under [`tests/structural_passes/`](tests/structural_passes/).
 
 See [BINDING_CONTRACT.md](BINDING_CONTRACT.md) for the correctness standard and
 [STUBGEN_FEEDBACK.md](STUBGEN_FEEDBACK.md) for the concrete generator, runtime,
@@ -178,8 +178,10 @@ cargo test
 
 `cargo build` also produces a shared library, `target/<profile>/libtvm.so`
 (`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:
-[`src/exports.rs`](src/exports.rs) exports the Rust passes as
-`__tvm_ffi_<name>` symbols, so any tvm-ffi host can load it.  From Python:
+[`src/exports.rs`](src/exports.rs) exports every concrete public pass entry point
+and factory that has an FFI-compatible signature as a `__tvm_ffi_<name>` symbol,
+so any tvm-ffi host can load it. `Filter` is the one intentional exception because
+its factory accepts an arbitrary Rust closure. From Python:
 
 ```bash
 cargo build

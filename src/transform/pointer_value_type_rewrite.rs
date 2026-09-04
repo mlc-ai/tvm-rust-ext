@@ -26,7 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, int_value, mutate_expr_default, mutate_stmt_default, visit_stmt_expr_default,
+    array_same_as, get_operator, int_value, is_opaque_expr, mutate_expr_default,
+    mutate_stmt_default, operator_identity, value_error, visit_stmt_expr_default,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
@@ -324,7 +325,7 @@ impl AccessChecker {
             info.element_dtype = PrimType::from_dtype(with_dtype_lanes(value_dtype.dtype, 1))?;
         }
         for index in indices.iter().take(indices.len().saturating_sub(1)) {
-            if index.type_annotation().dtype.lanes != 1 {
+            if index.dtype().lanes != 1 {
                 return Err(value_error(
                     "only the last index of a buffer access may be vector-valued",
                 ));
@@ -333,7 +334,7 @@ impl AccessChecker {
         let index_lanes = indices
             .iter()
             .last()
-            .map(|index| index.type_annotation().dtype.lanes)
+            .map(|index| index.dtype().lanes)
             .unwrap_or(1);
         let mut lanes_used = info.element_dtype.dtype.lanes;
         if u32::from(index_lanes) * u32::from(info.element_dtype.dtype.lanes)
@@ -350,7 +351,7 @@ impl AccessChecker {
         }
 
         if let Some(index) = indices.iter().last() {
-            if let Ok(ramp) = index.clone().try_cast::<Ramp>() {
+            if let Ok(ramp) = index.try_cast::<Ramp>() {
                 if int_value(&ramp.stride) == Some(1) {
                     if let Some(lanes) = int_value(&ramp.lanes) {
                         let modular = self.analyzer.modular_set(&ramp.base)?;
@@ -368,7 +369,7 @@ impl AccessChecker {
         let access_dtype = with_dtype_lanes(value_dtype.dtype, lanes_used);
         if self.options.detect_scalar_read_patterns && is_buffer_load {
             if let Some(index) = indices.iter().last() {
-                if index.type_annotation().dtype.lanes == 1 {
+                if index.dtype().lanes == 1 {
                     let modular = self.analyzer.modular_set(&index)?;
                     if let Ok(lanes) = u16::try_from(modular.coeff) {
                         insert_unique_dtype(
@@ -460,7 +461,7 @@ fn check_call(value: Call, visitor: &mut VisitContext<'_, AccessChecker>) -> Res
             )?;
         }
     }
-    if value.op.clone().try_cast::<crate::ir::OpaqueExpr>().is_ok() {
+    if is_opaque_expr(&value.op) {
         visitor.visit(&value.op)?;
     }
     visit_values(visitor, value.args.iter())
@@ -710,9 +711,7 @@ impl VectorTypeRewriter {
                 "rewritten buffer access requires at least one index",
             ));
         };
-        if is_scalable_vector(&buffer.type_annotation().dtype)
-            || is_scalable_vector(&last_index.type_annotation())
-        {
+        if is_scalable_vector(buffer.dtype()) || is_scalable_vector(&last_index.type_annotation()) {
             return Ok((buffer, indices, None));
         }
 
@@ -736,11 +735,7 @@ impl VectorTypeRewriter {
                             binary_op(
                                 "tirx._OpMul",
                                 new_index,
-                                IntImm::from_dtype(
-                                    ramp.base.type_annotation().dtype,
-                                    i64::from(new_lanes),
-                                )?
-                                .into(),
+                                IntImm::from_dtype(ramp.base.dtype(), i64::from(new_lanes))?.into(),
                             )?,
                             ramp.stride.clone(),
                             IntImm::new("int32", i64::from(new_lanes))?.into(),
@@ -750,7 +745,7 @@ impl VectorTypeRewriter {
                     *rewritten.last_mut().unwrap() = new_index;
                 }
             }
-        } else if last_index.type_annotation().dtype.lanes == 1 && factor > 1 {
+        } else if last_index.dtype().lanes == 1 && factor > 1 {
             let modular = self.analyzer.modular_set(&last_index)?;
             if modular.coeff != 0 && i64::from(factor) % modular.coeff != 0 {
                 return Err(value_error(
@@ -967,7 +962,7 @@ impl PointerVarSubstituter {
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
-        let mapped = mutate_stmt_default(self, mutator, value.clone().into())?;
+        let mapped = mutate_stmt_default(self, mutator, value.into())?;
         let attribute = mapped.clone().try_cast::<AttrStmt>()?;
         let Some(variable) = attribute.node.try_as::<Var>() else {
             return Ok(mapped);
@@ -1027,7 +1022,7 @@ fn divide_by_factor(value: PrimExpr, factor: u16) -> Result<PrimExpr> {
     if factor == 1 {
         return Ok(value);
     }
-    let divisor = IntImm::from_dtype(value.type_annotation().dtype, i64::from(factor))?;
+    let divisor = IntImm::from_dtype(value.dtype(), i64::from(factor))?;
     binary_op("tirx._OpDiv", value, divisor.into())
 }
 
@@ -1092,24 +1087,10 @@ fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
     BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
-fn operator_identity(name: &str) -> Result<ObjectIdentity> {
-    Ok(ObjectIdentity::of(&get_operator(name)?))
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
-}
-
 fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
     tvm_ffi::Function::get_global(name)?
         .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
         .try_into()
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }
 
 #[tvm_ffi::dispatch(mutate)]

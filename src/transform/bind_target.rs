@@ -26,11 +26,11 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, with_prim_func_attr,
-    with_prim_func_body, without_prim_func_attr,
+    is_opaque_expr, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
+    with_prim_func_attr, with_prim_func_body, without_prim_func_attr,
 };
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, Call, GlobalVar, IRModule, OpaqueExpr};
+use crate::ir::{BaseFunc, Call, GlobalVar, IRModule};
 use crate::target::Target;
 use crate::tirx::{AttrStmt, For, ForKind, PrimFunc, Stmt};
 
@@ -174,7 +174,7 @@ fn visit_call(value: Call, visitor: &mut VisitContext<'_, ClassifiedCalls>) -> R
             visitor.state_mut().host.insert(identity);
         }
     }
-    if value.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+    if is_opaque_expr(&value.op) {
         visitor.visit(&value.op)?;
     }
     for argument in value.args.iter() {
@@ -235,7 +235,7 @@ struct CallSubstitutor<'a> {
 #[tvm_ffi::dispatch(mutate)]
 impl CallSubstitutor<'_> {
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Call> {
-        let expression = mutate_expr_default(self, mutator, value.clone().into())?;
+        let expression = mutate_expr_default(self, mutator, value.into())?;
         let call = expression.try_cast::<Call>()?;
         if self.under_gpu_scope {
             return Ok(call);

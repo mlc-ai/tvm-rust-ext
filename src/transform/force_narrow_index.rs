@@ -25,8 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, cast_prim_expr, mutate_expr_default, mutate_stmt_expr_default, option_same_as,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, cast_prim_expr, get_operator, is_primitive_type, mutate_expr_default,
+    mutate_stmt_expr_default, option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
@@ -43,7 +43,7 @@ const VIRTUAL_THREAD: &str = "virtual_thread";
 pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     for parameter in function.params.iter() {
         if let Ok(buffer) = BufferVar::try_from(&parameter) {
-            let dtype = buffer.type_annotation().dtype.dtype;
+            let dtype = buffer.dtype().dtype;
             if dtype.code == DLDataTypeCode::kDLInt as u8 && dtype.bits > 32 {
                 return Err(tvm_ffi::Error::new(
                     tvm_ffi::TYPE_ERROR,
@@ -230,10 +230,7 @@ impl IndexDataTypeNormalizer {
     {
         let a: PrimExpr = mutator.mutate(self, original_a)?.try_into()?;
         let b: PrimExpr = mutator.mutate(self, original_b)?.try_into()?;
-        if a.same_as(original_a)
-            && b.same_as(original_b)
-            && a.type_annotation().dtype == b.type_annotation().dtype
-        {
+        if a.same_as(original_a) && b.same_as(original_b) && a.dtype() == b.dtype() {
             return Ok(original.clone().into());
         }
         construct(a, b)
@@ -252,8 +249,8 @@ impl IndexDataTypeNormalizer {
     {
         let old_enabled = self.enabled;
         self.enabled = self.condition
-            && is_signed_integer(original_a.type_annotation().dtype)
-            && is_signed_integer(original_b.type_annotation().dtype);
+            && is_signed_integer(original_a.dtype())
+            && is_signed_integer(original_b.dtype());
         let result = self.mutate_binary(mutator, original_a, original_b, original, construct);
         self.enabled = old_enabled;
         result
@@ -334,7 +331,7 @@ impl IndexDataTypeNormalizer {
         };
         if let Some(replacement) = replacement {
             let inner: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-            if inner.type_annotation().dtype == replacement.dtype {
+            if inner.dtype() == replacement.dtype {
                 Ok(inner)
             } else {
                 Ok(Cast::new(replacement, inner)?.into())
@@ -439,18 +436,14 @@ impl IndexDataTypeNormalizer {
         let stride: PrimExpr = mutator.mutate(self, &value.stride)?.try_into()?;
         if base.same_as(&value.base)
             && stride.same_as(&value.stride)
-            && base.type_annotation().dtype == stride.type_annotation().dtype
+            && base.dtype() == stride.dtype()
         {
             return Ok(value.into());
         }
-        let bits = base
-            .type_annotation()
-            .dtype
-            .bits
-            .max(stride.type_annotation().dtype.bits);
+        let bits = base.dtype().bits.max(stride.dtype().bits);
         let dtype = PrimType::from_dtype(DLDataType {
             bits,
-            ..base.type_annotation().dtype
+            ..base.dtype()
         })?;
         let base = cast_if_needed(base, &dtype)?;
         let stride = cast_if_needed(stride, &dtype)?;
@@ -468,18 +461,14 @@ impl IndexDataTypeNormalizer {
         if condition.same_as(&value.condition)
             && true_value.same_as(&value.true_value)
             && false_value.same_as(&value.false_value)
-            && true_value.type_annotation().dtype == false_value.type_annotation().dtype
+            && true_value.dtype() == false_value.dtype()
         {
             return Ok(value.into());
         }
-        let bits = true_value
-            .type_annotation()
-            .dtype
-            .bits
-            .max(false_value.type_annotation().dtype.bits);
+        let bits = true_value.dtype().bits.max(false_value.dtype().bits);
         let dtype = PrimType::from_dtype(DLDataType {
             bits,
-            ..true_value.type_annotation().dtype
+            ..true_value.dtype()
         })?;
         true_value = cast_if_needed(true_value, &dtype)?;
         false_value = cast_if_needed(false_value, &dtype)?;
@@ -488,8 +477,7 @@ impl IndexDataTypeNormalizer {
 
     fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<PrimExpr> {
         let bound_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let variable = if bound_value.type_annotation().dtype
-            != value.var.ty.clone().try_cast::<PrimType>()?.dtype
+        let variable = if bound_value.dtype() != value.var.ty.clone().try_cast::<PrimType>()?.dtype
         {
             let variable = value
                 .var
@@ -510,9 +498,7 @@ impl IndexDataTypeNormalizer {
     fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Bind> {
         let bound_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         let variable = if let Ok(primitive) = PrimExpr::try_from(&bound_value) {
-            if primitive.type_annotation().dtype
-                != value.var.ty.clone().try_cast::<PrimType>()?.dtype
-            {
+            if primitive.dtype() != value.var.ty.clone().try_cast::<PrimType>()?.dtype {
                 let variable = value
                     .var
                     .copy_with(value.var.name.clone(), primitive.type_annotation().into());
@@ -645,10 +631,8 @@ impl IndexDataTypeNormalizer {
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
         let buffer = self.buffer_remaps.use_buffer(&value.buffer);
         let mut stored_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let buffer_dtype = buffer.type_annotation().dtype.clone();
-        if stored_value.type_annotation().dtype != buffer_dtype.dtype
-            && stored_value.type_annotation().dtype.lanes == 1
-        {
+        let buffer_dtype = buffer.dtype().clone();
+        if stored_value.dtype() != buffer_dtype.dtype && stored_value.dtype().lanes == 1 {
             stored_value = cast_prim_expr(stored_value, buffer_dtype)?;
         }
         let indices = self.mutate_indices(mutator, &value.indices)?;
@@ -682,14 +666,10 @@ impl IndexDataTypeNormalizer {
             let mut true_value: PrimExpr = mutator.mutate(self, &value.args.get(1)?)?.try_into()?;
             let mut false_value: PrimExpr =
                 mutator.mutate(self, &value.args.get(2)?)?.try_into()?;
-            let bits = true_value
-                .type_annotation()
-                .dtype
-                .bits
-                .max(false_value.type_annotation().dtype.bits);
+            let bits = true_value.dtype().bits.max(false_value.dtype().bits);
             let dtype = PrimType::from_dtype(DLDataType {
                 bits,
-                ..true_value.type_annotation().dtype
+                ..true_value.dtype()
             })?;
             true_value = cast_if_needed(true_value, &dtype)?;
             false_value = cast_if_needed(false_value, &dtype)?;
@@ -712,9 +692,9 @@ impl IndexDataTypeNormalizer {
             .ok()
             .and_then(|argument| PrimExpr::try_from(argument).ok())
             .map(|argument| argument.type_annotation());
-        let expression = mutate_expr_default(self, mutator, value.clone().into())?;
+        let expression = mutate_expr_default(self, mutator, value.into())?;
         let call = expression.clone().try_cast::<Call>()?;
-        if call.ty.clone().try_cast::<PrimType>().is_err() {
+        if !is_primitive_type(&call.ty) {
             return Ok(expression);
         }
         let is_shift = call.op.same_as(&self.shift_right_operator)
@@ -737,15 +717,12 @@ impl IndexDataTypeNormalizer {
         if is_shift
             && before_lhs_type.as_ref().is_some_and(|before| {
                 is_signed_integer(before.dtype)
-                    && is_signed_integer(lhs.type_annotation().dtype)
-                    && before.dtype.bits > lhs.type_annotation().dtype.bits
+                    && is_signed_integer(lhs.dtype())
+                    && before.dtype.bits > lhs.dtype().bits
             })
         {
             let rhs_value = rhs.take().expect("binary call must have a right operand");
-            let limit = IntImm::from_dtype(
-                rhs_value.type_annotation().dtype,
-                i64::from(lhs.type_annotation().dtype.bits) - 1,
-            )?;
+            let limit = IntImm::from_dtype(rhs_value.dtype(), i64::from(lhs.dtype().bits) - 1)?;
             let rhs_value: PrimExpr = Min::new(rhs_value, limit)?.into();
             return Ok(Call::new(
                 lhs.type_annotation(),
@@ -796,7 +773,7 @@ impl IndexDataTypeNormalizer {
 }
 
 fn cast_if_needed(value: PrimExpr, target: &PrimType) -> Result<PrimExpr> {
-    if value.type_annotation().dtype == target.dtype {
+    if value.dtype() == target.dtype {
         Ok(value)
     } else {
         cast_prim_expr(value, target.clone())
@@ -809,10 +786,4 @@ fn can_rewrite(dtype: DLDataType) -> bool {
 
 fn is_signed_integer(dtype: DLDataType) -> bool {
     dtype.code == DLDataTypeCode::kDLInt as u8
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((tvm_ffi::String::from(name),))?
-        .try_into()
 }

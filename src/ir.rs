@@ -1208,6 +1208,30 @@ impl std::ops::Deref for PrimTypeObj {
     }
 }
 
+impl TypedExpr<PrimType> {
+    /// Return this primitive expression's dtype without cloning its type handle.
+    #[inline]
+    pub fn dtype(&self) -> DLDataType {
+        self.expr
+            .ty
+            .as_node::<PrimTypeObj>()
+            .expect("PrimExpr type invariant was violated")
+            .dtype
+    }
+}
+
+impl TypedVar<PrimType> {
+    /// Return this primitive variable's dtype without cloning its type handle.
+    #[inline]
+    pub fn dtype(&self) -> DLDataType {
+        self.var
+            .ty
+            .as_node::<PrimTypeObj>()
+            .expect("PrimVar type invariant was violated")
+            .dtype
+    }
+}
+
 /// ABI-complete Rust representation of TVM's `TupleTypeNode`.
 #[repr(C)]
 #[derive(Object)]

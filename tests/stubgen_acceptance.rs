@@ -360,12 +360,7 @@ fn generated_bindings_support_structural_map() {
         |addition: Add| -> Result<PrimExpr> {
             let lhs = addition.a.clone();
             let rhs = addition.b.clone();
-            let rhs_is_zero = rhs
-                .clone()
-                .try_cast::<IntImm>()
-                .ok()
-                .map(|value| value.value)
-                == Some(0);
+            let rhs_is_zero = rhs.try_cast::<IntImm>().ok().map(|value| value.value) == Some(0);
             Ok(if rhs_is_zero { lhs } else { addition.into() })
         },
         WalkOrder::PostOrder,

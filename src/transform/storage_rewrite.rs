@@ -27,8 +27,8 @@ use tvm_ffi::{
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
 use super::utils::{
-    array_same_as, int_value, mutate_stmt_expr_default, visit_stmt_expr_default,
-    with_prim_func_body,
+    array_same_as, get_operator, int_value, mutate_stmt_expr_default, operator_identity,
+    value_error, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Var};
@@ -315,7 +315,7 @@ impl StoragePlan {
                 entries[0]
                     .0
                     .iter()
-                    .map(|allocation| allocation.buffer.type_annotation().dtype.clone())
+                    .map(|allocation| allocation.buffer.dtype().clone())
                     .max_by_key(|dtype| lane_count(dtype.dtype.lanes))
                     .expect("a tagged storage entry is non-empty")
             } else {
@@ -328,7 +328,7 @@ impl StoragePlan {
                 * u64::from(lane_count(backing_dtype.dtype.lanes));
             let elements = total_bits.div_ceil(element_bits);
             let extent = IntImm::from_dtype(
-                first_type.shape.get(0)?.type_annotation().dtype,
+                first_type.shape.get(0)?.dtype(),
                 i64::try_from(elements)
                     .map_err(|_| value_error("merged storage extent does not fit i64"))?,
             )?;
@@ -514,7 +514,7 @@ impl StoragePlanRewriter {
         if indices.is_empty() {
             return Err(value_error("a remapped buffer access requires an index"));
         }
-        let element_bits = u64::from(buffer.type_annotation().dtype.dtype.bits);
+        let element_bits = u64::from(buffer.dtype().dtype.bits);
         if !bit_offset.is_multiple_of(element_bits) {
             return Err(value_error(
                 "a merged storage offset is not aligned to the accessed element type",
@@ -522,7 +522,7 @@ impl StoragePlanRewriter {
         }
         let last = indices.get(indices.len() - 1)?;
         let offset = IntImm::from_dtype(
-            last.type_annotation().dtype,
+            last.dtype(),
             i64::try_from(bit_offset / element_bits)
                 .map_err(|_| value_error("a merged storage offset does not fit i64"))?,
         )?;
@@ -650,7 +650,7 @@ fn merge_reused_storage(lhs: &BufferVar, rhs: &BufferVar) -> Result<BufferVar> {
     let bits = bits.ok_or_else(|| value_error("reused storage must have constant size"))?;
     let element_bits = u64::from(dtype.dtype.bits) * u64::from(lane_count(dtype.dtype.lanes));
     let extent = IntImm::from_dtype(
-        lhs_type.shape.get(0)?.type_annotation().dtype,
+        lhs_type.shape.get(0)?.dtype(),
         i64::try_from(bits.div_ceil(element_bits))
             .map_err(|_| value_error("reused storage extent does not fit i64"))?,
     )?;
@@ -775,18 +775,4 @@ fn semantic_add(lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
     tvm_ffi::cached_global_func!("tirx._OpAdd")
         .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
         .try_into()
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((FfiString::from(name),))?
-        .try_into()
-}
-
-fn operator_identity(name: &str) -> Result<ObjectIdentity> {
-    Ok(ObjectIdentity::of(&get_operator(name)?))
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

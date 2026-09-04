@@ -832,7 +832,7 @@ impl Cast {
         V: Into<Expr>,
     {
         let value = PrimExpr::try_from(value.into())?;
-        if value.type_annotation().dtype.lanes != ty.dtype.lanes {
+        if value.dtype().lanes != ty.dtype.lanes {
             return Err(Error::new(
                 TYPE_ERROR,
                 "Cast must preserve the operand lane count",

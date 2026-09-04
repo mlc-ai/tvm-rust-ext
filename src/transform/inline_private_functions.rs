@@ -26,11 +26,11 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
-    BufferRemaps,
+    array_same_as, is_opaque_expr, mutate_stmt_expr_default, visit_stmt_expr_default,
+    with_prim_func_body, BufferRemaps,
 };
 use super::{create_module_pass, Pass};
-use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, OpaqueExpr, PrimExpr, TensorLoad, Var};
+use crate::ir::{BaseFunc, Call, Expr, GlobalVar, IRModule, PrimExpr, TensorLoad, Var};
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferVar, DeclBuffer, Evaluate, For, PrimFunc, Stmt,
 };
@@ -164,7 +164,7 @@ fn visit_call(call: Call, visitor: &mut VisitContext<'_, CallGraphState>) -> Res
             .callees
             .insert(ObjectIdentity::of(&global));
     }
-    if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+    if is_opaque_expr(&call.op) {
         visitor.visit(&call.op)?;
     }
     for argument in call.args.iter() {
@@ -334,7 +334,7 @@ impl PrimFuncInliner {
         if let Ok(global) = value.op.clone().try_cast::<GlobalVar>() {
             self.removable.remove(&ObjectIdentity::of(&global));
         }
-        let op = if value.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+        let op = if is_opaque_expr(&value.op) {
             mutator.mutate(self, &value.op)?.try_into()?
         } else {
             value.op.clone()

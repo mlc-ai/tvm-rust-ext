@@ -23,8 +23,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    int_value, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
-    with_prim_func_body,
+    get_operator, int_value, is_pointer_type, is_string_imm, mutate_expr_default,
+    mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
@@ -650,11 +650,7 @@ impl BuiltinLower {
             binary_op(
                 "tirx._OpMul",
                 element_offset.clone(),
-                IntImm::from_dtype(
-                    element_offset.type_annotation().dtype,
-                    storage_bytes(&dtype)?,
-                )?
-                .into(),
+                IntImm::from_dtype(element_offset.dtype(), storage_bytes(&dtype)?)?.into(),
             )?
         };
         let device_id = self
@@ -787,10 +783,10 @@ impl BuiltinLower {
                 return Ok(());
             }
         }
-        let type_index = if argument.clone().try_cast::<StringImm>().is_ok() {
+        let type_index = if is_string_imm(&argument) {
             argument = reinterpret(PointerType::new(PrimType::new("void")?, "")?, argument)?;
             TypeIndex::kTVMFFIRawStr as i32
-        } else if argument.ty.clone().try_cast::<PointerType>().is_ok() {
+        } else if is_pointer_type(&argument.ty) {
             if is_array_handle(&argument, &self.operators.struct_get)? {
                 TypeIndex::kTVMFFIDLTensorPtr as i32
             } else {
@@ -1080,7 +1076,7 @@ fn buffer_pointer_type(buffer: &BufferVar) -> Result<PointerType> {
 
 fn cast(dtype: &str, value: PrimExpr) -> Result<PrimExpr> {
     let target = PrimType::new(dtype)?;
-    if value.type_annotation().dtype == target.dtype {
+    if value.dtype() == target.dtype {
         Ok(value)
     } else {
         tvm_ffi::cached_global_func!("tirx._cast")
@@ -1213,14 +1209,4 @@ fn device_type_name(device_type: i64) -> Result<&'static str> {
         value if value == DLDeviceType::kDLTrn as i64 => Ok("trn"),
         _ => Err(value_error("unknown device type")),
     }
-}
-
-fn get_operator(name: &str) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("ir.GetOp")
-        .call_tuple((String::from(name),))?
-        .try_into()
-}
-
-fn value_error(message: &str) -> tvm_ffi::Error {
-    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
 }

@@ -25,17 +25,61 @@ use tvm_ffi::{
 };
 
 use crate::ir::{
-    Call, DictAttrs, Expr, IntImmObj, OpaqueExpr, PrimExpr, PrimType, PrimTypeObj, Range,
-    TensorLoad, Var, VarObj,
+    Call, CallObj, DictAttrs, Expr, IntImmObj, OpaqueExprObj, PointerTypeObj, PrimExpr, PrimType,
+    PrimTypeObj, Range, TensorLoad, TensorLoadObj, Type, Var, VarObj,
 };
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
-    Evaluate, EvaluateObj, For, IfThenElse, Iter, IterVar, Layout, Let, PrimFunc, Reduce, Select,
-    SeqStmt, Stmt, StringImm, TileLayout, While,
+    AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BufferStore,
+    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, DeclBuffer, DeclBufferObj, Evaluate,
+    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, IterVar, Layout, Let, LetObj,
+    PrimFunc, Reduce, ReduceObj, Select, SelectObj, SeqStmt, SeqStmtObj, Stmt, StringImm,
+    StringImmObj, TileLayout, While, WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
     expr.as_node::<IntImmObj>().map(|value| value.value)
+}
+
+pub(super) fn get_operator(name: &str) -> Result<Expr> {
+    tvm_ffi::cached_global_func!("ir.GetOp")
+        .call_tuple((String::from(name),))?
+        .try_into()
+}
+
+pub(super) fn operator_identity(name: &str) -> Result<ObjectIdentity> {
+    Ok(ObjectIdentity::of(&get_operator(name)?))
+}
+
+pub(super) fn value_error(message: &str) -> tvm_ffi::Error {
+    tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
+}
+
+pub(super) fn is_call<T: ObjectRefCore>(value: &T) -> bool {
+    value.as_node::<CallObj>().is_some()
+}
+
+pub(super) fn is_opaque_expr(value: &Expr) -> bool {
+    value.as_node::<OpaqueExprObj>().is_some()
+}
+
+pub(super) fn is_pointer_type(value: &Type) -> bool {
+    value.as_node::<PointerTypeObj>().is_some()
+}
+
+pub(super) fn is_primitive_type(value: &Type) -> bool {
+    value.as_node::<PrimTypeObj>().is_some()
+}
+
+pub(super) fn is_buffer_type(value: &Type) -> bool {
+    value.as_node::<BufferTypeObj>().is_some()
+}
+
+pub(super) fn is_buffer_var(value: &Var) -> bool {
+    is_buffer_type(&value.ty)
+}
+
+pub(super) fn is_string_imm<T: ObjectRefCore>(value: &T) -> bool {
+    value.as_node::<StringImmObj>().is_some()
 }
 
 pub(super) fn int_dtype_and_value<T: ObjectRefCore>(expr: &T) -> Option<(DLDataType, i64)> {
@@ -249,160 +293,153 @@ pub(super) fn visit_stmt_expr_default<State>(
     visitor: &mut VisitContext<'_, State>,
     value: &VisitValue,
 ) -> Result<Option<VisitInterrupt>> {
-    if let Some(expression) = value.cast::<Expr>() {
-        if expression.clone().try_cast::<Var>().is_ok() {
-            return Ok(None);
-        }
-        if let Ok(load) = expression.clone().try_cast::<TensorLoad>() {
-            for index in load.indices.iter() {
-                if let Some(interrupt) = visitor.visit(&index)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return Ok(None);
-        }
-        if let Ok(call) = expression.clone().try_cast::<Call>() {
-            if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
-                if let Some(interrupt) = visitor.visit(&call.op)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            for argument in call.args.iter() {
-                if let Some(interrupt) = visitor.visit(&argument)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return Ok(None);
-        }
-        if let Ok(let_expr) = expression.clone().try_cast::<Let>() {
-            if let Some(interrupt) = visitor.visit(&let_expr.value)? {
-                return Ok(Some(interrupt));
-            }
-            return visitor.visit(&let_expr.body);
-        }
-        if let Ok(select) = expression.clone().try_cast::<Select>() {
-            if let Some(interrupt) = visitor.visit(&select.condition)? {
-                return Ok(Some(interrupt));
-            }
-            if let Some(interrupt) = visitor.visit(&select.true_value)? {
-                return Ok(Some(interrupt));
-            }
-            return visitor.visit(&select.false_value);
-        }
-        if let Ok(reduce) = expression.try_cast::<Reduce>() {
-            for axis in reduce.axis.iter() {
-                if let Some(domain) = axis.dom()? {
-                    if let Some(interrupt) = visitor.visit(&domain.min)? {
-                        return Ok(Some(interrupt));
-                    }
-                    if let Some(interrupt) = visitor.visit(&domain.extent)? {
-                        return Ok(Some(interrupt));
-                    }
-                }
-            }
-            for source in reduce.source.iter() {
-                if let Some(interrupt) = visitor.visit(&source)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            for init in reduce.init.iter() {
-                if let Some(interrupt) = visitor.visit(&init)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return visitor.visit(&reduce.condition);
-        }
-        return visitor.visit_children();
+    if value.as_node::<VarObj>().is_some() {
+        return Ok(None);
     }
-
-    if let Some(statement) = value.cast::<Stmt>() {
-        if let Ok(bind) = statement.clone().try_cast::<Bind>() {
-            return visitor.visit(&bind.value);
+    if let Some(load) = value.as_node::<TensorLoadObj>() {
+        for index in load.indices.iter() {
+            if let Some(interrupt) = visitor.visit(&index)? {
+                return Ok(Some(interrupt));
+            }
         }
-        if let Ok(attribute) = statement.clone().try_cast::<AttrStmt>() {
-            if let Some(interrupt) = visitor.visit(&attribute.value)? {
+        return Ok(None);
+    }
+    if let Some(call) = value.as_node::<CallObj>() {
+        if call.op.as_node::<OpaqueExprObj>().is_some() {
+            if let Some(interrupt) = visitor.visit(&call.op)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit(&attribute.body);
         }
-        if let Ok(loop_node) = statement.clone().try_cast::<For>() {
-            if let Some(interrupt) = visitor.visit(&loop_node.min)? {
+        for argument in call.args.iter() {
+            if let Some(interrupt) = visitor.visit(&argument)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit(&loop_node.extent)? {
-                return Ok(Some(interrupt));
-            }
-            if let Some(step) = &loop_node.step {
-                if let Some(interrupt) = visitor.visit(step)? {
+        }
+        return Ok(None);
+    }
+    if let Some(let_expr) = value.as_node::<LetObj>() {
+        if let Some(interrupt) = visitor.visit(&let_expr.value)? {
+            return Ok(Some(interrupt));
+        }
+        return visitor.visit(&let_expr.body);
+    }
+    if let Some(select) = value.as_node::<SelectObj>() {
+        if let Some(interrupt) = visitor.visit(&select.condition)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(interrupt) = visitor.visit(&select.true_value)? {
+            return Ok(Some(interrupt));
+        }
+        return visitor.visit(&select.false_value);
+    }
+    if let Some(reduce) = value.as_node::<ReduceObj>() {
+        for axis in reduce.axis.iter() {
+            if let Some(domain) = axis.dom()? {
+                if let Some(interrupt) = visitor.visit(&domain.min)? {
+                    return Ok(Some(interrupt));
+                }
+                if let Some(interrupt) = visitor.visit(&domain.extent)? {
                     return Ok(Some(interrupt));
                 }
             }
-            return visitor.visit(&loop_node.body);
         }
-        if let Ok(while_node) = statement.clone().try_cast::<While>() {
-            if let Some(interrupt) = visitor.visit(&while_node.condition)? {
+        for source in reduce.source.iter() {
+            if let Some(interrupt) = visitor.visit(&source)? {
                 return Ok(Some(interrupt));
             }
-            return visitor.visit(&while_node.body);
         }
-        if let Ok(allocation) = statement.clone().try_cast::<AllocBuffer>() {
-            return visit_buffer_definition(visitor, &allocation.buffer);
-        }
-        if let Ok(declaration) = statement.clone().try_cast::<DeclBuffer>() {
-            if let Some(interrupt) = visitor.visit(&declaration.data)? {
+        for init in reduce.init.iter() {
+            if let Some(interrupt) = visitor.visit(&init)? {
                 return Ok(Some(interrupt));
             }
-            return visit_buffer_definition(visitor, &declaration.buffer);
         }
-        if let Ok(store) = statement.clone().try_cast::<BufferStore>() {
-            if let Some(interrupt) = visitor.visit(&store.value)? {
+        return visitor.visit(&reduce.condition);
+    }
+    if let Some(bind) = value.as_node::<BindObj>() {
+        return visitor.visit(&bind.value);
+    }
+    if let Some(attribute) = value.as_node::<AttrStmtObj>() {
+        if let Some(interrupt) = visitor.visit(&attribute.value)? {
+            return Ok(Some(interrupt));
+        }
+        return visitor.visit(&attribute.body);
+    }
+    if let Some(loop_node) = value.as_node::<ForObj>() {
+        if let Some(interrupt) = visitor.visit(&loop_node.min)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(interrupt) = visitor.visit(&loop_node.extent)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(step) = &loop_node.step {
+            if let Some(interrupt) = visitor.visit(step)? {
                 return Ok(Some(interrupt));
             }
-            for index in store.indices.iter() {
-                if let Some(interrupt) = visitor.visit(&index)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return Ok(None);
         }
-        if let Ok(conditional) = statement.clone().try_cast::<IfThenElse>() {
-            if let Some(interrupt) = visitor.visit(&conditional.condition)? {
+        return visitor.visit(&loop_node.body);
+    }
+    if let Some(while_node) = value.as_node::<WhileObj>() {
+        if let Some(interrupt) = visitor.visit(&while_node.condition)? {
+            return Ok(Some(interrupt));
+        }
+        return visitor.visit(&while_node.body);
+    }
+    if let Some(allocation) = value.as_node::<AllocBufferObj>() {
+        return visit_buffer_definition(visitor, &allocation.buffer);
+    }
+    if let Some(declaration) = value.as_node::<DeclBufferObj>() {
+        if let Some(interrupt) = visitor.visit(&declaration.data)? {
+            return Ok(Some(interrupt));
+        }
+        return visit_buffer_definition(visitor, &declaration.buffer);
+    }
+    if let Some(store) = value.as_node::<BufferStoreObj>() {
+        if let Some(interrupt) = visitor.visit(&store.value)? {
+            return Ok(Some(interrupt));
+        }
+        for index in store.indices.iter() {
+            if let Some(interrupt) = visitor.visit(&index)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit(&conditional.then_case)? {
+        }
+        return Ok(None);
+    }
+    if let Some(conditional) = value.as_node::<IfThenElseObj>() {
+        if let Some(interrupt) = visitor.visit(&conditional.condition)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(interrupt) = visitor.visit(&conditional.then_case)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(branch) = &conditional.else_case {
+            return visitor.visit(branch);
+        }
+        return Ok(None);
+    }
+    if let Some(assertion) = value.as_node::<AssertStmtObj>() {
+        if let Some(interrupt) = visitor.visit(&assertion.condition)? {
+            return Ok(Some(interrupt));
+        }
+        if let Some(interrupt) = visitor.visit(&assertion.error_kind)? {
+            return Ok(Some(interrupt));
+        }
+        for part in assertion.message_parts.iter() {
+            if let Some(interrupt) = visitor.visit(&part)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(branch) = &conditional.else_case {
-                return visitor.visit(branch);
-            }
-            return Ok(None);
         }
-        if let Ok(assertion) = statement.clone().try_cast::<AssertStmt>() {
-            if let Some(interrupt) = visitor.visit(&assertion.condition)? {
+        return Ok(None);
+    }
+    if let Some(sequence) = value.as_node::<SeqStmtObj>() {
+        for child in sequence.seq.iter() {
+            if let Some(interrupt) = visitor.visit(&child)? {
                 return Ok(Some(interrupt));
             }
-            if let Some(interrupt) = visitor.visit(&assertion.error_kind)? {
-                return Ok(Some(interrupt));
-            }
-            for part in assertion.message_parts.iter() {
-                if let Some(interrupt) = visitor.visit(&part)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return Ok(None);
         }
-        if let Ok(sequence) = statement.clone().try_cast::<SeqStmt>() {
-            for child in sequence.seq.iter() {
-                if let Some(interrupt) = visitor.visit(&child)? {
-                    return Ok(Some(interrupt));
-                }
-            }
-            return Ok(None);
-        }
-        if let Ok(evaluate) = statement.try_cast::<Evaluate>() {
-            return visitor.visit(&evaluate.value);
-        }
-        return visitor.visit_children();
+        return Ok(None);
+    }
+    if let Some(evaluate) = value.as_node::<EvaluateObj>() {
+        return visitor.visit(&evaluate.value);
     }
 
     visitor.visit_children()
@@ -412,7 +449,7 @@ fn visit_buffer_definition<State>(
     visitor: &mut VisitContext<'_, State>,
     buffer: &crate::tirx::BufferVar,
 ) -> Result<Option<VisitInterrupt>> {
-    let buffer_type = buffer.type_annotation();
+    let buffer_type = buffer.buffer_type();
     for expression in buffer_type.shape.iter().chain(buffer_type.strides.iter()) {
         if let Some(interrupt) = visitor.visit(&expression)? {
             return Ok(Some(interrupt));
@@ -467,7 +504,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
     mutator: &mut Mutator,
     value: Expr,
 ) -> Result<Expr> {
-    if value.clone().try_cast::<Var>().is_ok() {
+    if value.as_node::<VarObj>().is_some() {
         return Ok(value);
     }
     if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
@@ -478,7 +515,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         return Ok(load.copy_with(load.source.clone(), indices).into());
     }
     if let Ok(call) = value.clone().try_cast::<Call>() {
-        let op = if call.op.clone().try_cast::<OpaqueExpr>().is_ok() {
+        let op = if is_opaque_expr(&call.op) {
             mutator.mutate(dispatch, &call.op)?.try_into()?
         } else {
             call.op.clone()
@@ -619,7 +656,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         }
         return Ok(while_node.copy_with(condition, body).into());
     }
-    if value.clone().try_cast::<AllocBuffer>().is_ok() {
+    if value.as_node::<AllocBufferObj>().is_some() {
         // Buffer-definition recursion requires a pass-specific remap table.
         // A pass that changes buffer metadata supplies its own handlers.
         return Ok(value);
