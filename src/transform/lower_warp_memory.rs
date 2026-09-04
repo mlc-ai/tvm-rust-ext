@@ -32,7 +32,7 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
 use crate::ir::prim::Ramp;
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var, VarObj};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IterVar, PrimFunc,
@@ -313,12 +313,13 @@ fn expression_buffer_identity(
     value: &Expr,
     state: &WarpCoeffState,
 ) -> Result<Option<ObjectIdentity>> {
-    if let Ok(variable) = value.clone().try_cast::<Var>() {
-        return Ok(Some(ObjectIdentity::of(&variable)));
+    if value.as_node::<VarObj>().is_some() {
+        return Ok(Some(ObjectIdentity::of(value)));
     }
-    if let Ok(call) = value.clone().try_cast::<Call>() {
+    if let Some(call) = value.as_node::<CallObj>() {
         if ObjectIdentity::of(&call.op) == state.buffer_data && call.args.len() == 1 {
-            if let Ok(variable) = call.args.get(0)?.try_cast::<Var>() {
+            let variable = call.args.get(0)?;
+            if variable.as_node::<VarObj>().is_some() {
                 return Ok(Some(ObjectIdentity::of(&variable)));
             }
         }
@@ -502,7 +503,7 @@ impl WarpAccessRewriter {
             old_type.layout.clone(),
             old_type.allocated_addr.clone(),
         );
-        let new_buffer = rebuild_buffer(&allocation.buffer, new_type)?;
+        let new_buffer = allocation.buffer.with_type(new_type)?;
         self.old_buffer = Some(allocation.buffer.clone());
         self.new_buffer = Some(new_buffer.clone());
         self.warp_index = Some(warp_index);
@@ -735,16 +736,14 @@ fn collect_scope_variables(
             };
             let replacement = if let Ok(buffer) = BufferVar::try_from(&variable) {
                 let old_type = buffer.type_annotation();
-                rebuild_buffer(
-                    &buffer,
-                    old_type.copy_with(
+                buffer
+                    .with_type(old_type.copy_with(
                         scope.clone(),
                         old_type.dtype.clone(),
                         old_type.shape.clone(),
-                    ),
-                )?
-                .as_var()
-                .clone()
+                    ))?
+                    .as_var()
+                    .clone()
             } else {
                 let pointer = variable.ty.clone().try_cast::<crate::ir::PointerType>()?;
                 variable.copy_with(
@@ -853,10 +852,8 @@ fn expression_uses_variable(expression: &PrimExpr, variable: &Var) -> Result<boo
 
 fn expression_var_identity(expression: &Expr) -> Option<ObjectIdentity> {
     expression
-        .clone()
-        .try_cast::<Var>()
-        .ok()
-        .map(|variable| ObjectIdentity::of(&variable))
+        .as_node::<VarObj>()
+        .map(|_| ObjectIdentity::of(expression))
 }
 
 fn ramp_expression(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {
@@ -871,10 +868,6 @@ fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
         .try_into()
 }
 
-fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
-}
-
 fn function_target(function: &PrimFunc) -> Result<Target> {
     function
         .attrs
@@ -885,7 +878,7 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
 }
 
 fn int_expr_value(value: &Expr) -> Result<i64> {
-    int_value(&value.clone().try_cast::<PrimExpr>()?)
+    optional_int_value(value).ok_or_else(|| value_error("expected a constant integer expression"))
 }
 
 fn int_value(value: &PrimExpr) -> Result<i64> {

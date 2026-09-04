@@ -636,9 +636,8 @@ impl VectorTypeRewriter {
                 if let Some(last) = shape.last_mut() {
                     *last = divide_by_factor(last.clone(), factor)?;
                 }
-                rebuild_buffer(
-                    &buffer,
-                    BufferType::from_complete_fields(
+                buffer
+                    .with_type(BufferType::from_complete_fields(
                         old_type.span.clone(),
                         preferred.clone(),
                         old_type.storage_scope.clone(),
@@ -649,10 +648,9 @@ impl VectorTypeRewriter {
                         old_type.offset_factor,
                         None,
                         old_type.allocated_addr.clone(),
-                    ),
-                )?
-                .as_var()
-                .clone()
+                    ))?
+                    .as_var()
+                    .clone()
             } else {
                 let pointer = info.variable.ty.clone().try_cast::<PointerType>()?;
                 info.variable.copy_with(
@@ -782,21 +780,18 @@ impl VectorTypeRewriter {
                 if let Some(last) = shape.last_mut() {
                     *last = divide_by_factor(last.clone(), info.factor()?)?;
                 }
-                mapped = rebuild_buffer(
-                    &buffer,
-                    BufferType::from_complete_fields(
-                        old_type.span.clone(),
-                        info.new_element_dtype,
-                        old_type.storage_scope.clone(),
-                        Array::new(shape),
-                        old_type.strides.clone(),
-                        old_type.elem_offset.clone(),
-                        old_type.data_alignment,
-                        old_type.offset_factor,
-                        None,
-                        old_type.allocated_addr.clone(),
-                    ),
-                )?;
+                mapped = buffer.with_type(BufferType::from_complete_fields(
+                    old_type.span.clone(),
+                    info.new_element_dtype,
+                    old_type.storage_scope.clone(),
+                    Array::new(shape),
+                    old_type.strides.clone(),
+                    old_type.elem_offset.clone(),
+                    old_type.data_alignment,
+                    old_type.offset_factor,
+                    None,
+                    old_type.allocated_addr.clone(),
+                ))?;
             }
         }
         self.buffer_cache.insert(cache_key, mapped.clone());
@@ -937,7 +932,7 @@ impl PointerVarSubstituter {
         if ObjectIdentity::of(&call.op) == self.buffer_data && call.args.len() == 1 {
             if let Ok(variable) = call.args.get(0)?.try_cast::<Var>() {
                 if let Ok(buffer) = BufferVar::try_from(variable) {
-                    return buffer_data(&buffer);
+                    return buffer.data();
                 }
             }
         }
@@ -1060,17 +1055,6 @@ fn type_annotation(dtype: &PrimType) -> Result<Expr> {
     .into())
 }
 
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    let ty = buffer.type_annotation();
-    let pointer = PointerType::new(ty.dtype.clone(), ty.storage_scope.as_str())?;
-    Ok(Call::new(
-        pointer,
-        get_operator("tirx.buffer_data")?,
-        vec![buffer.as_var().clone().into()],
-    )
-    .into())
-}
-
 fn get_buffer_data_var(value: &Expr, buffer_data: &ObjectIdentity) -> Result<Option<Var>> {
     if let Ok(variable) = value.clone().try_cast::<Var>() {
         return Ok(Some(variable));
@@ -1081,10 +1065,6 @@ fn get_buffer_data_var(value: &Expr, buffer_data: &ObjectIdentity) -> Result<Opt
         }
     }
     Ok(None)
-}
-
-fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
 }
 
 fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
@@ -1141,7 +1121,7 @@ impl VectorTypeRewriter {
         if operator == self.buffer_data && value.args.len() == 1 {
             if let Ok(variable) = value.args.get(0)?.try_cast::<Var>() {
                 if let Ok(buffer) = BufferVar::try_from(variable) {
-                    return buffer_data(&self.remap_buffer(buffer)?);
+                    return self.remap_buffer(buffer)?.data();
                 }
             }
         }
@@ -1169,7 +1149,7 @@ impl VectorTypeRewriter {
         let index = divide_by_factor(call.args.get(2)?.try_cast::<PrimExpr>()?, factor)?;
         let extent = divide_by_factor(call.args.get(3)?.try_cast::<PrimExpr>()?, factor)?;
         let data = if BufferVar::try_from(&info.new_variable).is_ok() {
-            buffer_data(&BufferVar::try_from(info.new_variable.clone())?)?
+            BufferVar::try_from(info.new_variable.clone())?.data()?
         } else {
             info.new_variable.clone().into()
         };

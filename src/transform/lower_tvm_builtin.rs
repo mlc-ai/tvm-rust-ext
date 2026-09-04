@@ -28,7 +28,9 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{Cast, StringImm};
-use crate::ir::{Call, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
+use crate::ir::{
+    Call, CallObj, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var,
+};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, For,
@@ -356,7 +358,7 @@ impl BuiltinLower {
             get_operator("tirx.tvm_throw_last_error")?,
             Vec::new(),
         ))?;
-        let data = buffer_data(&value.buffer)?;
+        let data = value.buffer.data()?;
         let null_check = IfThenElse::new(
             Call::new(
                 PrimType::new("bool")?,
@@ -766,7 +768,7 @@ impl BuiltinLower {
     }
 
     fn set_packed_argument(&mut self, mut argument: Expr, stack: &Var, offset: u64) -> Result<()> {
-        if let Ok(call) = argument.clone().try_cast::<Call>() {
+        if let Some(call) = argument.as_node::<CallObj>() {
             if call.op.same_as(&self.operators.anylist_getitem) {
                 self.current_preparation_mut()?.push(
                     Evaluate::new(Call::new(
@@ -1064,12 +1066,6 @@ fn struct_get(result_type: Type, handle: &Var, index: u64, kind: i64) -> Result<
     .into())
 }
 
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("tirx.BufferData")
-        .call_tuple((buffer,))?
-        .try_into()
-}
-
 fn buffer_pointer_type(buffer: &BufferVar) -> Result<PointerType> {
     let ty = buffer.type_annotation();
     PointerType::new(ty.dtype.clone(), ty.storage_scope.as_str())
@@ -1143,7 +1139,7 @@ fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
 }
 
 fn is_array_handle(value: &Expr, struct_get_operator: &Expr) -> Result<bool> {
-    let Ok(call) = value.clone().try_cast::<Call>() else {
+    let Some(call) = value.as_node::<CallObj>() else {
         return Ok(false);
     };
     if !call.op.same_as(struct_get_operator) || call.args.len() < 3 {

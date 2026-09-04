@@ -18,13 +18,12 @@
  */
 
 use tvm_ffi::{
-    structural_mutate, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore,
-    Result, String,
+    structural_mutate, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCore, Result, String,
 };
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
-use crate::ir::{Call, Expr};
+use crate::ir::{CallObj, Expr};
 use crate::tirx::{Evaluate, PrimFunc};
 
 /// Remove `Evaluate(tirx.assume(...))` using TVM's operator-identity rule.
@@ -70,7 +69,7 @@ struct AssumeRemover {
 #[tvm_ffi::dispatch(mutate)]
 impl AssumeRemover {
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
-        if let Ok(call) = value.value.clone().try_cast::<Call>() {
+        if let Some(call) = value.value.as_node::<CallObj>() {
             if ObjectIdentity::of(&call.op) == self.assume_op {
                 return Evaluate::from_i64(0);
             }

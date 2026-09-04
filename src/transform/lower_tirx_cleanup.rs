@@ -28,7 +28,7 @@ use super::utils::{get_operator, mutate_expr_default, mutate_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::{Add, Mul, Sub};
-use crate::ir::{Call, Expr, IntImm, PrimExpr, TensorLoad, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt, TileLayout,
@@ -64,7 +64,7 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
                 None,
                 source_type.allocated_addr.clone(),
             );
-            let source = rebuild_buffer(&buffer, source_type)?;
+            let source = buffer.with_type(source_type)?;
             parameters.push(source.as_var().clone());
             parameter_views.push((flattened, source));
         } else {
@@ -75,7 +75,7 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let mut body: Stmt = structural_mutate(function.body.clone(), &mut applier)?.try_into()?;
     for (flattened, source) in parameter_views {
         body = Stmt::sequence(vec![
-            DeclBuffer::new(flattened, buffer_data(&source)?)?.into(),
+            DeclBuffer::new(flattened, source.data()?)?.into(),
             body,
         ])?;
     }
@@ -151,21 +151,18 @@ impl LayoutApplier {
                 } else {
                     vec![tile.get_size(Some("P"))?, tile.get_span(Some("F"))?]
                 };
-                rebuild_buffer(
-                    buffer,
-                    BufferType::from_complete_fields(
-                        old_type.span.clone(),
-                        old_type.dtype.clone(),
-                        old_type.storage_scope.clone(),
-                        Array::new(shape),
-                        Array::new(Vec::new()),
-                        old_type.elem_offset.clone(),
-                        old_type.data_alignment,
-                        old_type.offset_factor,
-                        old_type.layout.clone(),
-                        old_type.allocated_addr.clone(),
-                    ),
-                )?
+                buffer.with_type(BufferType::from_complete_fields(
+                    old_type.span.clone(),
+                    old_type.dtype.clone(),
+                    old_type.storage_scope.clone(),
+                    Array::new(shape),
+                    Array::new(Vec::new()),
+                    old_type.elem_offset.clone(),
+                    old_type.data_alignment,
+                    old_type.offset_factor,
+                    old_type.layout.clone(),
+                    old_type.allocated_addr.clone(),
+                ))?
             } else if is_allocation && tile.has_thread_axis()? {
                 let mut span: PrimExpr = IntImm::new("int32", 1)?.into();
                 for iteration in tile.shard()?.iter().chain(tile.replica()?.iter()) {
@@ -183,26 +180,23 @@ impl LayoutApplier {
                     }
                 }
                 let span = self.analyzer.simplify(&span)?;
-                rebuild_buffer(
-                    buffer,
-                    BufferType::from_complete_fields(
-                        old_type.span.clone(),
-                        old_type.dtype.clone(),
-                        old_type.storage_scope.clone(),
-                        Array::new(vec![span]),
-                        Array::new(Vec::new()),
-                        old_type.elem_offset.clone(),
-                        old_type.data_alignment,
-                        old_type.offset_factor,
-                        old_type.layout.clone(),
-                        old_type.allocated_addr.clone(),
-                    ),
-                )?
+                buffer.with_type(BufferType::from_complete_fields(
+                    old_type.span.clone(),
+                    old_type.dtype.clone(),
+                    old_type.storage_scope.clone(),
+                    Array::new(vec![span]),
+                    Array::new(Vec::new()),
+                    old_type.elem_offset.clone(),
+                    old_type.data_alignment,
+                    old_type.offset_factor,
+                    old_type.layout.clone(),
+                    old_type.allocated_addr.clone(),
+                ))?
             } else {
-                native_flatten_buffer(buffer)?
+                buffer.flattened()?
             }
         } else {
-            native_flatten_buffer(buffer)?
+            buffer.flattened()?
         };
 
         let native_type = native.type_annotation();
@@ -235,14 +229,14 @@ impl LayoutApplier {
         if structural_equal(&old_type, &new_type)? {
             return Ok(buffer.clone());
         }
-        let mapped = rebuild_buffer(&native, new_type)?;
+        let mapped = native.with_type(new_type)?;
         self.remaps.insert(identity, mapped.clone());
         Ok(mapped)
     }
 
     fn register_alias(&mut self, buffer: &BufferVar, data: &Expr) -> Result<()> {
         let mut root = buffer.clone();
-        if let Ok(call) = data.clone().try_cast::<Call>() {
+        if let Some(call) = data.as_node::<CallObj>() {
             if call.op.same_as(&self.buffer_data_operator) && call.args.len() == 1 {
                 if let Ok(source) = call.args.get(0)?.try_cast::<Var>() {
                     if let Ok(source) = BufferVar::try_from(source) {
@@ -321,7 +315,7 @@ impl LayoutApplier {
                 Array::new(vec![self.analyzer.simplify(&offset)?])
             }
         } else {
-            buffer_offset_of(buffer, indices.clone())?
+            buffer.offset_of(indices.clone())?
         };
         if offsets.len() != 1 && old_type.layout.is_none() {
             return Err(tvm_ffi::Error::new(
@@ -362,7 +356,7 @@ impl LayoutApplier {
                             "",
                         )
                     })?;
-                return buffer_data(&self.use_buffer(&root));
+                return self.use_buffer(&root).data();
             }
         }
         mutate_expr_default(self, mutator, value.into())
@@ -491,21 +485,18 @@ impl BufferOffsetRemover {
         let buffer = if elem_offset.same_as(&old_type.elem_offset) {
             value.buffer.clone()
         } else {
-            let mapped = rebuild_buffer(
-                &value.buffer,
-                BufferType::from_complete_fields(
-                    old_type.span.clone(),
-                    old_type.dtype.clone(),
-                    old_type.storage_scope.clone(),
-                    old_type.shape.clone(),
-                    old_type.strides.clone(),
-                    elem_offset,
-                    old_type.data_alignment,
-                    old_type.offset_factor,
-                    old_type.layout.clone(),
-                    old_type.allocated_addr.clone(),
-                ),
-            )?;
+            let mapped = value.buffer.with_type(BufferType::from_complete_fields(
+                old_type.span.clone(),
+                old_type.dtype.clone(),
+                old_type.storage_scope.clone(),
+                old_type.shape.clone(),
+                old_type.strides.clone(),
+                elem_offset,
+                old_type.data_alignment,
+                old_type.offset_factor,
+                old_type.layout.clone(),
+                old_type.allocated_addr.clone(),
+            ))?;
             self.remaps
                 .insert(ObjectIdentity::of(value.buffer.as_var()), mapped.clone());
             mapped
@@ -562,28 +553,6 @@ fn function_target(function: &PrimFunc) -> Result<Target> {
             "",
         )
     })
-}
-
-fn rebuild_buffer(buffer: &BufferVar, ty: BufferType) -> Result<BufferVar> {
-    BufferVar::try_from(buffer.copy_with(buffer.name.clone(), ty.into()))
-}
-
-fn native_flatten_buffer(buffer: &BufferVar) -> Result<BufferVar> {
-    tvm_ffi::cached_global_func!("tirx.BufferGetFlattenedBuffer")
-        .call_tuple((buffer,))?
-        .try_into()
-}
-
-fn buffer_offset_of(buffer: &BufferVar, indices: Array<PrimExpr>) -> Result<Array<PrimExpr>> {
-    tvm_ffi::cached_global_func!("tirx.BufferOffsetOf")
-        .call_tuple((buffer, indices))?
-        .try_into()
-}
-
-fn buffer_data(buffer: &BufferVar) -> Result<Expr> {
-    tvm_ffi::cached_global_func!("tirx.BufferData")
-        .call_tuple((buffer,))?
-        .try_into()
 }
 
 fn structural_equal(lhs: &BufferType, rhs: &BufferType) -> Result<bool> {

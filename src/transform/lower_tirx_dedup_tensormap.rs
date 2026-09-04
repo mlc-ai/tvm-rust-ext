@@ -29,8 +29,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::StringImm;
-use crate::ir::{Call, Expr, PrimExpr, Var};
-use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
+use crate::ir::{CallObj, Expr, PrimExpr, Var};
+use crate::tirx::{Bind, Evaluate, EvaluateObj, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
 
 const ENCODE_TILED_FUNCTION: &str = "runtime.cuTensorMapEncodeTiled";
 
@@ -98,7 +98,7 @@ impl DedupAnalysis {
         }
     }
 
-    fn record_encode(&mut self, call: &Call) -> Result<()> {
+    fn record_encode(&mut self, call: &CallObj) -> Result<()> {
         let Some((variable, key)) = extract_encode_key(call, &self.operators) else {
             return Ok(());
         };
@@ -157,8 +157,8 @@ fn analyze_conditional(
 }
 
 fn analyze_evaluate(value: Evaluate, visitor: &mut VisitContext<'_, DedupAnalysis>) -> Result<()> {
-    if let Ok(call) = value.value.clone().try_cast::<Call>() {
-        visitor.state_mut().record_encode(&call)?;
+    if let Some(call) = value.value.as_node::<CallObj>() {
+        visitor.state_mut().record_encode(call)?;
     }
     visitor.visit(&value.value)?;
     Ok(())
@@ -300,10 +300,10 @@ impl DedupRewriter {
         } else {
             value.copy_with(mapped_value)
         };
-        let Ok(call) = mapped.value.clone().try_cast::<Call>() else {
+        let Some(call) = mapped.value.as_node::<CallObj>() else {
             return Ok(mapped);
         };
-        let Some((_variable, key)) = extract_encode_key(&call, &self.operators) else {
+        let Some((_variable, key)) = extract_encode_key(call, &self.operators) else {
             return Ok(mapped);
         };
         if self.key_was_emitted(&key)? {
@@ -321,7 +321,10 @@ impl DedupRewriter {
     }
 }
 
-fn extract_encode_key(call: &Call, operators: &TensorMapOperators) -> Option<(Var, Array<Expr>)> {
+fn extract_encode_key(
+    call: &CallObj,
+    operators: &TensorMapOperators,
+) -> Option<(Var, Array<Expr>)> {
     if ObjectIdentity::of(&call.op) != operators.call_packed || call.args.len() < 2 {
         return None;
     }
@@ -335,7 +338,7 @@ fn extract_encode_key(call: &Call, operators: &TensorMapOperators) -> Option<(Va
 }
 
 fn is_tensor_map_alloca(binding: &Bind, operators: &TensorMapOperators) -> bool {
-    let Ok(call) = binding.value.clone().try_cast::<Call>() else {
+    let Some(call) = binding.value.as_node::<CallObj>() else {
         return false;
     };
     if ObjectIdentity::of(&call.op) != operators.stack_alloca || call.args.len() != 2 {
@@ -350,9 +353,7 @@ fn is_tensor_map_alloca(binding: &Bind, operators: &TensorMapOperators) -> bool 
 
 fn is_no_op(statement: &Stmt) -> bool {
     statement
-        .clone()
-        .try_cast::<Evaluate>()
-        .ok()
+        .as_node::<EvaluateObj>()
         .is_some_and(|evaluate| int_value(&evaluate.value) == Some(0))
 }
 

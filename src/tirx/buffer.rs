@@ -439,6 +439,37 @@ impl TypedVar<BufferType> {
     pub fn dtype(&self) -> &PrimType {
         &self.buffer_type().dtype
     }
+
+    /// Return the native data-pointer expression for this buffer.
+    pub fn data(&self) -> Result<Expr> {
+        tvm_ffi::cached_global_func!("tirx.BufferData")
+            .call_tuple((self,))?
+            .try_into()
+    }
+
+    /// Return TVM's canonical flattened view of this buffer.
+    pub fn flattened(&self) -> Result<Self> {
+        tvm_ffi::cached_global_func!("tirx.BufferGetFlattenedBuffer")
+            .call_tuple((self,))?
+            .try_into()
+    }
+
+    /// Convert multidimensional indices into this buffer's storage offset.
+    pub fn offset_of(&self, indices: Array<PrimExpr>) -> Result<Array<PrimExpr>> {
+        tvm_ffi::cached_global_func!("tirx.BufferOffsetOf")
+            .call_tuple((self, indices))?
+            .try_into()
+    }
+
+    /// Copy this buffer variable with a new buffer type.
+    pub fn with_type(&self, ty: BufferType) -> Result<Self> {
+        self.with_name_and_type(self.as_var().name.clone(), ty)
+    }
+
+    /// Copy this buffer variable with a new name and buffer type.
+    pub fn with_name_and_type(&self, name: String, ty: BufferType) -> Result<Self> {
+        Self::try_from(self.as_var().copy_with(name, ty.into()))
+    }
 }
 
 // These values mirror the build configuration used by this handwritten

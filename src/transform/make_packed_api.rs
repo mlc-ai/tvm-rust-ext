@@ -32,12 +32,13 @@ use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::StringImm;
 use crate::ir::{
-    BaseFunc, Call, DictAttrs, Expr, GlobalVar, IRModule, IntImm, PointerType, PrimExpr, PrimType,
-    Type, Var,
+    BaseFunc, Call, DictAttrs, Expr, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
+    PrimType, PrimTypeObj, Type, Var,
 };
 use crate::target::Target;
 use crate::tirx::{
-    AttrStmt, Bind, DeclBuffer, Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, Stmt,
+    AssertStmtObj, AttrStmt, Bind, BindObj, DeclBuffer, DeclBufferObj, Evaluate, For, ForKind,
+    IfThenElse, PrimFunc, Return, Stmt,
 };
 
 const CALLING_CONV: &str = "calling_conv";
@@ -255,10 +256,10 @@ struct SubroutineCallRewriter<'a> {
 impl SubroutineCallRewriter<'_> {
     fn mutate_call(&mut self, _value: Call, mutator: &mut Mutator) -> Result<Expr> {
         let value: Call = mutator.default_mutate(self)?.try_into()?;
-        let Ok(global) = value.op.clone().try_cast::<GlobalVar>() else {
+        if value.op.as_node::<GlobalVarObj>().is_none() {
             return Ok(value.into());
-        };
-        let Some(symbol) = self.packed_symbols.get(&ObjectIdentity::of(&global)) else {
+        }
+        let Some(symbol) = self.packed_symbols.get(&ObjectIdentity::of(&value.op)) else {
             return Ok(value.into());
         };
         let mut arguments = Vec::with_capacity(value.args.len() + 2);
@@ -948,10 +949,7 @@ impl PackedAbiBinder {
         if let Ok(variable) = expected.clone().try_cast::<Var>() {
             return self.bind_scalar(variable, actual, emit_bind);
         }
-        let expected_is_unsigned = expected
-            .type_annotation()
-            .try_cast::<PrimType>()
-            .is_ok_and(|ty| ty.dtype.code == tvm_ffi::DLDataTypeCode::kDLUInt as u8);
+        let expected_is_unsigned = expected.dtype().code == tvm_ffi::DLDataTypeCode::kDLUInt as u8;
         let condition = if expected_is_unsigned {
             equal(expected.clone(), actual)?
         } else {
@@ -1180,7 +1178,7 @@ impl PackedAbiBinder {
 fn function_signature(name: &str, parameters: &Array<Var>) -> String {
     let mut rendered = Vec::with_capacity(parameters.len());
     for parameter in parameters.iter() {
-        let value = if let Ok(buffer) = parameter.clone().try_cast::<crate::tirx::BufferVar>() {
+        let value = if let Ok(buffer) = crate::tirx::BufferVar::try_from(&parameter) {
             let ty = buffer.type_annotation();
             let shape = ty
                 .shape
@@ -1194,7 +1192,7 @@ fn function_signature(name: &str, parameters: &Array<Var>) -> String {
                 shape,
                 ty.dtype.dtype.to_string().as_str()
             )
-        } else if let Ok(primitive) = parameter.ty.clone().try_cast::<PrimType>() {
+        } else if let Some(primitive) = parameter.ty.as_node::<PrimTypeObj>() {
             format!(
                 "{}: {}",
                 parameter.name.as_str(),
@@ -1257,12 +1255,9 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
                     body,
                 )
                 .into();
-        } else if statement.clone().try_cast::<Bind>().is_ok()
-            || statement
-                .clone()
-                .try_cast::<crate::tirx::AssertStmt>()
-                .is_ok()
-            || statement.clone().try_cast::<DeclBuffer>().is_ok()
+        } else if statement.as_node::<BindObj>().is_some()
+            || statement.as_node::<AssertStmtObj>().is_some()
+            || statement.as_node::<DeclBufferObj>().is_some()
         {
             body = Stmt::sequence(vec![statement.clone(), body])?;
         } else if let Ok(conditional) = statement.clone().try_cast::<crate::tirx::IfThenElse>() {

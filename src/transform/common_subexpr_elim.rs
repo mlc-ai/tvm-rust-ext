@@ -638,8 +638,7 @@ fn visit_cse_buffer_definition(
 }
 
 fn is_bool(expression: &PrimExpr) -> bool {
-    let primitive_type = expression.type_annotation();
-    primitive_type.dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8
+    expression.dtype().code == tvm_ffi::DLDataTypeCode::kDLBool as u8
 }
 
 struct StructuralExprReplacer {
