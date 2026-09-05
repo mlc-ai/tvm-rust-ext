@@ -17,13 +17,12 @@
  * under the License.
  */
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{
-    Any, Array, FieldGetter, Function, Map, ObjectArc, ObjectCore, RValueRef, Result, String,
-};
+use tvm_ffi::{Any, Array, Function, RValueRef, Result, String};
 
 use crate::ir::IRModule;
 use crate::tirx::PrimFunc;
+
+pub use crate::generated::transform::*;
 
 mod annotate_entry_func;
 mod bind_target;
@@ -97,72 +96,6 @@ pub use unsupported_dtype_legalize::{
     fp8_storage_legalize, fp8_storage_legalize_prim_func,
 };
 pub use vectorize_loop::{vectorize_loop, vectorize_loop_prim_func};
-
-/// Opaque Rust view of TVM's `PassNode` prefix.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "transform.Pass"]
-pub struct PassObj {
-    base: tvm_ffi::Object,
-}
-
-/// Reference-counted handle to a TVM pass.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct Pass {
-    data: ObjectArc<PassObj>,
-}
-
-impl std::ops::Deref for Pass {
-    type Target = PassObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-/// Opaque Rust view of TVM's `PassContextNode`.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "transform.PassContext"]
-#[type_final]
-pub struct PassContextObj {
-    base: tvm_ffi::Object,
-}
-
-/// Reference-counted handle to the active TVM pass context.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct PassContext {
-    data: ObjectArc<PassContextObj>,
-}
-
-impl std::ops::Deref for PassContext {
-    type Target = PassContextObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl PassContext {
-    /// Return the language-independent pass-configuration map.
-    pub fn config(&self) -> Result<Map<String, Any>> {
-        FieldGetter::new(PassContextObj::type_index(), "config")?.get(&**self)
-    }
-}
-
-impl Pass {
-    /// Run this pass on an IRModule using TVM's current PassContext.
-    ///
-    /// This consumes the Rust module handle and transfers its strong reference
-    /// through the same rvalue-reference ABI used by C++ passes.
-    pub fn run(&self, module: IRModule) -> Result<IRModule> {
-        tvm_ffi::cached_global_func!("transform.RunPass")
-            .call_tuple((self, RValueRef::new(module)))?
-            .try_into()
-    }
-}
 
 /// Compose passes in order using TVM's language-independent pass container.
 pub fn sequential(passes: Vec<Pass>, name: &str) -> Result<Pass> {

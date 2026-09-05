@@ -443,9 +443,9 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_ramp(&mut self, value: Ramp, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let base: PrimExpr = mutator.mutate(self, &value.base)?.try_into()?;
+        let base: PrimExpr = mutator.mutate(self, &value.base_)?.try_into()?;
         let stride: PrimExpr = mutator.mutate(self, &value.stride)?.try_into()?;
-        if base.same_as(&value.base)
+        if base.same_as(&value.base_)
             && stride.same_as(&value.stride)
             && base.dtype() == stride.dtype()
         {

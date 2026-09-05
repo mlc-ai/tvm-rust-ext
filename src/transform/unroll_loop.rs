@@ -27,50 +27,17 @@ use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::prim::Add;
 use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
+use crate::tirx::transform::UnrollLoopConfig;
 use crate::tirx::{
     AttrStmt, BufferStore, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt, Stmt,
 };
-use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, Error, FieldGetter, Map, MapValue, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCore, Result, String, WalkOrder, WalkResult,
-    VALUE_ERROR,
+    structural_mutate, structural_walk, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity,
+    ObjectRefCore, Result, String, WalkOrder, WalkResult, VALUE_ERROR,
 };
 
 const AUTO_UNROLL_MAX_STEP: &str = "pragma_auto_unroll_max_step";
 const UNROLL_EXPLICIT: &str = "pragma_unroll_explicit";
-
-/// Opaque read-only view of TVM's `tirx.transform.UnrollLoopConfig`.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.transform.UnrollLoopConfig"]
-#[type_final]
-struct UnrollLoopConfigObj {
-    base: tvm_ffi::Object,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-struct UnrollLoopConfig {
-    data: ObjectArc<UnrollLoopConfigObj>,
-}
-
-impl std::ops::Deref for UnrollLoopConfig {
-    type Target = UnrollLoopConfigObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl UnrollLoopConfig {
-    fn field<T>(&self, name: &str) -> Result<T>
-    where
-        T: TryFrom<Any, Error = tvm_ffi::Error>,
-    {
-        FieldGetter::new(UnrollLoopConfigObj::type_index(), name)?.get(&**self)
-    }
-}
 
 #[derive(Clone, Copy)]
 struct UnrollOptions {
@@ -100,14 +67,11 @@ impl UnrollOptions {
         };
         let config = UnrollLoopConfig::try_from(raw)?;
         Ok(Self {
-            auto_max_step: checked_i32_config(config.field("auto_max_step")?, "auto_max_step")?,
-            auto_max_depth: checked_i32_config(config.field("auto_max_depth")?, "auto_max_depth")?,
-            auto_max_extent: checked_i32_config(
-                config.field("auto_max_extent")?,
-                "auto_max_extent",
-            )?,
-            explicit_unroll: config.field::<i64>("explicit_unroll")? != 0,
-            unroll_local_access: config.field::<i64>("unroll_local_access")? != 0,
+            auto_max_step: config.auto_max_step,
+            auto_max_depth: config.auto_max_depth,
+            auto_max_extent: config.auto_max_extent,
+            explicit_unroll: config.explicit_unroll != 0,
+            unroll_local_access: config.unroll_local_access != 0,
         })
     }
 }
@@ -416,16 +380,6 @@ impl LoopUnroller {
         }
         Ok(())
     }
-}
-
-fn checked_i32_config(value: i64, field: &str) -> Result<i32> {
-    i32::try_from(value).map_err(|_| {
-        Error::new(
-            VALUE_ERROR,
-            &format!("tirx.UnrollLoop {field} does not fit the native i32 field"),
-            "",
-        )
-    })
 }
 
 fn add_with_constant_folding(lhs: &PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {

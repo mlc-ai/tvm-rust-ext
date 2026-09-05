@@ -17,10 +17,9 @@
  * under the License.
  */
 
-use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, Mutator, ObjectArc,
-    ObjectCore, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    structural_mutate, Any, Array, Function, Map, MapValue, Mutator, ObjectRefCast, ObjectRefCore,
+    Result, String as FfiString,
 };
 
 use super::utils::{
@@ -31,6 +30,7 @@ use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
 use crate::ir::prim::{Add, Not, GE, LT};
 use crate::ir::{Call, Expr, PrimExpr, Range, TensorLoad, Var};
+use crate::tirx::transform::StmtSimplifyConfig;
 use crate::tirx::{
     AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse, IterVar,
     PrimFunc, Stmt,
@@ -42,34 +42,6 @@ const VIRTUAL_THREAD: &str = "virtual_thread";
 const TRANSITIVELY_PROVE_INEQUALITIES: i64 = 1 << 0;
 const CONVERT_BOOLEAN_TO_AND_OF_ORS: i64 = 1 << 1;
 const APPLY_CONSTRAINTS_TO_BOOLEAN_BRANCHES: i64 = 1 << 2;
-
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.transform.StmtSimplifyConfig"]
-#[type_final]
-struct StmtSimplifyConfigObj {
-    base: tvm_ffi::Object,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-struct StmtSimplifyConfig {
-    data: ObjectArc<StmtSimplifyConfigObj>,
-}
-
-impl std::ops::Deref for StmtSimplifyConfig {
-    type Target = StmtSimplifyConfigObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl StmtSimplifyConfig {
-    fn field(&self, name: &str) -> Result<bool> {
-        FieldGetter::new(StmtSimplifyConfigObj::type_index(), name)?.get(&**self)
-    }
-}
 
 #[derive(Clone, Copy, Default)]
 struct StmtSimplifyOptions {
@@ -88,10 +60,9 @@ impl StmtSimplifyOptions {
         };
         let config = StmtSimplifyConfig::try_from(raw)?;
         Ok(Self {
-            transitively_prove_inequalities: config.field("transitively_prove_inequalities")?,
-            convert_boolean_to_and_of_ors: config.field("convert_boolean_to_and_of_ors")?,
-            apply_constraints_to_boolean_branches: config
-                .field("apply_constraints_to_boolean_branches")?,
+            transitively_prove_inequalities: config.transitively_prove_inequalities,
+            convert_boolean_to_and_of_ors: config.convert_boolean_to_and_of_ors,
+            apply_constraints_to_boolean_branches: config.apply_constraints_to_boolean_branches,
         })
     }
 

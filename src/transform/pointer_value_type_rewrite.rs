@@ -165,7 +165,7 @@ impl BufferInfo {
                 return Ok(self.element_dtype.clone());
             }
             let modular = analyzer.modular_set(&self.extent)?;
-            if modular.coeff % i64::from(lanes) == 0 && modular.base_value % i64::from(lanes) == 0 {
+            if modular.coeff % i64::from(lanes) == 0 && modular.base_ % i64::from(lanes) == 0 {
                 preferred.lanes = lanes;
             }
         }
@@ -356,11 +356,8 @@ impl AccessChecker {
             if let Ok(ramp) = index.try_cast::<Ramp>() {
                 if int_value(&ramp.stride) == Some(1) {
                     if let Some(lanes) = int_value(&ramp.lanes) {
-                        let modular = self.analyzer.modular_set(&ramp.base)?;
-                        if lanes > 0
-                            && modular.coeff % lanes == 0
-                            && modular.base_value % lanes == 0
-                        {
+                        let modular = self.analyzer.modular_set(&ramp.base_)?;
+                        if lanes > 0 && modular.coeff % lanes == 0 && modular.base_ % lanes == 0 {
                             lanes_used = u16::try_from(lanes)
                                 .map_err(|_| value_error("ramp lane count exceeds u16"))?;
                         }
@@ -723,7 +720,7 @@ impl VectorTypeRewriter {
                 if let Some(lanes) = int_value(&ramp.lanes) {
                     let lanes = u16::try_from(lanes)
                         .map_err(|_| value_error("ramp lane count exceeds u16"))?;
-                    let mut new_index = divide_by_factor(ramp.base.clone(), lanes)?;
+                    let mut new_index = divide_by_factor(ramp.base_.clone(), lanes)?;
                     if lanes != factor {
                         if factor == 0 || lanes % factor != 0 {
                             return Err(value_error(
@@ -735,7 +732,8 @@ impl VectorTypeRewriter {
                             binary_op(
                                 "tirx._OpMul",
                                 new_index,
-                                IntImm::from_dtype(ramp.base.dtype(), i64::from(new_lanes))?.into(),
+                                IntImm::from_dtype(ramp.base_.dtype(), i64::from(new_lanes))?
+                                    .into(),
                             )?,
                             ramp.stride.clone(),
                             IntImm::new("int32", i64::from(new_lanes))?.into(),
@@ -753,7 +751,7 @@ impl VectorTypeRewriter {
                 ));
             }
             *rewritten.last_mut().unwrap() = divide_by_factor(last_index, factor)?;
-            shuffle_index = Some(modular.base_value % i64::from(factor));
+            shuffle_index = Some(modular.base_ % i64::from(factor));
         }
         Ok((
             self.remap_buffer(buffer)?,

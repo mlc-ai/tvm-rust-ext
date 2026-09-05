@@ -18,251 +18,23 @@
  */
 
 use std::collections::HashMap;
-use std::{marker::PhantomData, rc::Rc};
 
-use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_visit, structural_walk, AnyView, DefRegionKind, Error, Function, Map, ObjectArc,
-    ObjectIdentity, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder,
-    WalkResult, VALUE_ERROR,
+    structural_visit, structural_walk, AnyView, DefRegionKind, Error, ObjectIdentity,
+    ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, WalkOrder, WalkResult,
+    VALUE_ERROR,
 };
 
+pub use crate::generated::arith::{
+    Analyzer, AnalyzerObj, ConstIntBound, ConstIntBoundObj, ModularSet, ModularSetObj,
+};
+pub use crate::generated::ir::{IntSet, IntSetObj};
+
 use crate::ir::prim::{AddObj, MulObj, SubObj};
-use crate::ir::{CallObj, ExprObj, IntImmObj, OpObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
+use crate::ir::{CallObj, ExprObj, IntImmObj, OpObj, PrimExpr, TensorLoadObj, VarObj};
 use crate::tirx::{
     AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, PrimVar, SeqStmtObj, StmtObj,
 };
-
-/// Opaque Rust view of TVM's stateful arithmetic analyzer.
-///
-/// Unlike an IR node, the analyzer has private C++ implementation state, so
-/// Rust owns only its reference-counted FFI handle and uses the registered
-/// analysis functions for operations.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "arith.Analyzer"]
-#[type_final]
-pub struct AnalyzerObj {
-    base: tvm_ffi::Object,
-    _not_send_sync: PhantomData<Rc<()>>,
-}
-
-/// Shared handle to one TVM arithmetic-analysis context.
-///
-/// Clones share mutable native caches. Keep all aliases on one thread.
-/// This typed handle is neither `Send` nor `Sync`, but the current tvm-ffi
-/// `ObjectRef` can erase that restriction. Casting through it does not make
-/// the native analyzer safe to share across threads.
-///
-/// ```compile_fail
-/// fn require_thread_safe<T: Send + Sync>() {}
-/// require_thread_safe::<tvm::analysis::Analyzer>();
-/// ```
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct Analyzer {
-    data: ObjectArc<AnalyzerObj>,
-}
-
-/// Inclusive constant-integer bounds computed by [`Analyzer`].
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "arith.ConstIntBound"]
-#[type_final]
-pub struct ConstIntBoundObj {
-    base: tvm_ffi::Object,
-    pub min_value: i64,
-    pub max_value: i64,
-}
-
-/// Reference-counted handle to one inclusive integer interval.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ConstIntBound {
-    data: ObjectArc<ConstIntBoundObj>,
-}
-
-/// Congruence class inferred by TVM's arithmetic analyzer.
-///
-/// The represented set is `{coeff * x + base | x in Z}`.  Both fields are
-/// reflected by TVM, so this is an ABI-complete value view rather than an
-/// opaque analysis handle.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "arith.ModularSet"]
-#[type_final]
-pub struct ModularSetObj {
-    base: tvm_ffi::Object,
-    pub coeff: i64,
-    pub base_value: i64,
-}
-
-/// Reference-counted result of modular-set analysis.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ModularSet {
-    data: ObjectArc<ModularSetObj>,
-}
-
-impl std::ops::Deref for ModularSet {
-    type Target = ModularSetObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for ConstIntBound {
-    type Target = ConstIntBoundObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-/// Opaque Rust view of TVM's arithmetic integer-set abstraction.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ir.IntSet"]
-pub struct IntSetObj {
-    base: tvm_ffi::Object,
-}
-
-/// Shared handle to a native integer set.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct IntSet {
-    data: ObjectArc<IntSetObj>,
-}
-
-impl std::ops::Deref for IntSet {
-    type Target = IntSetObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for Analyzer {
-    type Target = AnalyzerObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl Analyzer {
-    /// Construct a fresh native analyzer context.
-    pub fn new() -> Result<Self> {
-        tvm_ffi::cached_global_func!("arith.Analyzer")
-            .call_tuple(())?
-            .try_into()
-    }
-
-    /// Simplify a primitive expression with TVM's standard two analysis steps.
-    pub fn simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
-        self.simplify_with_steps(expression, 2)
-    }
-
-    /// Simplify a primitive expression with an explicit analysis-step count.
-    pub fn simplify_with_steps(&self, expression: &PrimExpr, steps: i32) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSimplify")
-            .call_tuple((self, expression, steps))?
-            .try_into()
-    }
-
-    /// Canonicalize one primitive expression with TVM's arithmetic normalizer.
-    pub fn canonical_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanonicalSimplify")
-            .call_tuple((self, expression))?
-            .try_into()
-    }
-
-    /// Return the analyzer's inclusive constant-integer bounds for `expression`.
-    pub fn const_int_bound(&self, expression: &PrimExpr) -> Result<ConstIntBound> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerConstIntBound")
-            .call_tuple((self, expression))?
-            .try_into()
-    }
-
-    /// Infer the modular set of `expression`.
-    pub fn modular_set(&self, expression: &PrimExpr) -> Result<ModularSet> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerModularSet")
-            .call_tuple((self, expression))?
-            .try_into()
-    }
-
-    /// Prove that two primitive expressions are equal.
-    pub fn can_prove_equal(&self, lhs: &PrimExpr, rhs: &PrimExpr) -> Result<bool> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanProveEqual")
-            .call_tuple((self, lhs, rhs))?
-            .try_into()
-    }
-
-    /// Prove a boolean primitive expression using TVM's default proof strength.
-    pub fn can_prove(&self, condition: &PrimExpr) -> Result<bool> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanProve")
-            .call_tuple((self, condition, 0_i32))?
-            .try_into()
-    }
-
-    /// Evaluate the integer set of an expression under explicit variable domains.
-    pub fn int_set(&self, expression: &PrimExpr, domains: &Map<Var, IntSet>) -> Result<IntSet> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerIntSet")
-            .call_tuple((self, expression, domains))?
-            .try_into()
-    }
-
-    /// Bind a variable to a range in this analyzer context.
-    pub fn bind(&self, variable: &Var, range: &Range) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, range))?;
-        Ok(())
-    }
-
-    /// Bind a variable to a pure primitive expression in this analyzer context.
-    pub fn bind_expression(&self, variable: &Var, value: &PrimExpr) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, value))?;
-        Ok(())
-    }
-
-    /// Run an operation while `constraint` is known to be true.
-    ///
-    /// The native analyzer returns an exit callback for this context.  Always
-    /// invoking it here keeps the constraint stack balanced when `operation`
-    /// returns an error.
-    pub fn with_constraint<T, F>(&self, constraint: &PrimExpr, operation: F) -> Result<T>
-    where
-        F: FnOnce() -> Result<T>,
-    {
-        let exit = self.enter_constraint(constraint)?;
-        let result = operation();
-        let exit_result = exit.call_tuple(());
-        match (result, exit_result) {
-            (Ok(value), Ok(_)) => Ok(value),
-            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        }
-    }
-
-    pub(crate) fn enter_constraint(&self, constraint: &PrimExpr) -> Result<Function> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerEnterConstraintContext")
-            .call_tuple((self, constraint))?
-            .try_into()
-    }
-
-    /// Limit the rewrite simplifier for deterministic debug/test behavior.
-    pub fn set_maximum_rewrite_steps(&self, maximum: i64) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSetMaximumRewriteSteps")
-            .call_tuple((self, maximum))?;
-        Ok(())
-    }
-
-    /// Select optional rewrite-simplifier extensions by their native bitmask.
-    pub fn set_enabled_extensions(&self, extensions: i64) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSetEnabledExtensions")
-            .call_tuple((self, extensions))?;
-        Ok(())
-    }
-}
 
 /// Decompose `expression` as one linear coefficient per variable plus a base.
 ///
@@ -276,22 +48,6 @@ pub fn detect_linear_equation(
     tvm_ffi::cached_global_func!("arith.DetectLinearEquation")
         .call_tuple((expression, tvm_ffi::Array::new(variables)))?
         .try_into()
-}
-
-impl IntSet {
-    /// Construct a closed integer interval.
-    pub fn interval(minimum: PrimExpr, maximum: PrimExpr) -> Result<Self> {
-        tvm_ffi::cached_global_func!("arith.intset_interval")
-            .call_tuple((minimum, maximum))?
-            .try_into()
-    }
-
-    /// Return the set's upper-bound expression.
-    pub fn maximum(&self) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.IntervalSetGetMax")
-            .call_tuple((self,))?
-            .try_into()
-    }
 }
 
 /// ABI-compatible Rust representation of TVM's `tirx::CallEffectKind`.

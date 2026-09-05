@@ -35,11 +35,16 @@
 #[doc(hidden)]
 pub mod analysis;
 pub mod exports;
-pub mod ir;
+// Emitted verbatim by `tvm-ffi-stubgen --target rust`; the allocators of wide
+// nodes take one parameter per physical field and fieldless nodes get a
+// parameterless `new`, so these two lints are silenced here rather than in
+// the generated files.
+#[allow(clippy::too_many_arguments, clippy::new_without_default)]
+pub mod generated;
 pub mod libinfo;
-pub mod target;
-pub mod te;
-pub mod tirx;
 pub mod transform;
+
+// The IR surface is the generated tree; these are its crate-level paths.
+pub use generated::{ir, target, te, tirx};
 
 pub use tvm_ffi;

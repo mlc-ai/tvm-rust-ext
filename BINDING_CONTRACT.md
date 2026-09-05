@@ -253,10 +253,13 @@ a separately reviewed C++ ABI migration removes that blocker.
 - Opaque does not imply thread-safe. Native mutable services such as `Analyzer`
   and `UniqueNameSupply` must remain `!Send` and `!Sync`; hiding their private
   fields must not accidentally enable Rust's automatic thread-safety traits.
-  This currently constrains the typed handles only. tvm-ffi's generic
-  `ObjectRef` can erase those restrictions, so cross-thread isolation is not
-  enforced through all FFI conversions. That upstream gap remains unresolved;
-  all aliases of these services must stay on one thread.
+  The generated opaque wrappers do exactly that today: stubgen emits only the
+  FFI header, so `Analyzer` and `UniqueNameSupply` are auto-`Send`/`Sync`
+  until the generator can attach a `PhantomData<Rc<()>>` marker (a per-type
+  directive is the natural home). tvm-ffi's generic `ObjectRef` can erase
+  those restrictions as well, so cross-thread isolation is not enforced
+  through all FFI conversions. Both gaps remain unresolved; all aliases of
+  these services must stay on one thread.
 
 ## Stubgen output ownership
 

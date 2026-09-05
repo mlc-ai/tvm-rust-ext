@@ -52,11 +52,12 @@ language-independent structural protocol.
 
 `UniqueNameSupply` also stays opaque because its mutable naming state is owned
 by C++. `BindTarget` and `SplitHostDevice` use its existing registered methods
-for normalization and collision handling. The typed `Analyzer` and
-`UniqueNameSupply` handles are `!Send` and `!Sync`. This is not an end-to-end
-thread-safety guarantee: the current tvm-ffi generic `ObjectRef` can erase
-these restrictions and be cast back on another thread. Keep every alias on
-one thread; closing this type-erasure gap requires a separate tvm-ffi fix.
+for normalization and collision handling. The generated `Analyzer` and
+`UniqueNameSupply` handles currently carry no `!Send`/`!Sync` marker: stubgen
+emits an opaque object as the FFI header alone, and attaching a
+`PhantomData<Rc<()>>` marker needs a generator directive that does not exist
+yet. Keep every alias on one thread; that marker and the tvm-ffi generic
+`ObjectRef` type-erasure gap both remain open.
 
 `DispatchContext` also has a complete layout, but its native methods modify
 `callbacks` and `shared_state`. These fields use private `UnsafeCell` storage;
@@ -188,11 +189,21 @@ Rust implementations, and native semantic blockers retain their identity,
 resource ownership, or virtual ABI behind opaque wrappers. The acceptance and
 pass suites together exercise both object origins and all four structural APIs.
 
-This repository is not yet the one-command generator itself.  Reaching that
-state still requires `RustGenerator` in `tvm-ffi-stubgen`, extraction of native
-layout attributes into generated Rust, enum metadata, and a maintained set of
-reviewed Rust semantic-constructor templates. Reusable `RValueRef<T>`
-support is already implemented and tested.
+Since 2026-09-04 the object layer itself is stubgen output: `src/generated/`
+holds the `#[repr(C)]` objects, reference wrappers, `Deref` impls,
+complete-field allocators, open enum newtypes, and upcasts that
+`tvm-ffi-stubgen --target rust` emits for the `ir`, `tirx`, `arith`, `target`,
+`te`, `transform`, and `instrument` prefixes of `libtvm_compiler`, and
+`src/lib.rs` re-exports that tree as `tvm::ir`, `tvm::tirx`, `tvm::te`, and
+`tvm::target`.  The reviewed semantic constructors, `copy_with` rebuilds, the
+typed views (`PrimExpr`, `PrimVar`, `BufferVar`), and native-operation
+wrappers live at the tail of the same generated files, in nested modules
+outside the marker blocks, so one file per prefix carries both the generated
+layout and its hand-written semantics; the passes under `src/transform`
+consume the generated types directly and changed only where a reflected field
+is spelled differently.
+See [Generated bindings](#generated-bindings) for the regeneration command and
+the directive set.  Reusable `RValueRef<T>` support is implemented and tested.
 
 ## Building and testing
 
@@ -223,6 +234,52 @@ uv, conda, system site-packages); the only requirements are that
 ```bash
 cargo test
 ```
+
+### Generated bindings
+
+`src/generated/` is emitted by the Rust backend of `tvm-ffi-stubgen`
+(apache/tvm-ffi branch `main-dev/2026-09-04/stubgen_rust_ident`, which stacks
+the identifier and wrapper-slot fixes on `main-dev/2026-09-03/stubgen_rust_complete`)
+from the installed `libtvm_compiler.so`.  The TVM build must embed a tvm-ffi
+that publishes `__ffi_type_final__` (`c62b07c` or later in
+`3rdparty/tvm-ffi`), otherwise no generated node is marked `#[type_final]`.
+Until that branch lands, `Cargo.toml` carries a `[patch]` that builds the
+`tvm-ffi` crate from a checkout of it next to this repository, because the
+generated wrappers keep their `ObjectArc` in a member named `base` and the
+pinned `derive(ObjectRef)` still insists on `data`.  Regenerate with the
+environment active:
+
+```bash
+LIB=$(python -c "import tvm, os; print(os.path.join(os.path.dirname(tvm.__file__), 'lib', 'libtvm_compiler.so'))")
+for prefix in ir. tirx. arith. target. te. transform. instrument.; do
+  tvm-ffi-stubgen --target rust --dlls "$LIB" --init-pypkg tvm --init-lib tvm_compiler \
+    --init-prefix "$prefix" src/generated
+done
+```
+
+The `--init-*` form only scaffolds prefixes that have no file yet; a plain
+`tvm-ffi-stubgen --target rust --dlls "$LIB" src/generated` refreshes every
+block in place.  The one-line directives at the top of each generated file are
+hand-maintained and are read on every run: `nullable` restores the
+`Option<Span>`-style fields, `field` narrows `ir.Expr`/`ir.Var` fields to the
+typed views and the inherited `ty` allocator parameter to `PrimType`, `enum`
+declares `ForKind`, `IterVarType`, `ScopeKind`, and `ScopeBinding`, `upcast`
+adds the `PrimExpr` conversions, `custom-new` keeps the reviewed `new` in the
+handwritten modules and names the generated allocator `from_complete_fields`,
+and `import-object` pulls the typed views into scope.  The
+`DispatchContext::callbacks`/`shared_state` slots are mapped to the handwritten
+`NativeMutableMap` cell through `field` directives.
+
+Hand-written code sits after the last marker block of each file, in nested
+modules (`mod semantic`; `mod stmt`, `buffer`, `function`, `index_map`,
+`iter_var`, and `tile_primitive` for `tirx`) that open with `use super::*;`.
+The generator keeps every line outside a block, so regeneration can neither
+drop that code nor collide with its imports.  A name the same file defines
+(`PrimExpr`, `PrimVar`, `BufferVar`) is named directly in directives; a name
+from another file goes through `import-object`.  The generator's output is not
+rustfmt-clean, so run `cargo fmt` after every regeneration (the round trip is
+then byte-stable); the two clippy lints its allocators trigger are silenced on
+the `generated` module in `src/lib.rs`.
 
 `cargo build` also produces a shared library, `target/<profile>/libtvm.so`
 (`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:

@@ -23,11 +23,9 @@ use std::collections::HashMap;
 #[path = "../../tests/unit/constraint_cleanup.rs"]
 mod constraint_cleanup_tests;
 
-use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, AnyCompatible, Array, FieldGetter, Function, Map, MapValue, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    String as FfiString, RUNTIME_ERROR,
+    structural_mutate, Any, AnyCompatible, Array, Function, Map, MapValue, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, RUNTIME_ERROR,
 };
 
 use super::utils::{
@@ -43,6 +41,7 @@ use crate::ir::prim::{
 };
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, TensorLoadObj, Var};
 use crate::te::Reduce;
+use crate::tirx::transform::RemoveNoOpConfig;
 use crate::tirx::{
     AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar,
     DeclBuffer, Evaluate, For, IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
@@ -53,46 +52,6 @@ const ASYNC_WAIT_QUEUE_SCOPE: &str = "async_wait_queue_scope";
 const ASYNC_WAIT_INFLIGHT_COUNT: &str = "async_wait_inflight_count";
 const THREAD_EXTENT: &str = "thread_extent";
 const VIRTUAL_THREAD: &str = "virtual_thread";
-
-/// Opaque read-only view of TVM's `tirx.transform.RemoveNoOpConfig`.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.transform.RemoveNoOpConfig"]
-#[type_final]
-struct RemoveNoOpConfigObj {
-    base: tvm_ffi::Object,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-struct RemoveNoOpConfig {
-    data: ObjectArc<RemoveNoOpConfigObj>,
-}
-
-impl std::ops::Deref for RemoveNoOpConfig {
-    type Target = RemoveNoOpConfigObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl RemoveNoOpConfig {
-    fn field<T>(&self, name: &str) -> Result<T>
-    where
-        T: TryFrom<Any, Error = tvm_ffi::Error>,
-    {
-        FieldGetter::new(RemoveNoOpConfigObj::type_index(), name)?.get(&**self)
-    }
-
-    fn max_simplification_steps(&self) -> Result<i64> {
-        self.field("max_simplification_steps")
-    }
-
-    fn ignore_profiler_call(&self) -> Result<bool> {
-        self.field("ignore_profiler_call")
-    }
-}
 
 #[derive(Clone, Copy, Default)]
 struct RemoveNoOpOptions {
@@ -107,8 +66,8 @@ impl RemoveNoOpOptions {
         };
         let config = RemoveNoOpConfig::try_from(raw)?;
         Ok(Self {
-            max_simplification_steps: config.max_simplification_steps()?,
-            ignore_profiler_call: config.ignore_profiler_call()?,
+            max_simplification_steps: config.max_simplification_steps,
+            ignore_profiler_call: config.ignore_profiler_call,
         })
     }
 }

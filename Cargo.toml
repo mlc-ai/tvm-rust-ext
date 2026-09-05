@@ -32,5 +32,12 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 tvm-ffi = { git = "https://github.com/apache/tvm-ffi.git", rev = "c7a8cead2523c8a26bdd99f3a2aa8db7ca98919e" }
 
+# TEMPORARY: the generated wrappers name their `ObjectArc` slot `base`, which
+# needs the `derive(ObjectRef)` change on the uncommitted tvm-ffi branch
+# `main-dev/2026-09-04/stubgen_rust_ident` (checked out next to this repo).
+# Drop this patch and bump `rev` once that change lands upstream.
+[patch."https://github.com/apache/tvm-ffi.git"]
+tvm-ffi = { path = "../tvm-ffi/rust/tvm-ffi" }
+
 # Keep this crate independent from any Cargo workspace above the checkout.
 [workspace]
