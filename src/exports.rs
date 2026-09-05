@@ -136,6 +136,8 @@ tvm_ffi_dll_export_typed_func!(bf16_compute_legalize_pass, transform::bf16_compu
 tvm_ffi_dll_export_typed_func!(bf16_storage_legalize_pass, transform::bf16_storage_legalize);
 tvm_ffi_dll_export_typed_func!(common_subexpr_elim_pass, transform::common_subexpr_elim);
 tvm_ffi_dll_export_typed_func!(convert_ssa_pass, transform::convert_ssa);
+tvm_ffi_dll_export_typed_func!(verify_ssa_pass, transform::verify_ssa);
+tvm_ffi_dll_export_typed_func!(verify_memory_pass, transform::verify_memory);
 tvm_ffi_dll_export_typed_func!(decorate_device_scope_pass, transform::decorate_device_scope);
 tvm_ffi_dll_export_typed_func!(flatten_buffer_pass, transform::flatten_buffer);
 tvm_ffi_dll_export_typed_func!(
@@ -180,6 +182,12 @@ tvm_ffi_dll_export_typed_func!(unroll_loop_pass, transform::unroll_loop);
 tvm_ffi_dll_export_typed_func!(vectorize_loop_pass, transform::vectorize_loop);
 
 // Analyses.
+tvm_ffi_dll_export_typed_func!(verify_ssa, |function: PrimFunc| analysis::verify_ssa(
+    &function
+));
+tvm_ffi_dll_export_typed_func!(verify_memory, |function: PrimFunc| analysis::verify_memory(
+    &function
+));
 tvm_ffi_dll_export_typed_func!(expr_complexity, |func: PrimFunc| {
     analysis::expr_complexity(&func).map(|count| count as i64)
 });

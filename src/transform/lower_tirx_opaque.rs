@@ -214,12 +214,12 @@ fn mutate_buffer_definition(
     mutator: &mut Mutator,
     buffer: &BufferVar,
 ) -> Result<BufferVar> {
-    let mut remaps = std::mem::take(&mut lowerer.buffer_remaps);
-    let result = remaps.mutate_definition(buffer, |expression| {
-        mutator.mutate(lowerer, expression)?.try_into()
-    });
-    lowerer.buffer_remaps = remaps;
-    result
+    BufferRemaps::mutate_definition(
+        lowerer,
+        buffer,
+        |state| &mut state.buffer_remaps,
+        |state, expression| mutator.mutate(state, expression)?.try_into(),
+    )
 }
 
 fn make_launch_thread(

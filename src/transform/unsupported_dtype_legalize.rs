@@ -26,18 +26,23 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, get_operator, is_opaque_expr, is_pointer_type, mutate_expr_default,
-    mutate_stmt_default, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, get_operator, is_opaque_expr, is_pointer_type, mutate_buffer_region_with_buffer,
+    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, visit_buffer_definition,
+    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{
-    Add, Broadcast, Cast, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
+    Add, Broadcast, Cast, CastObj, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE,
+    LT, NE,
 };
-use crate::ir::{Call, Expr, FloatImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var};
+use crate::ir::{
+    Call, CallObj, Expr, FloatImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var,
+};
 use crate::target::Target;
 use crate::te::CommReducer;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, PrimFunc, PrimVar, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, DeclBuffer, PrimFunc,
+    PrimVar, Stmt,
 };
 
 /// Promote BF16 computations to float32 while preserving external storage.
@@ -240,8 +245,8 @@ fn plan_allocation(value: AllocBuffer, visitor: &mut VisitContext<'_, ComputePla
 }
 
 fn plan_declaration(value: DeclBuffer, visitor: &mut VisitContext<'_, ComputePlan>) -> Result<()> {
-    visit_buffer_definition(visitor, &value.buffer)?;
     visitor.visit(&value.data)?;
+    visit_buffer_definition(visitor, &value.buffer)?;
     visitor.state_mut().populate_buffer_remap(&value.buffer)
 }
 
@@ -292,23 +297,13 @@ fn plan_default(
     visit_stmt_expr_default(visitor, value)
 }
 
-fn visit_buffer_definition(
-    visitor: &mut VisitContext<'_, ComputePlan>,
-    buffer: &BufferVar,
-) -> Result<()> {
-    let ty = buffer.type_annotation();
-    visitor.visit(&ty.shape)?;
-    visitor.visit(&ty.strides)?;
-    visitor.visit(&ty.elem_offset)?;
-    visitor.visit(&ty.allocated_addr)?;
-    Ok(())
-}
-
 struct ComputeLegalizer {
     unsupported: UnsupportedFloat,
     promote_type: PrimType,
     buffer_remaps: HashMap<ObjectIdentity, BufferVar>,
     variable_remaps: HashMap<ObjectIdentity, Var>,
+    // StmtExprMutator's definition rewrites are separate from the dtype plan.
+    definition_remaps: BufferRemaps,
     conversion: DTypeConverter,
     masked_load_operator: Expr,
     masked_store_operator: Expr,
@@ -327,6 +322,7 @@ impl ComputeLegalizer {
             promote_type,
             buffer_remaps,
             variable_remaps,
+            definition_remaps: BufferRemaps::default(),
             conversion: DTypeConverter,
             masked_load_operator: get_operator("tirx.masked_load")?,
             masked_store_operator: get_operator("tirx.masked_store")?,
@@ -350,7 +346,7 @@ impl ComputeLegalizer {
         if !self.unsupported.matches(&ty) {
             return Ok(value);
         }
-        if let Ok(cast) = Expr::from(value.clone()).try_cast::<Cast>() {
+        if let Some(cast) = value.as_node::<CastObj>() {
             if cast.value.dtype() == self.promote_type_for(&ty)?.dtype {
                 return Ok(cast.value.clone());
             }
@@ -361,6 +357,13 @@ impl ComputeLegalizer {
     fn cast_from_promoted(&self, value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
         if value.dtype().code != DLDataTypeCode::kDLFloat as u8 {
             return Ok(value);
+        }
+        if value.dtype() != self.promote_type_for(&value.type_annotation())?.dtype {
+            return Err(tvm_ffi::Error::new(
+                tvm_ffi::TYPE_ERROR,
+                "stored value does not have the configured promoted dtype",
+                "",
+            ));
         }
         self.conversion.convert(value, target)
     }
@@ -480,13 +483,7 @@ impl ComputeLegalizer {
         if element.same_as(&value.value) {
             return Ok(value.into());
         }
-        tvm_ffi::cached_global_func!("ir.prim.Broadcast")
-            .call_tuple((
-                element,
-                value.lanes.clone(),
-                Option::<crate::ir::Span>::None,
-            ))?
-            .try_into()
+        Ok(Broadcast::new(element, value.lanes.clone())?.into())
     }
 
     fn mutate_shuffle(&mut self, value: Shuffle, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -499,13 +496,7 @@ impl ComputeLegalizer {
         if array_same_as(&vectors, &value.vectors) {
             return Ok(value.into());
         }
-        tvm_ffi::cached_global_func!("ir.prim.Shuffle")
-            .call_tuple((
-                vectors,
-                value.indices.clone(),
-                Option::<crate::ir::Span>::None,
-            ))?
-            .try_into()
+        Ok(Shuffle::new(vectors, value.indices.clone())?.into())
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -520,6 +511,7 @@ impl ComputeLegalizer {
         let Ok(output_type) = value.ty.clone().try_cast::<PrimType>() else {
             return mutate_expr_default(self, mutator, value.into());
         };
+        let original_dtype = output_type.dtype;
         let mut arguments = Vec::with_capacity(value.args.len());
         for argument in value.args.iter() {
             let argument: Expr = mutator.mutate(self, &argument)?.try_into()?;
@@ -537,15 +529,7 @@ impl ComputeLegalizer {
         } else {
             output_type
         };
-        if array_same_as(&arguments, &value.args)
-            && output_type.dtype
-                == value
-                    .ty
-                    .clone()
-                    .try_cast::<PrimType>()
-                    .expect("checked primitive call type")
-                    .dtype
-        {
+        if array_same_as(&arguments, &value.args) && output_type.dtype == original_dtype {
             return Ok(value.into());
         }
         Ok(Call::from_complete_fields(
@@ -665,9 +649,9 @@ impl ComputeLegalizer {
         let Ok(primitive) = PrimExpr::try_from(value.value.clone()) else {
             return mutate_stmt_default(self, mutator, value.into())?.try_cast();
         };
+        let original_dtype = primitive.dtype();
         let bound_value = self.promote(primitive)?;
-        let variable = if bound_value.dtype() != value.value.clone().try_cast::<PrimExpr>()?.dtype()
-        {
+        let variable = if bound_value.dtype() != original_dtype {
             let mapped = value
                 .var
                 .copy_with(value.var.name.clone(), value.value.ty.clone());
@@ -708,20 +692,12 @@ impl ComputeLegalizer {
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
-        let mutated: AttrStmt =
-            mutate_stmt_default(self, mutator, value.clone().into())?.try_cast()?;
-        let mut node = mutated.node.clone();
-        let mut node_changed = false;
-        if let Ok(buffer) = BufferVar::try_from(node.clone()) {
-            let mapped = self.remap_buffer(&buffer);
-            node_changed = !mapped.same_as(&buffer);
-            node = mapped.into();
-        } else if let Ok(variable) = Var::try_from(node.clone()) {
-            if let Some(mapped) = self.variable_remaps.get(&ObjectIdentity::of(&variable)) {
-                node_changed = true;
-                node = mapped.clone().into();
-            }
-        } else if let Ok(reducer) = CommReducer::try_from(node.clone()) {
+        let mutated: AttrStmt = mutate_stmt_default(self, mutator, value.into())?.try_cast()?;
+        let node = if let Some(mapped) =
+            remap_attribute_variable(&mutated.node, &self.buffer_remaps, &self.variable_remaps)
+        {
+            mapped
+        } else if let Some(reducer) = mutated.node.try_as::<CommReducer>() {
             let identities: Array<PrimExpr> = mutator
                 .mutate(self, &reducer.identity_element)?
                 .try_into()?;
@@ -739,25 +715,17 @@ impl ComputeLegalizer {
             let results: Array<PrimExpr> = mutator.mutate(self, &reducer.result)?.try_into()?;
             let lhs = remap_primitive_variables(&reducer.lhs, &self.variable_remaps)?;
             let rhs = remap_primitive_variables(&reducer.rhs, &self.variable_remaps)?;
-            node = CommReducer::from_complete_fields(
-                lhs,
-                rhs,
-                results,
-                identities,
-                reducer.span.clone(),
-            )
-            .into();
-            node_changed = true;
-        }
-        if !value.same_as(&mutated) || node_changed {
-            return Ok(mutated.copy_with(
-                node,
-                mutated.attr_key.clone(),
-                mutated.value.clone(),
-                mutated.body.clone(),
-            ));
-        }
-        Ok(mutated)
+            CommReducer::from_complete_fields(lhs, rhs, results, identities, reducer.span.clone())
+                .into()
+        } else {
+            return Ok(mutated);
+        };
+        AttrStmt::new(
+            node,
+            mutated.attr_key.as_str(),
+            mutated.value.clone(),
+            mutated.body.clone(),
+        )
     }
 
     fn mutate_declaration(
@@ -773,22 +741,52 @@ impl ComputeLegalizer {
         Ok(value.copy_with(buffer, data))
     }
 
-    fn mutate_allocation(&mut self, value: AllocBuffer) -> AllocBuffer {
-        let buffer = self.remap_buffer(&value.buffer);
+    fn mutate_allocation(
+        &mut self,
+        value: AllocBuffer,
+        mutator: &mut Mutator,
+    ) -> Result<AllocBuffer> {
+        let buffer = BufferRemaps::mutate_definition(
+            self,
+            &value.buffer,
+            |state| &mut state.definition_remaps,
+            |state, expression| mutator.mutate(state, expression)?.try_into(),
+        )?;
+        let buffer = self.remap_buffer(&buffer);
         if buffer.same_as(&value.buffer) {
-            return value;
+            return Ok(value);
         }
-        value.copy_with(buffer)
+        Ok(value.copy_with(buffer))
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         let original = BufferVar::try_from(&value.source)?;
-        let buffer = self.remap_buffer(&original);
+        let defined = self.definition_remaps.use_buffer(&original);
+        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
+        let buffer = self.remap_buffer(&defined);
         if array_same_as(&indices, &value.indices) && buffer.same_as(&original) {
             return Ok(value.into());
         }
-        TensorLoad::from_buffer(&buffer, indices.iter().map(Into::into).collect()).map(Into::into)
+        let span = if buffer.same_as(&defined) {
+            value.span.as_ref()
+        } else {
+            None
+        };
+        TensorLoad::from_buffer_with_span(
+            buffer.as_var().clone(),
+            indices.iter().map(Into::into).collect(),
+            span,
+        )
+        .map(Into::into)
+    }
+
+    fn mutate_buffer_region(
+        &mut self,
+        value: BufferRegion,
+        mutator: &mut Mutator,
+    ) -> Result<BufferRegion> {
+        let buffer = self.definition_remaps.use_buffer(&value.buffer);
+        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
@@ -1019,22 +1017,20 @@ fn storage_uint_type(ty: &PrimType) -> Result<PrimType> {
 }
 
 fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {
+    if (lanes as i16) < 0 {
+        return Err(tvm_ffi::Error::new(
+            tvm_ffi::TYPE_ERROR,
+            "compute legalization requires a fixed lane count, not a scalable vector",
+            "",
+        ));
+    }
     PrimType::from_dtype(DLDataType { lanes, ..ty.dtype })
 }
 
 fn typed_constant(ty: &PrimType, value: i64) -> Result<PrimExpr> {
     let scalar_type = with_lanes(ty, 1)?;
     let scalar: PrimExpr = crate::ir::IntImm::from_dtype(scalar_type.dtype, value)?.into();
-    if ty.dtype.lanes == 1 {
-        return Ok(scalar);
-    }
-    tvm_ffi::cached_global_func!("ir.prim.Broadcast")
-        .call_tuple((
-            scalar,
-            crate::ir::IntImm::new("int32", i64::from(ty.dtype.lanes))?,
-            Option::<crate::ir::Span>::None,
-        ))?
-        .try_into()
+    semantic_cast(ty.clone(), scalar)
 }
 
 fn semantic_cast(target: PrimType, value: PrimExpr) -> Result<PrimExpr> {
@@ -1221,7 +1217,7 @@ impl StorageLegalizer {
         if !self.unsupported.matches(&value.type_annotation()) {
             return Ok(value);
         }
-        let Ok(call) = Expr::from(value.clone()).try_cast::<Call>() else {
+        let Some(call) = value.as_node::<CallObj>() else {
             return Ok(value);
         };
         if !call.op.same_as(&self.reinterpret_operator) || call.args.len() != 1 {
@@ -1229,20 +1225,6 @@ impl StorageLegalizer {
         }
         let source: PrimExpr = call.args.get(0)?.try_into()?;
         self.reinterpret(self.storage_type(&value.type_annotation())?, source)
-    }
-
-    fn remap_attribute_node(&self, node: Any) -> (Any, bool) {
-        if let Ok(buffer) = BufferVar::try_from(node.clone()) {
-            if let Some(mapped) = self.buffer_remaps.get(&ObjectIdentity::of(buffer.as_var())) {
-                return (Any::from(mapped.clone()), true);
-            }
-        }
-        if let Ok(variable) = Var::try_from(node.clone()) {
-            if let Some(mapped) = self.variable_remaps.get(&ObjectIdentity::of(&variable)) {
-                return (Any::from(mapped.clone()), true);
-            }
-        }
-        (node, false)
     }
 }
 
@@ -1313,13 +1295,18 @@ impl StorageLegalizer {
     }
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
-        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
-        let (node, node_changed) = self.remap_attribute_node(value.node.clone());
-        if !node_changed && attr_value.same_as(&value.value) && body.same_as(&value.body) {
+        let value: AttrStmt = mutate_stmt_default(self, mutator, value.into())?.try_cast()?;
+        let Some(node) =
+            remap_attribute_variable(&value.node, &self.buffer_remaps, &self.variable_remaps)
+        else {
             return Ok(value);
-        }
-        Ok(value.copy_with(node, value.attr_key.clone(), attr_value, body))
+        };
+        AttrStmt::new(
+            node,
+            value.attr_key.as_str(),
+            value.value.clone(),
+            value.body.clone(),
+        )
     }
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -1407,12 +1394,7 @@ impl StorageLegalizer {
             .try_into()?;
         arguments.push(predicate);
         let ty: Type = if is_load {
-            let indices = arguments[1..arguments.len() - 1]
-                .iter()
-                .cloned()
-                .map(PrimExpr::try_from)
-                .collect::<Result<Vec<_>>>()?;
-            TensorLoad::from_buffer(&buffer, indices.into_iter().map(Into::into).collect())?
+            TensorLoad::from_buffer(&buffer, arguments[1..arguments.len() - 1].to_vec())?
                 .ty
                 .clone()
         } else {
@@ -1421,6 +1403,20 @@ impl StorageLegalizer {
         Ok(value
             .copy_with(ty, value.op.clone(), Array::new(arguments))
             .into())
+    }
+}
+
+fn remap_attribute_variable(
+    node: &Any,
+    buffers: &HashMap<ObjectIdentity, BufferVar>,
+    variables: &HashMap<ObjectIdentity, Var>,
+) -> Option<Any> {
+    let variable = node.try_as::<Var>()?;
+    let identity = ObjectIdentity::of(&variable);
+    if BufferVar::try_from(&variable).is_ok() {
+        buffers.get(&identity).cloned().map(Into::into)
+    } else {
+        variables.get(&identity).cloned().map(Into::into)
     }
 }
 

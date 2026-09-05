@@ -58,6 +58,8 @@ mod unroll_loop;
 mod unsupported_dtype_legalize;
 mod utils;
 mod vectorize_loop;
+mod verify_memory;
+mod verify_ssa;
 
 pub use annotate_entry_func::annotate_entry_func;
 pub use bind_target::{bind_target, bind_target_module};
@@ -97,6 +99,8 @@ pub use unsupported_dtype_legalize::{
     fp8_storage_legalize, fp8_storage_legalize_prim_func,
 };
 pub use vectorize_loop::{vectorize_loop, vectorize_loop_prim_func};
+pub use verify_memory::{verify_memory, verify_memory_prim_func};
+pub use verify_ssa::{verify_ssa, verify_ssa_prim_func};
 
 /// Opaque Rust view of TVM's `PassNode` prefix.
 #[repr(C)]

@@ -186,6 +186,13 @@ pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimEx
         .try_into()
 }
 
+/// Use TVM's operator builders for type matching and constant folding.
+pub(super) fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
+    Function::get_global(name)?
+        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
+        .try_into()
+}
+
 /// Clone and downcast an object only after a borrowed node check succeeds.
 ///
 /// A direct `value.clone().try_cast()` changes the reference count even when
@@ -225,36 +232,39 @@ impl BufferRemaps {
             .unwrap_or_else(|| variable.clone())
     }
 
-    pub(super) fn mutate_definition<F>(
-        &mut self,
+    pub(super) fn mutate_definition<D, F>(
+        dispatch: &mut D,
         buffer: &BufferVar,
+        remaps: impl Fn(&mut D) -> &mut Self,
         mut mutate: F,
     ) -> Result<BufferVar>
     where
-        F: FnMut(&PrimExpr) -> Result<PrimExpr>,
+        F: FnMut(&mut D, &PrimExpr) -> Result<PrimExpr>,
     {
         let identity = ObjectIdentity::of(buffer.as_var());
-        if let Some(mapped) = self.0.get(&identity) {
+        if let Some(mapped) = remaps(dispatch).0.get(&identity) {
             return Ok(mapped.clone());
         }
+        // Child expressions may use earlier buffer definitions. Keep their
+        // remaps in the driver and borrow the table only before/after recursion.
         let old_type = buffer.type_annotation();
         let shape = old_type
             .shape
             .iter()
-            .map(|expression| mutate(&expression))
+            .map(|expression| mutate(dispatch, &expression))
             .collect::<Result<Vec<_>>>()?;
         let strides = old_type
             .strides
             .iter()
-            .map(|expression| mutate(&expression))
+            .map(|expression| mutate(dispatch, &expression))
             .collect::<Result<Vec<_>>>()?;
-        let elem_offset = mutate(&old_type.elem_offset)?;
+        let elem_offset = mutate(dispatch, &old_type.elem_offset)?;
         let allocated_addr = old_type
             .allocated_addr
             .iter()
-            .map(|expression| mutate(&expression))
+            .map(|expression| mutate(dispatch, &expression))
             .collect::<Result<Vec<_>>>()?;
-        let layout = mutate_layout(&old_type.layout, &mut mutate)?;
+        let layout = mutate_layout(&old_type.layout, |expression| mutate(dispatch, expression))?;
         let shape = Array::new(shape);
         let strides = Array::new(strides);
         let allocated_addr = Array::new(allocated_addr);
@@ -279,7 +289,7 @@ impl BufferRemaps {
             allocated_addr,
         );
         let mapped = BufferVar::try_from(buffer.copy_with(buffer.name.clone(), new_type.into()))?;
-        self.0.insert(identity, mapped.clone());
+        remaps(dispatch).0.insert(identity, mapped.clone());
         Ok(mapped)
     }
 }
@@ -629,7 +639,7 @@ fn visit_tile_value<State>(
     Ok(None)
 }
 
-fn visit_buffer_definition<State>(
+pub(super) fn visit_buffer_definition<State>(
     visitor: &mut VisitContext<'_, State>,
     buffer: &crate::tirx::BufferVar,
 ) -> Result<Option<VisitInterrupt>> {
@@ -835,14 +845,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if base.same_as(&ramp.base) && stride.same_as(&ramp.stride) && lanes.same_as(&ramp.lanes) {
             return Ok(value);
         }
-        return Ok(Ramp::from_complete_fields(
-            ramp.span.clone(),
-            ramp.ty.clone().try_cast()?,
-            base,
-            stride,
-            lanes,
-        )
-        .into());
+        return Ok(Ramp::new(base, stride, lanes)?.into());
     }
     if let Some(broadcast) = clone_downcast::<Broadcast>(&value)? {
         let broadcast_value: PrimExpr = mutator.mutate(dispatch, &broadcast.value)?.try_into()?;
@@ -850,13 +853,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if broadcast_value.same_as(&broadcast.value) && lanes.same_as(&broadcast.lanes) {
             return Ok(value);
         }
-        return Ok(Broadcast::from_complete_fields(
-            broadcast.span.clone(),
-            broadcast.ty.clone().try_cast()?,
-            broadcast_value,
-            lanes,
-        )
-        .into());
+        return Ok(Broadcast::new(broadcast_value, lanes)?.into());
     }
     if let Some(shuffle) = clone_downcast::<Shuffle>(&value)? {
         let vectors: Array<PrimExpr> = mutator.mutate(dispatch, &shuffle.vectors)?.try_into()?;
@@ -864,13 +861,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if array_same_as(&vectors, &shuffle.vectors) && array_same_as(&indices, &shuffle.indices) {
             return Ok(value);
         }
-        return Ok(Shuffle::from_complete_fields(
-            shuffle.span.clone(),
-            shuffle.ty.clone().try_cast()?,
-            vectors,
-            indices,
-        )
-        .into());
+        return Ok(Shuffle::new(vectors, indices)?.into());
     }
     mutator.default_mutate(dispatch).and_then(Expr::try_from)
 }

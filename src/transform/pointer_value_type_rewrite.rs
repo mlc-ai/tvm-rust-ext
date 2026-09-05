@@ -26,12 +26,12 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, get_operator, int_value, is_opaque_expr, mutate_expr_default,
+    array_same_as, binary_op, get_operator, int_value, is_opaque_expr, mutate_expr_default,
     mutate_stmt_default, operator_identity, value_error, visit_stmt_expr_default,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::{Let, Ramp};
+use crate::ir::prim::{Let, Ramp, Shuffle};
 use crate::ir::{
     Call, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
 };
@@ -731,16 +731,17 @@ impl VectorTypeRewriter {
                             ));
                         }
                         let new_lanes = lanes / factor;
-                        new_index = make_ramp(
+                        new_index = Ramp::with_span(
                             binary_op(
                                 "tirx._OpMul",
                                 new_index,
                                 IntImm::from_dtype(ramp.base.dtype(), i64::from(new_lanes))?.into(),
                             )?,
                             ramp.stride.clone(),
-                            IntImm::new("int32", i64::from(new_lanes))?.into(),
+                            IntImm::new("int32", i64::from(new_lanes))?,
                             ramp.span.as_ref(),
-                        )?;
+                        )?
+                        .into();
                     }
                     *rewritten.last_mut().unwrap() = new_index;
                 }
@@ -1021,31 +1022,6 @@ fn divide_by_factor(value: PrimExpr, factor: u16) -> Result<PrimExpr> {
     binary_op("tirx._OpDiv", value, divisor.into())
 }
 
-fn make_ramp(
-    base: PrimExpr,
-    stride: PrimExpr,
-    lanes: PrimExpr,
-    span: Option<&crate::ir::Span>,
-) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Ramp")
-        .call_tuple((base, stride, lanes, span.cloned()))?
-        .try_into()
-}
-
-fn extract_element(
-    vector: PrimExpr,
-    index: i64,
-    span: Option<&crate::ir::Span>,
-) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
-        .call_tuple((
-            Array::new(vec![vector]),
-            Array::<PrimExpr>::new(vec![IntImm::new("int32", index)?.into()]),
-            span.cloned(),
-        ))?
-        .try_into()
-}
-
 fn type_annotation(dtype: &PrimType) -> Result<Expr> {
     Ok(Call::new(
         dtype.clone(),
@@ -1067,12 +1043,6 @@ fn get_buffer_data_var(value: &Expr, buffer_data: &ObjectIdentity) -> Result<Opt
     Ok(None)
 }
 
-fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
-}
-
 #[tvm_ffi::dispatch(mutate)]
 impl VectorTypeRewriter {
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -1091,7 +1061,7 @@ impl VectorTypeRewriter {
         )?
         .into();
         if let Some(index) = shuffle_index {
-            return extract_element(load, index, value.span.as_ref());
+            return Shuffle::extract_element(load, index as i32, value.span.as_ref());
         }
         Ok(load)
     }

@@ -18,7 +18,172 @@
  */
 
 use super::*;
+use tvm::ir::prim::{Broadcast, Ramp, Shuffle};
 use tvm::tvm_ffi::AnyView;
+
+#[test]
+fn vector_constructors_match_cpp() -> Result<()> {
+    load_tvm_compiler();
+    let span = Some(Span::new(&SourceName::get("vectors")?, 1, 1, 1, 8)?);
+    let base = prim_int_expression(0);
+    let strides = [
+        typed_int_expression("int64", 1),
+        Expr::from(Var::new("stride", "int64")?),
+    ];
+    let vscale = |dtype| {
+        Call::new(
+            tvm::ir::PrimType::new(dtype).unwrap(),
+            tvm::ir::Op::get("ir.prim.vscale").unwrap(),
+            Vec::new(),
+        )
+    };
+    let lanes: [Expr; 3] = [
+        typed_int_expression("int64", 4),
+        Mul::new(IntImm::new("int64", 4)?, vscale("int64"))?.into(),
+        Mul::new(vscale("int32"), IntImm::new("int32", 4)?)?.into(),
+    ];
+    for lanes in lanes {
+        for stride in &strides {
+            let rust = Ramp::with_span(&base, stride, &lanes, span.as_ref())?;
+            let native: PrimExpr = Function::get_global("ir.prim.Ramp")?
+                .call_tuple((&base, stride, &lanes, &span))?
+                .try_into()?;
+            assert_structural_equal(&rust, &native);
+            assert!(rust.span.as_ref().unwrap().same_as(span.as_ref().unwrap()));
+        }
+        let rust = Broadcast::with_span(&base, &lanes, span.as_ref())?;
+        let native: PrimExpr = Function::get_global("ir.prim.Broadcast")?
+            .call_tuple((&base, &lanes, &span))?
+            .try_into()?;
+        assert_structural_equal(&rust, &native);
+        assert!(rust.span.as_ref().unwrap().same_as(span.as_ref().unwrap()));
+    }
+
+    for (dtype, stride) in [
+        ("int32", Expr::from(FloatImm::new("float64", 1.75)?)),
+        ("float32", IntImm::new("int64", 1)?.into()),
+        ("float16", FloatImm::new("float64", 0.5)?.into()),
+        (
+            "uint64",
+            FloatImm::new("float64", 9223372036854775808.0)?.into(),
+        ),
+    ] {
+        let base = Var::new("base", dtype)?;
+        let lanes = prim_int_expression(4);
+        let rust = Ramp::new(&base, &stride, &lanes)?;
+        let native: PrimExpr = Function::get_global("ir.prim.Ramp")?
+            .call_tuple((&base, &stride, &lanes, Option::<Span>::None))?
+            .try_into()?;
+        assert_structural_equal(&rust, &native);
+    }
+    for (dtype, stride) in [
+        ("uint32", Expr::from(IntImm::new("int64", -1)?)),
+        ("int8", IntImm::new("int64", 256)?.into()),
+        ("float16", FloatImm::new("float64", 70000.0)?.into()),
+    ] {
+        let base = Var::new("base", dtype)?;
+        let lanes = prim_int_expression(4);
+        assert!(Ramp::new(&base, &stride, &lanes).is_err());
+        assert!(Function::get_global("ir.prim.Ramp")?
+            .call_tuple((&base, &stride, &lanes, Option::<Span>::None))
+            .is_err());
+    }
+
+    let vector: PrimExpr = Ramp::new(&base, prim_int_expression(1), prim_int_expression(4))?.into();
+    let vectors = Array::new(vec![vector.clone(), base.clone()]);
+    let indices = Array::new(vec![prim_int_expression(4), prim_int_expression(1)]);
+    let rust = Shuffle::with_span(vectors.clone(), indices.clone(), span.as_ref())?;
+    let native: PrimExpr = Function::get_global("ir.prim.Shuffle")?
+        .call_tuple((&vectors, &indices, &span))?
+        .try_into()?;
+    assert_structural_equal(&rust, &native);
+    assert!(rust.span.as_ref().unwrap().same_as(span.as_ref().unwrap()));
+    assert!(Shuffle::concat(Array::new(vec![vector.clone()]), None)?.same_as(&vector));
+
+    for lanes in [
+        prim_int_expression(1),
+        prim_int_expression(0),
+        Var::new("lanes", "int32")?.try_cast::<PrimExpr>()?,
+    ] {
+        assert!(Broadcast::new(&base, &lanes).is_err());
+        assert!(Function::get_global("ir.prim.Broadcast")?
+            .call_tuple((&base, &lanes, &span))
+            .is_err());
+    }
+    let scalable = Broadcast::new(&base, Mul::new(vscale("int32"), IntImm::new("int32", 4)?)?)?;
+    for vectors in [
+        Array::new(Vec::<PrimExpr>::new()),
+        Array::new(vec![vector, FloatImm::new("float32", 1.0)?.into()]),
+        Array::new(vec![PrimExpr::from(scalable)]),
+    ] {
+        assert!(Shuffle::new(vectors.clone(), indices.clone()).is_err());
+        assert!(Function::get_global("ir.prim.Shuffle")?
+            .call_tuple((&vectors, &indices, &span))
+            .is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn float_literal_validation_matches_cpp() -> Result<()> {
+    use tvm::tvm_ffi::{DLDataType, DLDataTypeExt};
+
+    load_tvm_compiler();
+    let constructor = Function::get_global("ir.FloatImm")?;
+    for (name, bound) in [
+        ("float32", f64::from(f32::MAX)),
+        ("float16", 65504.0),
+        ("bfloat16", 3.895_313_892_515_355e38),
+        ("float8_e3m4", 31.0),
+        ("float8_e4m3", 448.0),
+        ("float8_e4m3b11fnuz", 30.0),
+        ("float8_e4m3fn", 448.0),
+        ("float8_e4m3fnuz", 448.0),
+        ("float8_e5m2", 57344.0),
+        ("float8_e5m2fnuz", 57344.0),
+        ("float8_e8m0fnu", 3.402_823_669_209_385e38),
+        ("float6_e2m3fn", 7.5),
+        ("float6_e3m2fn", 28.0),
+        ("float4_e2m1fn", 6.0),
+    ] {
+        let dtype = DLDataType::try_from_str(name)?;
+        for value in [
+            0.0,
+            -1.0,
+            bound,
+            -bound,
+            bound * 2.0,
+            -bound * 2.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let rust = FloatImm::from_dtype(dtype, value);
+            let native = constructor.call_tuple((dtype, value, Option::<Span>::None));
+            assert_eq!(rust.is_ok(), native.is_ok(), "{name}: {value}");
+            if let (Ok(rust), Ok(native)) = (rust, native) {
+                let native: FloatImm = native.try_into()?;
+                assert_eq!(rust.value.to_bits(), native.value.to_bits());
+            }
+        }
+    }
+    for dtype in [
+        DLDataType {
+            bits: 32,
+            ..DLDataType::try_from_str("bfloat16")?
+        },
+        DLDataType {
+            bits: 8,
+            ..DLDataType::try_from_str("float4_e2m1fn")?
+        },
+    ] {
+        assert!(FloatImm::from_dtype(dtype, 1.0).is_err());
+        assert!(constructor
+            .call_tuple((dtype, 1.0, Option::<Span>::None))
+            .is_err());
+    }
+    Ok(())
+}
 
 #[test]
 fn scalar_and_statement_constructors_match_cpp() {

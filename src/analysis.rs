@@ -20,6 +20,10 @@
 use std::collections::HashMap;
 use std::{marker::PhantomData, rc::Rc};
 
+pub use crate::transform::{
+    verify_memory_prim_func as verify_memory, verify_ssa_prim_func as verify_ssa,
+};
+
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
     structural_visit, structural_walk, AnyView, DefRegionKind, Error, Function, Map, ObjectArc,

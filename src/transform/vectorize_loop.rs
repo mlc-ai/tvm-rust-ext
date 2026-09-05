@@ -135,7 +135,7 @@ impl Vectorizer {
         let ty = primitive_type(&variable.clone().into())?;
         let zero = IntImm::from_dtype(ty.dtype, 0)?;
         let one = IntImm::from_dtype(ty.dtype, 1)?;
-        let ramp = make_ramp(zero.into(), one.into(), lanes.clone(), None)?;
+        let ramp = Ramp::new(zero, one, lanes.clone())?.into();
         Ok(Self {
             analyzer: Analyzer::new()?,
             variable,
@@ -223,13 +223,13 @@ impl Vectorizer {
                     let base = semantic_binary(operation, lhs, ramp.base.clone())?;
                     let zero = IntImm::from_dtype(ramp.stride.dtype(), 0)?;
                     let stride = semantic_binary(operation, zero.into(), ramp.stride.clone())?;
-                    return make_ramp(base, stride, ramp.lanes.clone(), None);
+                    return Ok(Ramp::new(base, stride, ramp.lanes.clone())?.into());
                 }
             }
             if is_scalar(&rhs) {
                 if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
                     let base = semantic_binary(operation, ramp.base.clone(), rhs)?;
-                    return make_ramp(base, ramp.stride.clone(), ramp.lanes.clone(), None);
+                    return Ok(Ramp::new(base, ramp.stride.clone(), ramp.lanes.clone())?.into());
                 }
             }
         }
@@ -329,22 +329,22 @@ impl Vectorizer {
         }
         if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
             if is_scalar(&rhs) && self.is_positive(&rhs)? {
-                return make_ramp(
+                return Ok(Ramp::new(
                     semantic_binary("tirx._OpMul", ramp.base.clone(), rhs.clone())?,
                     semantic_binary("tirx._OpMul", ramp.stride.clone(), rhs)?,
                     ramp.lanes.clone(),
-                    None,
-                );
+                )?
+                .into());
             }
         }
         if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
             if is_scalar(&lhs) && self.is_positive(&lhs)? {
-                return make_ramp(
+                return Ok(Ramp::new(
                     semantic_binary("tirx._OpMul", ramp.base.clone(), lhs.clone())?,
                     semantic_binary("tirx._OpMul", ramp.stride.clone(), lhs)?,
                     ramp.lanes.clone(),
-                    None,
-                );
+                )?
+                .into());
             }
         }
         let lanes = lane_count(&lhs).max(lane_count(&rhs));
@@ -446,12 +446,12 @@ impl Vectorizer {
                     .analyzer
                     .can_prove_equal(&base_ramp.stride, &expected)?
                 {
-                    return make_ramp(
+                    return Ok(Ramp::new(
                         base_ramp.base.clone(),
                         stride,
-                        IntImm::from_dtype(value.lanes.dtype(), new_lanes * base_lanes)?.into(),
-                        None,
-                    );
+                        IntImm::from_dtype(value.lanes.dtype(), new_lanes * base_lanes)?,
+                    )?
+                    .into());
                 }
             }
         }
@@ -460,14 +460,16 @@ impl Vectorizer {
         let stride = broadcast_to(stride, lanes, false)?;
         let mut ramps = Vec::with_capacity(usize::from(lanes));
         for lane in 0..lanes {
-            ramps.push(make_ramp(
-                extract_element(base.clone(), i64::from(lane))?,
-                extract_element(stride.clone(), i64::from(lane))?,
-                value.lanes.clone(),
-                None,
-            )?);
+            ramps.push(
+                Ramp::new(
+                    Shuffle::extract_element(base.clone(), i32::from(lane), None)?,
+                    Shuffle::extract_element(stride.clone(), i32::from(lane), None)?,
+                    value.lanes.clone(),
+                )?
+                .into(),
+            );
         }
-        concat_vectors(ramps)
+        Shuffle::concat(Array::new(ramps), None)
     }
 
     fn mutate_broadcast(&mut self, value: Broadcast, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -481,11 +483,7 @@ impl Vectorizer {
         } else {
             // Match the native vectorizer: the original scalar value and lane
             // expression are retained when the recursive result remains scalar.
-            make_broadcast(
-                value.value.clone(),
-                value.lanes.clone(),
-                value.span.as_ref(),
-            )
+            Ok(Broadcast::new(value.value.clone(), value.lanes.clone())?.into())
         }
     }
 
@@ -686,12 +684,12 @@ impl Vectorizer {
         let previous_lanes = self.lanes.clone();
         let ty = primitive_type(&self.variable.clone().into())?;
         self.lanes = IntImm::from_dtype(previous_lanes.dtype(), new_length)?.into();
-        self.ramp = make_ramp(
-            IntImm::from_dtype(ty.dtype, 0)?.into(),
-            IntImm::from_dtype(ty.dtype, 2)?.into(),
+        self.ramp = Ramp::new(
+            IntImm::from_dtype(ty.dtype, 0)?,
+            IntImm::from_dtype(ty.dtype, 2)?,
             self.lanes.clone(),
-            None,
-        )?;
+        )?
+        .into();
         let result = self
             .mutate_array(mutator, &value.vectors)
             .and_then(|(vectors, _)| vectors.get(0));
@@ -917,10 +915,8 @@ fn broadcast_to(value: PrimExpr, lanes: u16, scalable: bool) -> Result<PrimExpr>
         }
         let old_lanes = lane_count(&value);
         if lanes.is_multiple_of(old_lanes) {
-            return make_broadcast(
-                broadcast.value.clone(),
-                lane_expression(lanes, scalable)?,
-                None,
+            return Ok(
+                Broadcast::new(broadcast.value.clone(), lane_expression(lanes, scalable)?)?.into(),
             );
         }
     }
@@ -929,7 +925,7 @@ fn broadcast_to(value: PrimExpr, lanes: u16, scalable: bool) -> Result<PrimExpr>
             "only scalar values may be broadcast to new lanes",
         ));
     }
-    make_broadcast(value, lane_expression(lanes, scalable)?, None)
+    Ok(Broadcast::new(value, lane_expression(lanes, scalable)?)?.into())
 }
 
 fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
@@ -947,55 +943,6 @@ fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
         PrimExpr::try_from(vscale)?,
         IntImm::new("int32", i64::from(lanes))?.into(),
     )
-}
-
-fn make_ramp(
-    base: PrimExpr,
-    stride: PrimExpr,
-    lanes: PrimExpr,
-    span: Option<&crate::ir::Span>,
-) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Ramp")
-        .call_tuple((base, stride, lanes, span.cloned()))?
-        .try_into()
-}
-
-fn make_broadcast(
-    value: PrimExpr,
-    lanes: PrimExpr,
-    span: Option<&crate::ir::Span>,
-) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Broadcast")
-        .call_tuple((value, lanes, span.cloned()))?
-        .try_into()
-}
-
-fn extract_element(vector: PrimExpr, index: i64) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
-        .call_tuple((
-            Array::new(vec![vector]),
-            Array::new(vec![PrimExpr::from(IntImm::new("int32", index)?)]),
-            Option::<crate::ir::Span>::None,
-        ))?
-        .try_into()
-}
-
-fn concat_vectors(vectors: Vec<PrimExpr>) -> Result<PrimExpr> {
-    let mut indices = Vec::new();
-    let mut offset = 0_i64;
-    for vector in &vectors {
-        for lane in 0..lane_count(vector) {
-            indices.push(IntImm::new("int32", offset + i64::from(lane))?.into());
-        }
-        offset += i64::from(lane_count(vector));
-    }
-    tvm_ffi::cached_global_func!("ir.prim.Shuffle")
-        .call_tuple((
-            Array::new(vectors),
-            Array::<PrimExpr>::new(indices),
-            Option::<crate::ir::Span>::None,
-        ))?
-        .try_into()
 }
 
 fn semantic_binary(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {

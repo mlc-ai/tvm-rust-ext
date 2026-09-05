@@ -233,108 +233,42 @@ fn rust_lower_tvm_builtin_matches_cpp_for_workspace_allocation() {
 }
 
 #[test]
-fn rust_pointer_value_type_rewrite_matches_cpp_for_vector_buffer_load() {
+fn rust_pointer_value_type_rewrite_matches_cpp_for_buffer_accesses() -> Result<()> {
     load_tvm_compiler();
-    let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
-        .unwrap()
-        .new_var("data");
-    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
-        .unwrap()
-        .call_tuple((
+    let cpp = cpp_pass("tirx.transform.PointerValueTypeRewrite");
+    for (scope, scalar_read, allocated) in [
+        ("global", false, false),
+        ("global", true, false),
+        ("local", false, true),
+    ] {
+        let buffer = BufferType::new(scope, "float32", vec![int_expression(16)])?.new_var("data");
+        let ramp = tvm::ir::prim::Ramp::new(
             prim_int_expression(0),
             prim_int_expression(1),
             prim_int_expression(4),
-            Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
-    let function =
-        PrimFunc::new(vec![buffer.as_var().clone()], Evaluate::new(load).unwrap()).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
-            .unwrap();
-    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_pointer_value_type_rewrite_matches_cpp_for_scalar_shuffle_read() {
-    load_tvm_compiler();
-    let buffer = BufferType::new("global", "float32", vec![int_expression(16)])
-        .unwrap()
-        .new_var("data");
-    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
-        .unwrap()
-        .call_tuple((
-            prim_int_expression(0),
-            prim_int_expression(1),
-            prim_int_expression(4),
-            Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let vector_load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
-    let scalar_load = TensorLoad::from_buffer(buffer.clone(), vec![int_expression(1)]).unwrap();
-    let body = Stmt::sequence(vec![
-        Evaluate::new(vector_load).unwrap().into(),
-        Evaluate::new(scalar_load).unwrap().into(),
-    ])
-    .unwrap();
-    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
-            .unwrap();
-    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_pointer_value_type_rewrite_matches_cpp_for_allocated_buffer() {
-    load_tvm_compiler();
-    let buffer = BufferType::new("local", "float32", vec![int_expression(16)])
-        .unwrap()
-        .new_var("temporary");
-    let ramp: PrimExpr = Function::get_global("ir.prim.Ramp")
-        .unwrap()
-        .call_tuple((
-            prim_int_expression(0),
-            prim_int_expression(1),
-            prim_int_expression(4),
-            Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let load = TensorLoad::from_buffer(buffer.clone(), vec![ramp.into()]).unwrap();
-    let body = Stmt::sequence(vec![
-        AllocBuffer::new(buffer).unwrap().into(),
-        Evaluate::new(load).unwrap().into(),
-    ])
-    .unwrap();
-    let function = PrimFunc::from_body(body).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function).unwrap())
-            .unwrap();
-    let cpp_result = cpp_pass("tirx.transform.PointerValueTypeRewrite")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
+        )?;
+        let load = TensorLoad::from_buffer(&buffer, vec![ramp.into()])?;
+        let mut statements = Vec::new();
+        if allocated {
+            statements.push(AllocBuffer::new(&buffer)?.into());
+        }
+        statements.push(Evaluate::new(load)?.into());
+        if scalar_read {
+            let scalar = TensorLoad::from_buffer(&buffer, vec![int_expression(1)])?;
+            statements.push(Evaluate::new(scalar)?.into());
+        }
+        let params = if allocated {
+            Vec::new()
+        } else {
+            vec![buffer.as_var().clone()]
+        };
+        let function = PrimFunc::new(params, Stmt::sequence(statements)?)?;
+        let module = IRModule::from_expr(&function)?;
+        let rust_result =
+            IRModule::from_expr(transform::pointer_value_type_rewrite_prim_func(function)?)?;
+        assert_structural_equal(&rust_result, &cpp.run(module)?);
+    }
+    Ok(())
 }
 
 #[test]
@@ -406,6 +340,469 @@ fn rust_vectorize_loop_matches_cpp_when_disabled() {
     let cpp_result = native_pass.run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_across_loop_and_thread_scopes() -> Result<()> {
+    load_tvm_compiler();
+    for case in ["direct_use", "loop_carried", "parallel", "thread_extent"] {
+        let a = BufferType::new("global", "int32", vec![int_expression(16)])?.new_var("a");
+        let b = BufferType::new("global", "int32", vec![int_expression(16)])?.new_var("b");
+        let output = BufferType::new("global", "int32", vec![int_expression(16)])?.new_var("out");
+        let index = Var::new("i", "int32")?;
+        let body: Stmt = match case {
+            "parallel" => For::with_metadata(
+                index.clone(),
+                int_expression(0),
+                int_expression(16),
+                ForKind::kParallel,
+                Stmt::sequence(vec![
+                    AllocBuffer::new(&a)?.into(),
+                    BufferStore::new(&a, int_expression(1), vec![index.into()])?.into(),
+                ])?,
+                None,
+                Map::new(),
+                None,
+                None,
+            )?
+            .into(),
+            "loop_carried" => Stmt::sequence(vec![
+                AllocBuffer::new(&a)?.into(),
+                AllocBuffer::new(&b)?.into(),
+                BufferStore::new(&a, int_expression(1), vec![int_expression(0)])?.into(),
+                For::new(
+                    index.clone(),
+                    int_expression(0),
+                    int_expression(16),
+                    Stmt::sequence(vec![
+                        BufferStore::new(
+                            &output,
+                            TensorLoad::from_buffer(&a, vec![int_expression(0)])?,
+                            vec![index.into()],
+                        )?
+                        .into(),
+                        BufferStore::new(&b, int_expression(7), vec![int_expression(0)])?.into(),
+                    ])?,
+                )?
+                .into(),
+            ])?,
+            "direct_use" => Stmt::sequence(vec![
+                AllocBuffer::new(&a)?.into(),
+                Evaluate::new(Call::new(
+                    PrimType::new("void")?,
+                    GlobalVar::new("consume"),
+                    vec![tvm::ir::Tuple::new(vec![a.into()]).into()],
+                ))?
+                .into(),
+            ])?,
+            "thread_extent" => AttrStmt::new(
+                IterVar::with_metadata(
+                    None,
+                    index.clone(),
+                    IterVarType::kThreadIndex,
+                    "threadIdx.x",
+                    None,
+                )?,
+                "thread_extent",
+                int_expression(16),
+                Stmt::sequence(vec![
+                    AllocBuffer::new(&a)?.into(),
+                    BufferStore::new(&a, int_expression(1), vec![index.into()])?.into(),
+                ])?,
+            )?
+            .into(),
+            _ => unreachable!(),
+        };
+        let module = IRModule::from_expr(PrimFunc::new(vec![output.as_var().clone()], body)?)?;
+        let native = cpp_pass("tirx.transform.StorageRewrite").run(module.clone())?;
+        let rust = transform::storage_rewrite()?.run(module)?;
+        assert_structural_equal(&rust, &native);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_storage_rewrite_rejects_cpp_unsupported_inputs() -> Result<()> {
+    load_tvm_compiler();
+    let buffer = BufferType::new(
+        "global",
+        "int32",
+        vec![int_expression(4), int_expression(4)],
+    )?
+    .new_var("matrix");
+    let multidimensional = Stmt::sequence(vec![
+        AllocBuffer::new(&buffer)?.into(),
+        BufferStore::new(
+            &buffer,
+            int_expression(1),
+            vec![int_expression(0), int_expression(0)],
+        )?
+        .into(),
+    ])?;
+    let vectorized: Stmt = For::with_metadata(
+        Var::new("i", "int32")?,
+        int_expression(0),
+        int_expression(4),
+        ForKind::kVectorized,
+        Evaluate::from_i64(0)?.into(),
+        None,
+        Map::new(),
+        None,
+        None,
+    )?
+    .into();
+    let source = BufferType::new("global", "int32", vec![int_expression(4)])?.new_var("source");
+    let alias = source.type_annotation().new_var("alias");
+    let unregistered_alias: Stmt = DeclBuffer::new(alias, source.data()?)?.into();
+    for body in [multidimensional, vectorized, unregistered_alias] {
+        let module = IRModule::from_expr(PrimFunc::from_body(body)?)?;
+        assert!(cpp_pass("tirx.transform.StorageRewrite")
+            .run(module.clone())
+            .is_err());
+        assert!(transform::storage_rewrite()?.run(module).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_for_reuse_policy() -> Result<()> {
+    use tvm::tvm_ffi::String;
+
+    load_tvm_compiler();
+    let cases = [
+        ("global", 16, "int32", None, false),
+        ("global", 1, "int32", None, false),
+        ("local", 16, "int32", None, false),
+        ("warp", 16, "int32", None, false),
+        ("wmma.matrix_a", 16, "int32", None, false),
+        ("shared.dyn", 16, "int32", None, false),
+        ("shared", 16, "int32", None, true),
+        ("shared", 16, "float32", Some("vulkan"), false),
+        ("shared", 16, "float32", Some("webgpu"), false),
+    ];
+    for (scope, size, dtype, target, merge_static_smem) in cases {
+        let a = BufferType::new(scope, "int32", vec![int_expression(size)])?.new_var("a");
+        let b = BufferType::new(scope, dtype, vec![int_expression(size)])?.new_var("b");
+        let stored: Expr = if dtype == "float32" {
+            FloatImm::new(dtype, 2.0)?.into()
+        } else {
+            int_expression(2)
+        };
+        let body = Stmt::sequence(vec![
+            AllocBuffer::new(&a)?.into(),
+            BufferStore::new(&a, int_expression(1), vec![int_expression(0)])?.into(),
+            AllocBuffer::new(&b)?.into(),
+            BufferStore::new(&b, stored, vec![int_expression(0)])?.into(),
+        ])?;
+        let attrs = target.map(tvm::target::Target::new).transpose()?;
+        let attrs = DictAttrs::from_dictionary(Map::from_iter(
+            attrs
+                .into_iter()
+                .map(|target| (String::from("target"), Any::from(target))),
+        ));
+        let module = IRModule::from_expr(PrimFunc::with_metadata(
+            Vec::new(),
+            body,
+            Type::missing(),
+            attrs,
+            None,
+        )?)?;
+        let context: transform::PassContext = Function::get_global("transform.PassContext")?
+            .call_tuple((
+                2_i64,
+                Array::<String>::new(Vec::new()),
+                Array::<String>::new(Vec::new()),
+                Array::<Any>::new(Vec::new()),
+                Some(Map::from_iter([(
+                    String::from("tirx.merge_static_smem"),
+                    Any::from(merge_static_smem),
+                )])),
+            ))?
+            .try_into()?;
+        Function::get_global("transform.EnterPassContext")?.call_tuple((&context,))?;
+        let native = cpp_pass("tirx.transform.StorageRewrite").run(module.clone());
+        let rust = transform::storage_rewrite().and_then(|pass| pass.run(module));
+        Function::get_global("transform.ExitPassContext")?.call_tuple((&context,))?;
+        assert_structural_equal(&rust?, &native?);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_for_inplace_and_symbolic_reuse() -> Result<()> {
+    load_tvm_compiler();
+    for case in [
+        "inplace",
+        "inplace_metadata",
+        "shifted",
+        "reduction",
+        "indirect_read",
+        "indirect_write",
+        "opaque",
+        "loop",
+        "extern",
+        "volatile_body",
+        "symbolic",
+        "symbolic_inplace",
+        "symbolic_inplace_different_sizes",
+    ] {
+        let n = Var::new("n", "int32")?;
+        let m = Var::new("m", "int32")?;
+        let symbolic = case.starts_with("symbolic");
+        let a_size = if symbolic {
+            n.clone().into()
+        } else {
+            int_expression(16)
+        };
+        let b_size = if matches!(case, "symbolic" | "symbolic_inplace_different_sizes") {
+            m.clone().into()
+        } else {
+            a_size.clone()
+        };
+        let a = BufferType::new("global", "int32", vec![a_size])?.new_var("a");
+        let b = BufferType::new("global", "int32", vec![b_size])?.new_var("b");
+        let indices =
+            BufferType::new("global", "int32", vec![int_expression(16)])?.new_var("indices");
+        let read: Expr = TensorLoad::from_buffer(&a, vec![int_expression(0)])?.into();
+        let indirect: Expr = TensorLoad::from_buffer(&indices, vec![int_expression(0)])?.into();
+        let load = match case {
+            "symbolic" => int_expression(7),
+            "reduction" => {
+                Add::new(read, TensorLoad::from_buffer(&b, vec![int_expression(0)])?)?.into()
+            }
+            "shifted" => TensorLoad::from_buffer(&a, vec![int_expression(1)])?.into(),
+            "indirect_read" => TensorLoad::from_buffer(&a, vec![indirect.clone()])?.into(),
+            "opaque" => Call::new(
+                PrimType::new("int32")?,
+                GlobalVar::new("consume"),
+                vec![a.clone().into()],
+            )
+            .into(),
+            _ => read,
+        };
+        let index = if case == "indirect_write" {
+            indirect
+        } else {
+            int_expression(0)
+        };
+        let copy: Stmt = BufferStore::new(&b, load, vec![index])?.into();
+        let copy = match case {
+            "loop" => For::new(
+                Var::new("i", "int32")?,
+                int_expression(0),
+                int_expression(1),
+                copy,
+            )?
+            .into(),
+            "extern" => {
+                AttrStmt::new(a.as_var().clone(), "extern_scope", int_expression(0), copy)?.into()
+            }
+            "volatile_body" => {
+                let temporary = a.type_annotation().new_var("volatile_tmp");
+                let allocation = AllocBuffer::with_metadata(
+                    temporary.into(),
+                    Map::from_iter([(
+                        tvm::tvm_ffi::String::from("tirx.volatile"),
+                        Any::from(true),
+                    )]),
+                    None,
+                )?;
+                For::new(
+                    Var::new("i", "int32")?,
+                    int_expression(0),
+                    int_expression(1),
+                    Stmt::sequence(vec![allocation.into(), copy])?,
+                )?
+                .into()
+            }
+            _ => copy,
+        };
+        let span = Span::new(SourceName::get("storage_rewrite.rs")?, 1, 1, 1, 8)?;
+        let allocation = |buffer: &BufferVar| {
+            if case == "inplace_metadata" {
+                AllocBuffer::with_metadata(
+                    buffer.as_var().clone(),
+                    Map::from_iter([
+                        (tvm::tvm_ffi::String::from("tirx.volatile"), Any::from(true)),
+                        (
+                            tvm::tvm_ffi::String::from("custom_annotation"),
+                            Any::from(1i64),
+                        ),
+                    ]),
+                    Some(&span),
+                )
+            } else {
+                AllocBuffer::new(buffer)
+            }
+        };
+        let body = Stmt::sequence(vec![
+            allocation(&a)?.into(),
+            allocation(&b)?.into(),
+            BufferStore::new(&a, int_expression(1), vec![int_expression(0)])?.into(),
+            copy,
+            Evaluate::new(TensorLoad::from_buffer(&b, vec![int_expression(0)])?)?.into(),
+        ])?;
+        let module = IRModule::from_expr(PrimFunc::new(vec![n, m, indices.into()], body)?)?;
+        let native = cpp_pass("tirx.transform.StorageRewrite").run(module.clone())?;
+        let rust = transform::storage_rewrite()?.run(module)?;
+        eprintln!("storage reuse case: {case}");
+        assert_structural_equal(&rust, &native);
+        if case == "inplace_metadata" {
+            // Source spans are not compared by StructuralEqual.
+            let mut allocations = 0;
+            let mut declarations = 0;
+            structural_walk(
+                &rust,
+                (
+                    |allocation: AllocBuffer| {
+                        allocations += 1;
+                        assert!(allocation.span.is_none());
+                        WalkResult::Skip
+                    },
+                    |declaration: DeclBuffer| {
+                        declarations += 1;
+                        assert!(declaration.span.is_none());
+                        WalkResult::Skip
+                    },
+                ),
+                WalkOrder::PreOrder,
+            )?;
+            assert_eq!((allocations, declarations), (1, 1));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_for_free_block_selection() -> Result<()> {
+    load_tvm_compiler();
+    // The first two buffers die together; the third probes size ordering and FIFO.
+    for (scope, a_size, b_size, c_size, dtype) in [
+        ("global", 64, 16, 16, "int32"),
+        ("global", 16, 64, 32, "int32"),
+        ("global", 16, 24, 32, "int32"),
+        ("global", 2, 1024, 64, "int32"),
+        ("global", 64, 16, 16, "float32"),
+        ("global", 16, 24, 32, "float32"),
+        ("global", 0, 0, 0, "int32"),
+        ("global", 0, 0, 0, "float32"),
+        ("local.L0A", 64, 16, 16, "int32"),
+        ("local.L0A", 16, 24, 32, "int32"),
+        ("shared.dyn", 0, 0, 0, "int32"),
+    ] {
+        let n = Var::new("n", "int32")?;
+        let size = |value| {
+            if value == 0 {
+                Expr::from(n.clone())
+            } else {
+                int_expression(value)
+            }
+        };
+        let a = BufferType::new(scope, "int32", vec![size(a_size)])?.new_var("a");
+        let b = BufferType::new(scope, "int32", vec![size(b_size)])?.new_var("b");
+        let c = BufferType::new(scope, dtype, vec![size(c_size)])?.new_var("c");
+        let consume = |args| {
+            Evaluate::new(Call::new(
+                PrimType::new("void")?,
+                GlobalVar::new("consume"),
+                args,
+            ))
+        };
+        let body = Stmt::sequence(vec![
+            AllocBuffer::new(&a)?.into(),
+            AllocBuffer::new(&b)?.into(),
+            AllocBuffer::new(&c)?.into(),
+            consume(vec![
+                TensorLoad::from_buffer(&a, vec![int_expression(0)])?.into(),
+                TensorLoad::from_buffer(&b, vec![int_expression(0)])?.into(),
+            ])?
+            .into(),
+            consume(vec![
+                TensorLoad::from_buffer(&c, vec![int_expression(0)])?.into()
+            ])?
+            .into(),
+        ])?;
+        let module = IRModule::from_expr(PrimFunc::new(vec![n], body)?)?;
+        let native = cpp_pass("tirx.transform.StorageRewrite").run(module.clone())?;
+        let rust = transform::storage_rewrite()?.run(module)?;
+        eprintln!("free block case: {scope}, {a_size}, {b_size}, {c_size}, {dtype}");
+        assert_structural_equal(&rust, &native);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_storage_rewrite_matches_cpp_for_intrinsic_accesses() -> Result<()> {
+    use tvm::ir::Op;
+
+    load_tvm_compiler();
+    for (scope, masked) in [
+        ("global", true),
+        ("local.L0A", true),
+        ("global", false),
+        ("local.L0A", false),
+    ] {
+        let a = BufferType::new(scope, "int32", vec![int_expression(16)])?.new_var("a");
+        let b = a.type_annotation().new_var("b");
+        let load = |buffer: &BufferVar| -> Result<Expr> {
+            if masked {
+                Ok(Call::new(
+                    PrimType::new("int32")?,
+                    Op::get("tirx.masked_load")?,
+                    vec![
+                        buffer.as_var().clone().into(),
+                        int_expression(0),
+                        typed_int_expression("bool", 1),
+                    ],
+                )
+                .into())
+            } else {
+                Ok(Call::new(
+                    PointerType::new(PrimType::new("int32")?, scope)?,
+                    Op::get("tirx.tvm_access_ptr")?,
+                    vec![
+                        int_expression(0),
+                        buffer.data()?,
+                        int_expression(0),
+                        int_expression(16),
+                        int_expression(1),
+                    ],
+                )
+                .into())
+            }
+        };
+        let mut statements = vec![
+            AllocBuffer::new(&a)?.into(),
+            AllocBuffer::new(&b)?.into(),
+            Evaluate::new(Call::new(
+                PrimType::void(),
+                GlobalVar::new("consume"),
+                vec![load(&a)?, load(&b)?],
+            ))?
+            .into(),
+        ];
+        if masked {
+            statements.push(
+                Evaluate::new(Call::new(
+                    PrimType::void(),
+                    Op::get("tirx.masked_store")?,
+                    vec![
+                        b.into(),
+                        int_expression(3),
+                        int_expression(0),
+                        typed_int_expression("bool", 1),
+                    ],
+                ))?
+                .into(),
+            );
+        }
+        let module = IRModule::from_expr(PrimFunc::from_body(Stmt::sequence(statements)?)?)?;
+        let native = cpp_pass("tirx.transform.StorageRewrite").run(module.clone())?;
+        let rust = transform::storage_rewrite()?.run(module)?;
+        eprintln!("intrinsic case: {scope}, masked={masked}");
+        assert_structural_equal(&rust, &native);
+    }
+    Ok(())
 }
 
 #[test]

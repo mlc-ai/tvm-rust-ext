@@ -17,28 +17,45 @@
  * under the License.
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String as FfiString, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Array, DLDataTypeExt, Map, MapValue, Mutator,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString, VisitCallbacks,
+    VisitContext, VisitInterrupt, VisitValue,
 };
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
 use super::utils::{
-    array_same_as, int_value, mutate_stmt_expr_default, operator_identity, value_error,
-    visit_stmt_expr_default, with_prim_func_body,
+    array_same_as, binary_op, int_value, mutate_stmt_expr_default, operator_identity, value_error,
+    visit_buffer_definition, visit_stmt_expr_default, with_prim_func_body,
 };
-use super::{create_prim_func_pass, Pass};
+use super::{create_prim_func_pass_with_context, Pass};
+use crate::analysis::Analyzer;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, PrimFunc, Stmt,
+    AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
+    Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, Stmt, While,
 };
 
 /// Rewrite local storage using the same liveness and buffer-view model as
 /// TVM's native `StorageRewrite` pass.
 pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
+    storage_rewrite_with_reuse(function, true)
+}
+
+fn storage_rewrite_with_reuse(function: PrimFunc, enable_reuse: bool) -> Result<PrimFunc> {
+    let target = function
+        .attrs
+        .dict
+        .get(&FfiString::from("target"))?
+        .map(crate::target::Target::try_from)
+        .transpose()?;
+    let require_exact_dtype = target
+        .as_ref()
+        .map(|target| target.kind_name())
+        .transpose()?
+        .is_some_and(|kind| matches!(kind.as_str(), "vulkan" | "webgpu"));
     let mut analysis = StorageAnalysis::new(&function.params);
     let mut callbacks = VisitCallbacks::new(
         analysis,
@@ -47,16 +64,16 @@ pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
             analyze_declaration,
             analyze_store,
             analyze_load,
-            analyze_call,
+            analyze_variable,
             analyze_default,
         ),
     );
     structural_visit(&function.body, &mut callbacks)?;
     analysis = callbacks.into_state();
 
-    let plan = StoragePlan::build(analysis)?;
-    let root_allocations = plan.root_allocations();
-    let mut rewriter = StoragePlanRewriter::new(plan);
+    let plan = StoragePlan::build(analysis, enable_reuse, require_exact_dtype)?;
+    let root_allocations = plan.allocations_at(None);
+    let mut rewriter = StoragePlanRewriter::new(plan)?;
     let rewritten: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
     let body = if root_allocations.is_empty() {
         rewritten
@@ -86,20 +103,29 @@ pub fn storage_rewrite_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.StorageRewrite` PrimFunc pass in Rust.
 pub fn storage_rewrite() -> Result<Pass> {
-    create_prim_func_pass(
+    create_prim_func_pass_with_context(
         "tirx.StorageRewrite",
         0,
         Vec::new(),
         false,
-        storage_rewrite_prim_func,
+        |function, context| {
+            let merge_static_smem = context
+                .config()?
+                .get(&FfiString::from("tirx.merge_static_smem"))?
+                .map(bool::try_from)
+                .transpose()?
+                .unwrap_or(false);
+            storage_rewrite_with_reuse(function, !merge_static_smem)
+        },
     )
 }
 
-#[derive(Clone)]
 struct AllocationInfo {
     buffer: BufferVar,
+    storage_scope: StorageScope,
     annotations: Map<FfiString, Any>,
-    ordinal: usize,
+    scope_depth: usize,
+    attach_scope: Option<ObjectIdentity>,
     first_access: Option<usize>,
     last_access: Option<usize>,
 }
@@ -109,6 +135,20 @@ struct StorageAnalysis {
     allocations: Vec<AllocationInfo>,
     allocation_by_root: HashMap<ObjectIdentity, usize>,
     aliases: HashMap<ObjectIdentity, ObjectIdentity>,
+    scopes: Vec<AccessScope>,
+    completed_scopes: Vec<AccessScope>,
+    thread_scope: Option<ObjectIdentity>,
+    in_thread_env: bool,
+}
+
+struct AccessScope {
+    // A buffer allocated outside a loop remains live across the whole loop,
+    // not merely until the last access encountered during one AST traversal.
+    begin: usize,
+    end: usize,
+    statement: Stmt,
+    touched: Vec<usize>,
+    attach_scope: Option<ObjectIdentity>,
 }
 
 impl StorageAnalysis {
@@ -125,6 +165,10 @@ impl StorageAnalysis {
             allocations: Vec::new(),
             allocation_by_root: HashMap::new(),
             aliases,
+            scopes: Vec::new(),
+            completed_scopes: Vec::new(),
+            thread_scope: None,
+            in_thread_env: false,
         }
     }
 
@@ -139,50 +183,93 @@ impl StorageAnalysis {
         self.aliases.get(&identity).cloned().unwrap_or(identity)
     }
 
-    fn register_allocation(&mut self, value: &AllocBuffer) {
+    fn register_allocation(&mut self, value: &AllocBuffer) -> Result<()> {
+        let storage_scope =
+            StorageScope::parse(value.buffer.type_annotation().storage_scope.as_str())?;
         let identity = ObjectIdentity::of(value.buffer.as_var());
         self.aliases.insert(identity.clone(), identity.clone());
-        let ordinal = self.tick();
         self.allocation_by_root
             .insert(identity, self.allocations.len());
         self.allocations.push(AllocationInfo {
             buffer: value.buffer.clone(),
+            storage_scope,
             annotations: value.annotations.clone(),
-            ordinal,
+            scope_depth: self.scopes.len(),
+            attach_scope: None,
             first_access: None,
             last_access: None,
         });
+        Ok(())
     }
 
-    fn register_alias(&mut self, value: &DeclBuffer) {
+    fn register_alias(&mut self, value: &DeclBuffer) -> Result<()> {
         let identity = ObjectIdentity::of(value.buffer.as_var());
-        let root = buffer_data_var(&value.data)
-            .map(|variable| self.root(&variable))
-            .unwrap_or_else(|| identity.clone());
-        self.aliases.insert(identity, root);
-        self.tick();
-    }
-
-    fn access(&mut self, buffer: &BufferVar) {
-        let event = self.tick();
-        let root = self.root(buffer.as_var());
-        let Some(index) = self.allocation_by_root.get(&root).copied() else {
-            return;
+        let root = if let Some(source) =
+            buffer_data_var(&value.data).filter(|source| BufferVar::try_from(source).is_ok())
+        {
+            self.aliases
+                .get(&ObjectIdentity::of(&source))
+                .cloned()
+                .ok_or_else(|| {
+                    value_error("buffer alias source must be registered before its DeclBuffer")
+                })?
+        } else {
+            identity.clone()
         };
-        let allocation = &mut self.allocations[index];
-        allocation.first_access.get_or_insert(event);
-        allocation.last_access = Some(event);
+        self.aliases.insert(identity, root);
+        Ok(())
     }
 
-    fn access_variable(&mut self, variable: &Var) {
+    fn access_buffer(&mut self, buffer: &BufferVar) -> Result<()> {
+        if let Some(&index) = self.allocation_by_root.get(&self.root(buffer.as_var())) {
+            if self.allocations[index].buffer.type_annotation().shape.len() != 1 {
+                return Err(value_error(
+                    "StorageRewrite requires flattened buffer allocations",
+                ));
+            }
+        }
+        self.access_variable(buffer.as_var())
+    }
+
+    fn access_variable(&mut self, variable: &Var) -> Result<()> {
         let root = self.root(variable);
         let Some(index) = self.allocation_by_root.get(&root).copied() else {
-            return;
+            return Ok(());
         };
-        let event = self.tick();
-        let allocation = &mut self.allocations[index];
-        allocation.first_access.get_or_insert(event);
-        allocation.last_access = Some(event);
+        let depth = self.allocations[index].scope_depth;
+        let scope = self.scopes.get_mut(depth).ok_or_else(|| {
+            value_error("buffer access occurs outside its allocation's statement scope")
+        })?;
+        if !scope.touched.contains(&index) {
+            scope.touched.push(index);
+        }
+        Ok(())
+    }
+
+    fn enter_scope(&mut self, statement: Stmt) {
+        let begin = self.tick();
+        self.scopes.push(AccessScope {
+            begin,
+            end: begin,
+            statement,
+            touched: Vec::new(),
+            attach_scope: self.thread_scope.clone(),
+        });
+    }
+
+    fn exit_scope(&mut self) {
+        let end = self.tick();
+        let mut scope = self.scopes.pop().expect("storage scopes are balanced");
+        scope.end = end;
+        for &index in &scope.touched {
+            let allocation = &mut self.allocations[index];
+            if allocation.first_access.is_none() {
+                allocation.first_access = Some(scope.begin);
+                allocation.attach_scope = scope.attach_scope.clone();
+            }
+            allocation.last_access = Some(end);
+        }
+        self.completed_scopes.push(scope);
     }
 }
 
@@ -190,53 +277,214 @@ fn analyze_allocation(
     value: AllocBuffer,
     visitor: &mut VisitContext<'_, StorageAnalysis>,
 ) -> Result<()> {
-    visitor.state_mut().register_allocation(&value);
-    visitor.visit_children().map(|_| ())
+    visitor.state_mut().register_allocation(&value)?;
+    visit_buffer_definition(visitor, &value.buffer).map(|_| ())
 }
 
 fn analyze_declaration(
     value: DeclBuffer,
     visitor: &mut VisitContext<'_, StorageAnalysis>,
 ) -> Result<()> {
-    visitor.state_mut().register_alias(&value);
-    visitor.visit_children().map(|_| ())
+    visitor.state_mut().register_alias(&value)
 }
 
 fn analyze_store(
     value: BufferStore,
     visitor: &mut VisitContext<'_, StorageAnalysis>,
 ) -> Result<()> {
-    visitor.state_mut().access(&value.buffer);
-    visitor.visit_children().map(|_| ())
+    visitor.state_mut().enter_scope(value.clone().into());
+    let result = (|| {
+        visitor.visit(&value.value)?;
+        for index in value.indices.iter() {
+            visitor.visit(&index)?;
+        }
+        visitor.state_mut().access_buffer(&value.buffer)
+    })();
+    visitor.state_mut().exit_scope();
+    result
 }
 
 fn analyze_load(value: TensorLoad, visitor: &mut VisitContext<'_, StorageAnalysis>) -> Result<()> {
-    if let Ok(buffer) = BufferVar::try_from(&value.source) {
-        visitor.state_mut().access(&buffer);
+    for index in value.indices.iter() {
+        visitor.visit(&index)?;
     }
-    visitor.visit_children().map(|_| ())
+    let buffer = BufferVar::try_from(&value.source)?;
+    visitor.state_mut().access_buffer(&buffer)
 }
 
-fn analyze_call(value: Call, visitor: &mut VisitContext<'_, StorageAnalysis>) -> Result<()> {
-    for argument in value.args.iter() {
-        if let Ok(variable) = argument.clone().try_cast::<Var>() {
-            visitor.state_mut().access_variable(&variable);
+fn analyze_variable(value: Var, visitor: &mut VisitContext<'_, StorageAnalysis>) -> Result<()> {
+    visitor.state_mut().access_variable(&value)
+}
+
+fn is_node<T: ObjectRefCore>(value: &VisitValue) -> bool {
+    value.as_node::<T::ContainerType>().is_some()
+}
+
+struct InplaceVerifier {
+    destination: ObjectIdentity,
+    source: ObjectIdentity,
+    store: Option<BufferStore>,
+    memory_depth: usize,
+    at_root: bool,
+}
+
+impl InplaceVerifier {
+    fn check(statement: &Stmt, destination: &BufferVar, source: &BufferVar) -> Result<bool> {
+        let state = Self {
+            destination: ObjectIdentity::of(destination),
+            source: ObjectIdentity::of(source),
+            store: None,
+            memory_depth: 0,
+            at_root: true,
+        };
+        let mut callbacks = VisitCallbacks::new(state, (verify_inplace,));
+        Ok(structural_visit(statement, &mut callbacks)?.is_none())
+    }
+}
+
+fn verify_inplace(
+    value: &VisitValue,
+    visitor: &mut VisitContext<'_, InplaceVerifier>,
+) -> Result<Option<VisitInterrupt>> {
+    let reject = || Ok(Some(VisitInterrupt::with(false)));
+    if visitor.state().at_root {
+        visitor.state_mut().at_root = false;
+        if !(is_node::<AttrStmt>(value)
+            || is_node::<For>(value)
+            || is_node::<IfThenElse>(value)
+            || is_node::<While>(value)
+            || is_node::<BufferStore>(value))
+        {
+            return reject();
         }
     }
-    visitor.visit_children().map(|_| ())
+    if let Some(variable) = value.cast::<Var>() {
+        let identity = ObjectIdentity::of(&variable);
+        return if identity == visitor.state().source || identity == visitor.state().destination {
+            reject()
+        } else {
+            Ok(None)
+        };
+    }
+    if let Some(store) = value.cast::<BufferStore>() {
+        visitor.state_mut().memory_depth += 1;
+        for index in store.indices.iter() {
+            if let Some(interrupt) = visitor.visit(&index)? {
+                return Ok(Some(interrupt));
+            }
+        }
+        visitor.state_mut().memory_depth -= 1;
+        let is_destination = ObjectIdentity::of(&store.buffer) == visitor.state().destination;
+        if is_destination {
+            visitor.state_mut().store = Some(store.clone());
+        }
+        let result = visitor.visit(&store.value);
+        if is_destination {
+            visitor.state_mut().store = None;
+        }
+        return result;
+    }
+    if let Some(load) = value.cast::<TensorLoad>() {
+        let identity = ObjectIdentity::of(&load.source);
+        if identity == visitor.state().destination || visitor.state().memory_depth != 0 {
+            return reject();
+        }
+        if identity == visitor.state().source {
+            let Some(store) = &visitor.state().store else {
+                return reject();
+            };
+            if !store.value.ty.same_as(&load.ty) {
+                return reject();
+            }
+            if store.indices.len() != load.indices.len() {
+                return Err(value_error(
+                    "in-place store/load have different index counts",
+                ));
+            }
+            for (lhs, rhs) in store.indices.iter().zip(load.indices.iter()) {
+                if !expr_deep_equal(&lhs, &rhs)? {
+                    return reject();
+                }
+            }
+        }
+        visitor.state_mut().memory_depth += 1;
+        let result = visit_stmt_expr_default(visitor, value);
+        visitor.state_mut().memory_depth -= 1;
+        return result;
+    }
+    if value
+        .cast::<AttrStmt>()
+        .is_some_and(|attr| attr.attr_key.as_str() == "extern_scope")
+    {
+        return reject();
+    }
+    if let Some(allocation) = value.cast::<AllocBuffer>() {
+        if allocation
+            .annotations
+            .get(&FfiString::from("tirx.volatile"))?
+            .is_some()
+        {
+            return reject();
+        }
+    }
+    visit_stmt_expr_default(visitor, value)
 }
 
 fn analyze_default(
     value: &VisitValue,
     visitor: &mut VisitContext<'_, StorageAnalysis>,
 ) -> Result<Option<VisitInterrupt>> {
-    visit_stmt_expr_default(visitor, value)
+    let Some(statement) = value.cast::<Stmt>() else {
+        return visit_stmt_expr_default(visitor, value);
+    };
+    let attribute = value.cast::<AttrStmt>();
+    let is_thread = attribute.as_ref().is_some_and(|attribute| {
+        attribute.attr_key.as_str() == "thread_extent" && !visitor.state().in_thread_env
+    });
+    let is_virtual_thread = attribute
+        .as_ref()
+        .is_some_and(|attribute| attribute.attr_key.as_str() == "virtual_thread");
+    let is_parallel = value.cast::<For>().is_some_and(|loop_node| {
+        loop_node.kind == ForKind::kParallel && visitor.state().thread_scope.is_none()
+    });
+    let is_scope = is_thread
+        || is_virtual_thread
+        || attribute
+            .as_ref()
+            .is_some_and(|attr| attr.attr_key.as_str() == "extern_scope")
+        || is_node::<For>(value)
+        || is_node::<While>(value)
+        || is_node::<IfThenElse>(value)
+        || is_node::<AssertStmt>(value)
+        || is_node::<Evaluate>(value)
+        || is_node::<Return>(value)
+        || is_node::<Bind>(value);
+    if !is_scope {
+        return visit_stmt_expr_default(visitor, value);
+    }
+    let old_thread_scope = visitor.state().thread_scope.clone();
+    let old_thread_env = visitor.state().in_thread_env;
+    if (is_thread || is_virtual_thread) && old_thread_scope.is_some() {
+        return Err(value_error(
+            "nested storage attachment scopes are not supported",
+        ));
+    }
+    visitor.state_mut().enter_scope(statement.clone());
+    if is_thread || is_virtual_thread || is_parallel {
+        visitor.state_mut().thread_scope = Some(ObjectIdentity::of(&statement));
+    }
+    visitor.state_mut().in_thread_env |= is_thread;
+    let result = visit_stmt_expr_default(visitor, value);
+    visitor.state_mut().exit_scope();
+    visitor.state_mut().thread_scope = old_thread_scope;
+    visitor.state_mut().in_thread_env = old_thread_env;
+    result
 }
 
-#[derive(Clone)]
 struct PlannedStorage {
     backing: BufferVar,
     allocation: AllocBuffer,
+    attach_scope: Option<ObjectIdentity>,
 }
 
 #[derive(Clone)]
@@ -252,188 +500,177 @@ struct StoragePlan {
 }
 
 impl StoragePlan {
-    fn build(mut analysis: StorageAnalysis) -> Result<Self> {
-        analysis
-            .allocations
-            .sort_by_key(|allocation| allocation.ordinal);
-        let mut storage = Vec::<PlannedStorage>::new();
-        let mut remaps = HashMap::new();
-        let mut active = Vec::<(usize, usize)>::new();
+    fn build(
+        analysis: StorageAnalysis,
+        enable_reuse: bool,
+        require_exact_dtype: bool,
+    ) -> Result<Self> {
+        let allocations = &analysis.allocations;
+        let mut entries = Vec::<StorageEntry>::new();
+        let mut assigned = HashMap::<usize, usize>::new();
+        let mut free = Vec::<usize>::new();
+        let mut replaced_inplace = HashSet::new();
+        let mut events = Vec::new();
+        for scope in &analysis.completed_scopes {
+            events.push((scope.begin, true, scope));
+            events.push((scope.end, false, scope));
+        }
+        events.sort_by_key(|(position, _, _)| *position);
 
-        // Special tagged memories (for example `local.L0A`) are represented
-        // by one aligned allocation per storage scope, matching the native
-        // merge rule even when constituent lifetimes overlap.
-        let mut tagged_groups: HashMap<String, Vec<AllocationInfo>> = HashMap::new();
-        let mut regular = Vec::new();
-        for allocation in analysis.allocations {
-            if allocation.first_access.is_none() {
+        for (_, is_begin, scope) in events {
+            if !is_begin {
+                // Freed storage inside a thread/parallel scope cannot escape it.
+                let identity = ObjectIdentity::of(&scope.statement);
+                free.retain(|&index| entries[index].attach_scope.as_ref() != Some(&identity));
+                for &index in &scope.touched {
+                    if allocations[index].last_access == Some(scope.end)
+                        && !replaced_inplace.contains(&index)
+                    {
+                        let entry = assigned[&index];
+                        if entries[entry].can_free(allocations) {
+                            free.push(entry);
+                        }
+                    }
+                }
                 continue;
             }
-            let scope = allocation.buffer.type_annotation().storage_scope.clone();
-            if is_special_tagged_scope(scope.as_str()) {
-                tagged_groups
-                    .entry(scope.as_str().to_owned())
-                    .or_default()
-                    .push(allocation);
-            } else {
-                regular.push(allocation);
+
+            let generated: Vec<_> = scope
+                .touched
+                .iter()
+                .copied()
+                .filter(|&index| allocations[index].first_access == Some(scope.begin))
+                .collect();
+            for &index in &generated {
+                let allocation = &allocations[index];
+                let dtype = allocation.buffer.dtype();
+                let bits = constant_allocation_bits(&allocation.buffer)?.unwrap_or(0);
+                let mut candidate = None;
+                // The native planner considers at most two newly-live buffers,
+                // and transfers ownership only after checking the actual accesses.
+                if generated.len() <= 2 && !is_scalable_dtype(dtype.dtype.lanes) {
+                    for &source in &scope.touched {
+                        if allocations[source].last_access != Some(scope.end)
+                            || replaced_inplace.contains(&source)
+                        {
+                            continue;
+                        }
+                        let Some(&entry) = assigned.get(&source) else {
+                            continue;
+                        };
+                        if entries[entry].matches(allocation, allocations)
+                            && entries[entry].element_type.dtype == scalar_dtype(dtype)
+                            && entries[entry].constant_bits == bits
+                            && InplaceVerifier::check(
+                                &scope.statement,
+                                &allocation.buffer,
+                                &allocations[source].buffer,
+                            )?
+                        {
+                            replaced_inplace.insert(source);
+                            candidate = Some(entry);
+                            break;
+                        }
+                    }
+                }
+                if candidate.is_none() && enable_reuse && reusable_allocation(allocation, bits) {
+                    candidate = find_free_entry(
+                        &mut free,
+                        &entries,
+                        allocations,
+                        allocation,
+                        bits,
+                        require_exact_dtype,
+                    );
+                }
+                let entry = if let Some(entry) = candidate {
+                    entries[entry].constant_bits = entries[entry].constant_bits.max(bits);
+                    entry
+                } else {
+                    let entry = entries.len();
+                    entries.push(StorageEntry {
+                        allocations: Vec::new(),
+                        attach_scope: allocation.attach_scope.clone(),
+                        constant_bits: bits,
+                        element_type: PrimType::from_dtype(scalar_dtype(dtype))?,
+                    });
+                    entry
+                };
+                entries[entry].allocations.push(index);
+                assigned.insert(index, entry);
             }
         }
 
-        for (_, group) in tagged_groups {
-            let mut entries = Vec::<(Vec<AllocationInfo>, usize, u64)>::new();
-            for allocation in group {
-                let first_access = allocation.first_access.expect("used allocation");
-                let last_access = allocation.last_access.expect("used allocation");
-                let bits = constant_allocation_bits(&allocation.buffer)?.ok_or_else(|| {
-                    value_error("special tagged storage requires a constant allocation size")
-                })?;
-                if let Some(entry) = entries
-                    .iter_mut()
-                    .find(|(_, free_after, _)| *free_after < first_access)
-                {
-                    entry.0.push(allocation);
-                    entry.1 = last_access;
-                    entry.2 = entry.2.max(bits);
-                } else {
-                    entries.push((vec![allocation], last_access, bits));
+        let analyzer = Analyzer::new()?;
+        let mut storage = Vec::new();
+        let mut remaps = HashMap::new();
+        let mut merged = HashSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if merged.contains(&index) {
+                continue;
+            }
+            let first = &allocations[entry.allocations[0]];
+            let mut group = vec![index];
+            if first.storage_scope.is_special_tagged() {
+                for (other, next) in entries.iter().enumerate().skip(index + 1) {
+                    if next.matches(first, allocations) {
+                        group.push(other);
+                        merged.insert(other);
+                    }
                 }
             }
-
-            let first = entries[0].0[0].clone();
-            let first_type = first.buffer.type_annotation();
-            let mut total_bits = 0_u64;
-            let mut entry_offsets = Vec::with_capacity(entries.len());
-            for (_, _, bits) in &entries {
-                total_bits = align_to(total_bits, 32);
-                entry_offsets.push(total_bits);
-                total_bits = total_bits
-                    .checked_add(*bits)
-                    .ok_or_else(|| value_error("merged storage size overflow"))?;
-            }
-            let backing_dtype = if entries.len() == 1 {
-                entries[0]
-                    .0
-                    .iter()
-                    .map(|allocation| allocation.buffer.dtype().clone())
-                    .max_by_key(|dtype| lane_count(dtype.dtype.lanes))
-                    .expect("a tagged storage entry is non-empty")
+            let mut offsets = Vec::new();
+            let backing = if group.len() == 1 {
+                offsets.push(0);
+                prepare_backing(entry, allocations, &analyzer)?
             } else {
-                PrimType::from_dtype(tvm_ffi::DLDataType {
-                    lanes: 1,
-                    ..first_type.dtype.dtype
-                })?
+                let mut total_bits = 0_u64;
+                for &index in &group {
+                    let bits = entries[index].constant_bits;
+                    if bits == 0 {
+                        return Err(value_error(
+                            "special tagged storage requires a constant allocation size",
+                        ));
+                    }
+                    offsets.push(total_bits);
+                    total_bits = align_to(
+                        total_bits
+                            .checked_add(bits)
+                            .ok_or_else(|| value_error("merged storage size overflow"))?,
+                        32,
+                    )?;
+                }
+                let extent = IntImm::from_dtype(
+                    first.buffer.type_annotation().shape.get(0)?.dtype(),
+                    i64::try_from(total_bits.div_ceil(u64::from(entry.element_type.dtype.bits)))
+                        .map_err(|_| value_error("merged storage extent does not fit i64"))?,
+                )?;
+                resized_buffer(&first.buffer, entry.element_type.clone(), extent.into())?
             };
-            let element_bits = u64::from(backing_dtype.dtype.bits)
-                * u64::from(lane_count(backing_dtype.dtype.lanes));
-            let elements = total_bits.div_ceil(element_bits);
-            let extent = IntImm::from_dtype(
-                first_type.shape.get(0)?.dtype(),
-                i64::try_from(elements)
-                    .map_err(|_| value_error("merged storage extent does not fit i64"))?,
-            )?;
-            let backing = if entries.len() == 1
-                && total_bits == constant_allocation_bits(&first.buffer)?.expect("tagged size")
-                && backing_dtype.dtype == first_type.dtype.dtype
-            {
-                first.buffer.clone()
-            } else {
-                first.buffer.with_name_and_type(
-                    first.buffer.name.clone(),
-                    BufferType::from_complete_fields(
-                        first_type.span.clone(),
-                        backing_dtype,
-                        first_type.storage_scope.clone(),
-                        Array::new(vec![extent.into()]),
-                        Array::new(Vec::new()),
-                        first_type.elem_offset.clone(),
-                        first_type.data_alignment,
-                        first_type.offset_factor,
-                        first_type.layout.clone(),
-                        first_type.allocated_addr.clone(),
-                    ),
-                )?
-            };
+            let storage_index = storage.len();
             let annotations = merge_annotations(
-                entries
+                group
                     .iter()
-                    .flat_map(|(allocations, _, _)| allocations.iter())
-                    .map(|entry| &entry.annotations),
+                    .flat_map(|&index| &entries[index].allocations)
+                    .map(|&index| &allocations[index].annotations),
             );
-            let index = storage.len();
             storage.push(PlannedStorage {
-                allocation: AllocBuffer::from_complete_fields(
-                    first.buffer.span.clone(),
-                    backing.clone(),
-                    annotations,
-                ),
+                allocation: AllocBuffer::from_complete_fields(None, backing.clone(), annotations),
                 backing,
+                attach_scope: entry.attach_scope.clone(),
             });
-            for ((allocations, _, _), bit_offset) in entries.into_iter().zip(entry_offsets) {
-                for allocation in allocations {
+            for (&index, bit_offset) in group.iter().zip(offsets) {
+                for &allocation in &entries[index].allocations {
                     remaps.insert(
-                        ObjectIdentity::of(allocation.buffer.as_var()),
+                        ObjectIdentity::of(&allocations[allocation].buffer),
                         BufferRemap {
-                            storage: index,
+                            storage: storage_index,
                             bit_offset,
                         },
                     );
                 }
             }
         }
-
-        for allocation in regular {
-            let first_access = allocation.first_access.expect("used allocation");
-            let last_access = allocation.last_access.expect("used allocation");
-            let allocation_bits = constant_allocation_bits(&allocation.buffer)?;
-            let ty = allocation.buffer.type_annotation();
-            let reusable = allocation_bits.is_some()
-                && ty.shape.len() == 1
-                && !is_scalable_dtype(ty.dtype.dtype.lanes)
-                && !(storage_base_scope(ty.storage_scope.as_str()) == "local"
-                    && allocation_bits.is_some_and(|bits| bits <= 32));
-
-            let candidate = if reusable {
-                active.iter().position(|(storage_index, free_after)| {
-                    *free_after < first_access
-                        && compatible_storage(&storage[*storage_index].backing, &allocation.buffer)
-                })
-            } else {
-                None
-            };
-
-            let storage_index = if let Some(candidate) = candidate {
-                let (storage_index, _) = active.remove(candidate);
-                let existing = storage[storage_index].backing.clone();
-                let merged = merge_reused_storage(&existing, &allocation.buffer)?;
-                storage[storage_index].backing = merged.clone();
-                storage[storage_index].allocation = AllocBuffer::from_complete_fields(
-                    allocation.buffer.span.clone(),
-                    merged,
-                    merge_annotations([
-                        &storage[storage_index].allocation.annotations,
-                        &allocation.annotations,
-                    ]),
-                );
-                storage_index
-            } else {
-                let storage_index = storage.len();
-                storage.push(PlannedStorage {
-                    backing: allocation.buffer.clone(),
-                    allocation: allocation.clone().into_alloc_buffer(),
-                });
-                storage_index
-            };
-            active.push((storage_index, last_access));
-            remaps.insert(
-                ObjectIdentity::of(allocation.buffer.as_var()),
-                BufferRemap {
-                    storage: storage_index,
-                    bit_offset: 0,
-                },
-            );
-        }
-
         Ok(Self {
             storage,
             remaps,
@@ -441,9 +678,10 @@ impl StoragePlan {
         })
     }
 
-    fn root_allocations(&self) -> Vec<Stmt> {
+    fn allocations_at(&self, scope: Option<&ObjectIdentity>) -> Vec<Stmt> {
         self.storage
             .iter()
+            .filter(|entry| entry.attach_scope.as_ref() == scope)
             .map(|entry| Stmt::from(entry.allocation.clone()))
             .collect()
     }
@@ -460,23 +698,32 @@ impl StoragePlan {
     }
 }
 
-impl AllocationInfo {
-    fn into_alloc_buffer(self) -> AllocBuffer {
-        AllocBuffer::from_complete_fields(self.buffer.span.clone(), self.buffer, self.annotations)
-    }
-}
-
 struct StoragePlanRewriter {
     plan: StoragePlan,
     buffer_views: HashMap<ObjectIdentity, BufferVar>,
+    masked_load: ObjectIdentity,
+    masked_store: ObjectIdentity,
+    access_ptr: ObjectIdentity,
 }
 
 impl StoragePlanRewriter {
-    fn new(plan: StoragePlan) -> Self {
-        Self {
+    fn new(plan: StoragePlan) -> Result<Self> {
+        Ok(Self {
             plan,
             buffer_views: HashMap::new(),
+            masked_load: operator_identity("tirx.masked_load")?,
+            masked_store: operator_identity("tirx.masked_store")?,
+            access_ptr: operator_identity("tirx.tvm_access_ptr")?,
+        })
+    }
+
+    fn attach_allocations(&self, scope: &impl ObjectRefCore, body: Stmt) -> Result<Stmt> {
+        let mut allocations = self.plan.allocations_at(Some(&ObjectIdentity::of(scope)));
+        if allocations.is_empty() {
+            return Ok(body);
         }
+        allocations.push(body);
+        Stmt::sequence(allocations)
     }
 
     fn remap_buffer(&mut self, buffer: &BufferVar) -> Result<Option<(BufferVar, u64)>> {
@@ -508,19 +755,8 @@ impl StoragePlanRewriter {
         if indices.is_empty() {
             return Err(value_error("a remapped buffer access requires an index"));
         }
-        let element_bits = u64::from(buffer.dtype().dtype.bits);
-        if !bit_offset.is_multiple_of(element_bits) {
-            return Err(value_error(
-                "a merged storage offset is not aligned to the accessed element type",
-            ));
-        }
         let last = indices.get(indices.len() - 1)?;
-        let offset = IntImm::from_dtype(
-            last.dtype(),
-            i64::try_from(bit_offset / element_bits)
-                .map_err(|_| value_error("a merged storage offset does not fit i64"))?,
-        )?;
-        let last = semantic_add(offset.into(), last)?;
+        let last = remap_offset(last, bit_offset, u64::from(buffer.dtype().dtype.bits))?;
         let mut values = indices.iter().collect::<Vec<_>>();
         values[indices.len() - 1] = last;
         indices = Array::new(values);
@@ -530,22 +766,139 @@ impl StoragePlanRewriter {
 
 #[tvm_ffi::dispatch(mutate)]
 impl StoragePlanRewriter {
-    fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<Stmt> {
-        // Every used allocation has been hoisted to its planned root storage;
-        // unused allocations are intentionally removed as well.
-        if self.plan.remap(&value.buffer).is_some() {
-            if let Some((mapped, _)) = self.remap_buffer(&value.buffer)? {
-                let (_, remap) = self.plan.remap(&value.buffer).expect("checked above");
-                let storage = &self.plan.storage[remap.storage];
-                if value.buffer.same_as(&storage.backing) || mapped.same_as(&storage.backing) {
-                    return Evaluate::from_i64(0).map(Into::into);
-                }
-                return Ok(DeclBuffer::from_complete_fields(
-                    value.span.clone(),
-                    mapped,
-                    storage.backing.data()?,
-                )
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        let operator = ObjectIdentity::of(&value.op);
+        let is_load = operator == self.masked_load;
+        if is_load || operator == self.masked_store {
+            let first_index = if is_load { 1 } else { 2 };
+            if value.args.len() < first_index + 2 {
+                return Err(value_error(
+                    "masked access requires a buffer, index, and predicate",
+                ));
+            }
+            let source = BufferVar::try_from(value.args.get(0)?)?;
+            let stored: Option<PrimExpr> = if is_load {
+                None
+            } else {
+                Some(mutator.mutate(self, &value.args.get(1)?)?.try_into()?)
+            };
+            let indices = value
+                .args
+                .iter()
+                .skip(first_index)
+                .take(value.args.len() - first_index - 1)
+                .map(|index| mutator.mutate(self, &index).and_then(PrimExpr::try_from))
+                .collect::<Result<Vec<_>>>()?;
+            let (buffer, bit_offset) = self.remap_buffer(&source)?.unwrap_or((source.clone(), 0));
+            let indices = self.remap_indices(&source, Array::new(indices), bit_offset)?;
+            let ty = if is_load {
+                TensorLoad::from_buffer_with_span(
+                    buffer.as_var().clone(),
+                    indices.iter().map(Into::into).collect(),
+                    value.span.as_ref(),
+                )?
+                .ty
+                .clone()
+            } else {
+                crate::ir::Type::from(PrimType::void())
+            };
+            let predicate: Expr = mutator
+                .mutate(self, &value.args.get(value.args.len() - 1)?)?
+                .try_into()?;
+            let mut arguments = vec![buffer.into()];
+            arguments.extend(stored.map(Expr::from));
+            arguments.extend(indices.iter().map(Expr::from));
+            arguments.push(predicate);
+            return Ok(value
+                .copy_with(ty, value.op.clone(), Array::new(arguments))
                 .into());
+        }
+        if operator == self.access_ptr {
+            if value.args.len() != 5 {
+                return Err(value_error("tvm_access_ptr requires five arguments"));
+            }
+            if let Some(variable) = buffer_data_var(&value.args.get(1)?) {
+                let root = self.plan.root(&variable);
+                if let Some(remap) = self.plan.remaps.get(&root).cloned() {
+                    let marker: PrimExpr = value.args.get(0)?.try_into()?;
+                    let offset: PrimExpr = mutator.mutate(self, &value.args.get(2)?)?.try_into()?;
+                    let extent: PrimExpr = mutator.mutate(self, &value.args.get(3)?)?.try_into()?;
+                    let dtype = marker.dtype();
+                    let offset = remap_offset(
+                        offset,
+                        remap.bit_offset,
+                        u64::from(dtype.bits) * u64::from(dtype.lanes),
+                    )?;
+                    return Ok(Call::with_metadata(
+                        value.ty.clone(),
+                        value.op.clone(),
+                        vec![
+                            marker.into(),
+                            self.plan.storage[remap.storage]
+                                .backing
+                                .as_var()
+                                .clone()
+                                .into(),
+                            offset.into(),
+                            extent.into(),
+                            value.args.get(4)?,
+                        ],
+                        value.attrs.clone(),
+                        Vec::new(),
+                        value.span.as_ref(),
+                    )
+                    .into());
+                }
+            }
+        }
+        super::utils::mutate_expr_default(self, mutator, value.into())
+    }
+
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<For> {
+        if value.kind == ForKind::kVectorized {
+            return Err(value_error("VectorizeLoop must run before StorageRewrite"));
+        }
+        let mapped: For =
+            super::utils::mutate_stmt_default(self, mutator, value.clone().into())?.try_cast()?;
+        let body = self.attach_allocations(&value, mapped.body.clone())?;
+        if body.same_as(&mapped.body) {
+            return Ok(mapped);
+        }
+        For::with_metadata(
+            mapped.loop_var.as_var().clone(),
+            mapped.min.clone().into(),
+            mapped.extent.clone().into(),
+            mapped.kind,
+            body,
+            mapped.thread_binding.clone(),
+            mapped.annotations.clone(),
+            mapped.step.as_ref().map(|step| step.clone().into()),
+            None,
+        )
+    }
+
+    fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<AttrStmt> {
+        let mapped: AttrStmt =
+            super::utils::mutate_stmt_default(self, mutator, value.clone().into())?.try_cast()?;
+        let body = self.attach_allocations(&value, mapped.body.clone())?;
+        if body.same_as(&mapped.body) {
+            return Ok(mapped);
+        }
+        AttrStmt::new(
+            mapped.node.clone(),
+            mapped.attr_key.as_str(),
+            mapped.value.clone(),
+            body,
+        )
+    }
+
+    fn mutate_allocation(&mut self, value: AllocBuffer) -> Result<Stmt> {
+        // Every used allocation has been hoisted to its planned attachment scope;
+        // unused allocations are intentionally removed as well.
+        if let Some((mapped, _)) = self.remap_buffer(&value.buffer)? {
+            let (storage, _) = self.plan.remap(&value.buffer).expect("remapped buffer");
+            if !value.buffer.same_as(&storage.backing) && !mapped.same_as(&storage.backing) {
+                return Ok(DeclBuffer::new(mapped, storage.backing.data()?)?.into());
             }
         }
         Evaluate::from_i64(0).map(Into::into)
@@ -619,52 +972,186 @@ impl StoragePlanRewriter {
     }
 }
 
-fn compatible_storage(lhs: &BufferVar, rhs: &BufferVar) -> bool {
-    let lhs = lhs.type_annotation();
-    let rhs = rhs.type_annotation();
-    lhs.storage_scope == rhs.storage_scope && lhs.shape.len() == 1 && rhs.shape.len() == 1
+struct StorageEntry {
+    allocations: Vec<usize>,
+    attach_scope: Option<ObjectIdentity>,
+    constant_bits: u64,
+    element_type: PrimType,
 }
 
-fn merge_reused_storage(lhs: &BufferVar, rhs: &BufferVar) -> Result<BufferVar> {
-    let lhs_type = lhs.type_annotation();
-    let rhs_type = rhs.type_annotation();
-    let lhs_bits = constant_allocation_bits(lhs)?;
-    let rhs_bits = constant_allocation_bits(rhs)?;
-    if lhs_type.dtype.dtype == rhs_type.dtype.dtype && lhs_bits >= rhs_bits {
-        return Ok(lhs.clone());
+impl StorageEntry {
+    fn matches(&self, allocation: &AllocationInfo, allocations: &[AllocationInfo]) -> bool {
+        self.attach_scope == allocation.attach_scope
+            && allocations[self.allocations[0]].storage_scope == allocation.storage_scope
     }
-    let (dtype, bits) =
-        if lane_count(rhs_type.dtype.dtype.lanes) > lane_count(lhs_type.dtype.dtype.lanes) {
-            (rhs_type.dtype.clone(), lhs_bits.max(rhs_bits))
-        } else {
-            (lhs_type.dtype.clone(), lhs_bits.max(rhs_bits))
+
+    fn can_free(&self, allocations: &[AllocationInfo]) -> bool {
+        let first = &allocations[self.allocations[0]];
+        let ty = first.buffer.type_annotation();
+        !first.storage_scope.tag.is_empty()
+            || (!first.storage_scope.is_thread_private()
+                && !is_scalable_dtype(ty.dtype.dtype.lanes)
+                && (self.constant_bits == 0 || self.constant_bits > 32))
+    }
+}
+
+fn scalar_dtype(dtype: &PrimType) -> tvm_ffi::DLDataType {
+    tvm_ffi::DLDataType {
+        lanes: 1,
+        ..dtype.dtype
+    }
+}
+
+fn reusable_allocation(allocation: &AllocationInfo, bits: u64) -> bool {
+    let ty = allocation.buffer.type_annotation();
+    let small = allocation.storage_scope.tag.is_empty()
+        && (allocation.storage_scope.is_thread_private() || (bits != 0 && bits <= 32));
+    ty.shape.len() == 1 && !is_scalable_dtype(ty.dtype.dtype.lanes) && !small
+}
+
+fn find_free_entry(
+    free: &mut Vec<usize>,
+    entries: &[StorageEntry],
+    allocations: &[AllocationInfo],
+    allocation: &AllocationInfo,
+    bits: u64,
+    exact_dtype: bool,
+) -> Option<usize> {
+    let dtype = allocation.buffer.dtype();
+    let matches = |entry: &StorageEntry| entry.matches(allocation, allocations);
+    let position = if bits == 0 {
+        // Symbolic allocations use the native FIFO policy, with equal scalar types.
+        free.iter().position(|&index| {
+            let entry = &entries[index];
+            entry.constant_bits == 0
+                && matches(entry)
+                && entry.element_type.dtype == scalar_dtype(dtype)
+        })
+    } else {
+        let candidates = || {
+            free.iter().enumerate().filter(|&(_, &index)| {
+                let entry = &entries[index];
+                entry.constant_bits != 0
+                    && matches(entry)
+                    && (!exact_dtype || entry.element_type.dtype == dtype.dtype)
+            })
         };
-    let bits = bits.ok_or_else(|| value_error("reused storage must have constant size"))?;
-    let element_bits = u64::from(dtype.dtype.bits) * u64::from(lane_count(dtype.dtype.lanes));
-    let extent = IntImm::from_dtype(
-        lhs_type.shape.get(0)?.dtype(),
-        i64::try_from(bits.div_ceil(element_bits))
-            .map_err(|_| value_error("reused storage extent does not fit i64"))?,
+        // Try the smallest sufficient block first, then grow the largest smaller
+        // block.  Native StorageRewrite limits both searches to a factor of 16.
+        candidates()
+            .filter(|&(_, &index)| {
+                entries[index].constant_bits >= bits
+                    && entries[index].constant_bits <= bits.saturating_mul(16)
+            })
+            .min_by_key(|&(position, &index)| (entries[index].constant_bits, position))
+            .or_else(|| {
+                candidates()
+                    .filter(|&(_, &index)| {
+                        entries[index].constant_bits < bits
+                            && entries[index].constant_bits >= bits / 16
+                            && entries[index].element_type.dtype == scalar_dtype(dtype)
+                    })
+                    .max_by_key(|&(position, &index)| (entries[index].constant_bits, position))
+            })
+            .map(|(position, _)| position)
+    };
+    position.map(|position| free.remove(position))
+}
+
+fn expr_deep_equal(lhs: &PrimExpr, rhs: &PrimExpr) -> Result<bool> {
+    tvm_ffi::cached_global_func!("tirx.analysis.expr_deep_equal")
+        .call_tuple((lhs, rhs))?
+        .try_into()
+}
+
+fn resized_buffer(buffer: &BufferVar, dtype: PrimType, extent: PrimExpr) -> Result<BufferVar> {
+    // A combined allocation has fresh compact metadata, as in native BufferType.
+    let ty = BufferType::new(
+        buffer.type_annotation().storage_scope.as_str(),
+        &dtype.dtype.to_string(),
+        vec![extent.into()],
     )?;
-    lhs.with_name_and_type(
-        lhs.name.clone(),
-        BufferType::from_complete_fields(
-            lhs_type.span.clone(),
-            dtype,
-            lhs_type.storage_scope.clone(),
-            Array::new(vec![extent.into()]),
-            Array::new(Vec::new()),
-            lhs_type.elem_offset.clone(),
-            lhs_type.data_alignment,
-            lhs_type.offset_factor,
-            lhs_type.layout.clone(),
-            lhs_type.allocated_addr.clone(),
-        ),
-    )
+    buffer.with_name_and_type(buffer.name.clone(), ty)
+}
+
+fn prepare_backing(
+    entry: &StorageEntry,
+    allocations: &[AllocationInfo],
+    analyzer: &Analyzer,
+) -> Result<BufferVar> {
+    let first = &allocations[entry.allocations[0]].buffer;
+    let mut identical = true;
+    let mut dtype = first.dtype().clone();
+    for &index in entry.allocations.iter().skip(1) {
+        let buffer = &allocations[index].buffer;
+        if buffer.dtype().dtype.lanes > dtype.dtype.lanes {
+            dtype = buffer.dtype().clone();
+        }
+        let first_ty = first.type_annotation();
+        let ty = buffer.type_annotation();
+        if ty.dtype.dtype != first_ty.dtype.dtype || ty.shape.len() != first_ty.shape.len() {
+            identical = false;
+        } else {
+            for (lhs, rhs) in first_ty.shape.iter().zip(ty.shape.iter()) {
+                identical &= expr_deep_equal(&lhs, &rhs)?;
+            }
+        }
+    }
+    if allocations[entry.allocations[0]]
+        .storage_scope
+        .is_special_tagged()
+        && entry.constant_bits == 0
+    {
+        return Err(value_error(
+            "special tagged storage requires a constant allocation size",
+        ));
+    }
+    if identical {
+        return Ok(first.clone());
+    }
+
+    let mut size = None;
+    for &index in &entry.allocations {
+        let buffer = &allocations[index].buffer;
+        let ty = buffer.type_annotation();
+        if ty.shape.len() != 1 {
+            return Err(value_error("reused storage requires a flat allocation"));
+        }
+        let bits = i64::from(ty.dtype.dtype.bits) * i64::from(ty.dtype.dtype.lanes);
+        let mut extent = ty.shape.get(0)?;
+        if int_value(&extent).is_some_and(|value| value > i64::from(i32::MAX) / bits) {
+            extent = IntImm::new("int64", int_value(&extent).expect("constant extent"))?.into();
+        }
+        let size_bits = binary_op("tirx._OpMul", extent, IntImm::new("int32", bits)?.into())?;
+        size = Some(match size {
+            Some(previous) => binary_op("tirx._OpMax", previous, size_bits)?,
+            None => size_bits,
+        });
+    }
+    let size = size.expect("a storage entry has at least one allocation");
+    let bits: PrimExpr = IntImm::new(
+        "int32",
+        i64::from(dtype.dtype.bits) * i64::from(dtype.dtype.lanes),
+    )?
+    .into();
+    let remainder = binary_op("tirx._OpFloorMod", size.clone(), bits.clone())?;
+    let divisible = analyzer.can_prove(&binary_op(
+        "tirx._OpEQ",
+        remainder,
+        IntImm::new("int32", 0)?.into(),
+    )?)?;
+    let mut extent = binary_op("tirx._OpFloorDiv", size, bits)?;
+    if !divisible {
+        extent = binary_op("tirx._OpAdd", extent, IntImm::new("int32", 1)?.into())?;
+    }
+    resized_buffer(first, dtype, analyzer.simplify(&extent)?)
 }
 
 fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
     let ty = buffer.type_annotation();
+    if is_scalable_dtype(ty.dtype.dtype.lanes) {
+        return Ok(None);
+    }
     let mut elements = 1_u64;
     for extent in ty.shape.iter() {
         let Some(extent) = int_value(&extent).and_then(|literal| u64::try_from(literal).ok())
@@ -703,31 +1190,63 @@ fn merge_annotations<'a>(
     let mut values = Vec::new();
     let mut volatile = false;
     for annotation in annotations {
-        for (key, value) in annotation.iter() {
-            if key.as_str() == "volatile" {
+        for (key, _) in annotation.iter() {
+            if key.as_str() == "tirx.volatile" {
                 volatile = true;
-            } else if !values
-                .iter()
-                .any(|(existing, _): &(FfiString, Any)| existing == &key)
-            {
-                values.push((key, value));
             }
         }
     }
     if volatile {
-        values.push((FfiString::from("volatile"), Any::from(true)));
+        values.push((FfiString::from("tirx.volatile"), Any::from(true)));
     }
     Map::from_iter(values)
 }
 
-fn is_special_tagged_scope(scope: &str) -> bool {
-    scope
-        .split_once('.')
-        .is_some_and(|(_, tag)| !matches!(tag, "" | "dyn" | "workspace" | "vtcm"))
+#[derive(Clone, PartialEq, Eq)]
+struct StorageScope {
+    base: &'static str,
+    tag: String,
 }
 
-fn storage_base_scope(scope: &str) -> &str {
-    scope.split_once('.').map_or(scope, |(base, _)| base)
+impl StorageScope {
+    fn parse(scope: &str) -> Result<Self> {
+        let scope = if scope.is_empty() { "global" } else { scope };
+        // Dots in built-in names such as wmma.matrix_a are not storage tags.
+        for base in [
+            "global",
+            "shared",
+            "warp",
+            "local",
+            "wmma.matrix_a",
+            "wmma.matrix_b",
+            "wmma.accumulator",
+            "texture",
+            "amx.tmm",
+            "m16n8k8.matrixA",
+            "m16n8k8.matrixB",
+            "m16n8k8.matrixC",
+            "metal.simdgroup",
+            "metal.cooperative_tensor",
+            "trn.sbuf",
+            "trn.psum",
+        ] {
+            if let Some(tag) = scope.strip_prefix(base) {
+                return Ok(Self {
+                    base,
+                    tag: tag.to_owned(),
+                });
+            }
+        }
+        Err(value_error(&format!("unknown storage scope {scope}")))
+    }
+
+    fn is_thread_private(&self) -> bool {
+        !matches!(self.base, "global" | "shared")
+    }
+
+    fn is_special_tagged(&self) -> bool {
+        !matches!(self.tag.as_str(), "" | ".dyn" | ".workspace" | ".vtcm")
+    }
 }
 
 fn is_scalable_dtype(lanes: u16) -> bool {
@@ -743,12 +1262,26 @@ fn lane_count(lanes: u16) -> u16 {
     }
 }
 
-fn align_to(value: u64, alignment: u64) -> u64 {
-    value.div_ceil(alignment) * alignment
+fn align_to(value: u64, alignment: u64) -> Result<u64> {
+    value
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .ok_or_else(|| value_error("aligned storage size overflow"))
 }
 
-fn semantic_add(lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx._OpAdd")
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
+fn remap_offset(index: PrimExpr, bit_offset: u64, element_bits: u64) -> Result<PrimExpr> {
+    if element_bits == 0 || !bit_offset.is_multiple_of(element_bits) {
+        return Err(value_error(
+            "a merged storage offset is not aligned to the accessed element type",
+        ));
+    }
+    if bit_offset == 0 {
+        return Ok(index);
+    }
+    let offset = IntImm::from_dtype(
+        index.dtype(),
+        i64::try_from(bit_offset / element_bits)
+            .map_err(|_| value_error("a merged storage offset does not fit i64"))?,
+    )?;
+    binary_op("tirx._OpAdd", offset.into(), index)
 }

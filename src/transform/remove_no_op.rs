@@ -697,12 +697,12 @@ fn mutate_buffer_definition(
     mutator: &mut Mutator,
     buffer: &BufferVar,
 ) -> Result<BufferVar> {
-    let mut remaps = std::mem::take(&mut remover.buffer_remaps);
-    let result = remaps.mutate_definition(buffer, |expression| {
-        mutator.mutate(remover, expression)?.try_into()
-    });
-    remover.buffer_remaps = remaps;
-    result
+    BufferRemaps::mutate_definition(
+        remover,
+        buffer,
+        |state| &mut state.buffer_remaps,
+        |state, expression| mutator.mutate(state, expression)?.try_into(),
+    )
 }
 
 fn mutate_under_constraint<T>(

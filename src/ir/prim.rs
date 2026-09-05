@@ -19,11 +19,14 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, ObjectArc, ObjectRefCast, Result,
-    String, TYPE_ERROR,
+    Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, ObjectArc, ObjectRefCast,
+    ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
-use crate::ir::{Expr, ExprObj, PrimExpr, PrimType, Span, Var};
+use crate::ir::{
+    Call, CallObj, Expr, ExprObj, FloatImm, FloatImmObj, IntImm, IntImmObj, Op, PrimExpr, PrimType,
+    Span, Var,
+};
 
 /// ABI-complete Rust representation of TVM's `AddNode`.
 #[repr(C)]
@@ -888,6 +891,44 @@ impl std::ops::Deref for RampObj {
 }
 
 impl Ramp {
+    /// Construct a vector ramp, converting the stride to the base's scalar type.
+    pub fn new<B: Into<Expr>, S: Into<Expr>, L: Into<Expr>>(
+        base: B,
+        stride: S,
+        lanes: L,
+    ) -> Result<Self> {
+        Self::with_span(base, stride, lanes, None)
+    }
+
+    /// Construct a vector ramp with optional source metadata.
+    pub fn with_span<B: Into<Expr>, S: Into<Expr>, L: Into<Expr>>(
+        base: B,
+        stride: S,
+        lanes: L,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        let base = PrimExpr::try_from(base.into())?;
+        let mut stride = PrimExpr::try_from(stride.into())?;
+        if base.dtype().lanes != 1 || stride.dtype().lanes != 1 {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "Ramp base and stride must be scalar",
+                "",
+            ));
+        }
+        if stride.dtype() != base.dtype() {
+            stride = cast_ramp_stride(base.type_annotation(), stride)?;
+        }
+        let (ty, lanes) = vector_type_and_lanes(base.dtype(), lanes.into().try_into()?)?;
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            ty,
+            base,
+            stride,
+            lanes,
+        ))
+    }
+
     /// Construct a ramp from every physical field after external validation.
     pub fn from_complete_fields(
         span: Option<Span>,
@@ -942,6 +983,25 @@ impl std::ops::Deref for BroadcastObj {
 }
 
 impl Broadcast {
+    /// Repeat one scalar value across fixed or scalable vector lanes.
+    pub fn new<V: Into<Expr>, L: Into<Expr>>(value: V, lanes: L) -> Result<Self> {
+        Self::with_span(value, lanes, None)
+    }
+
+    /// Construct a broadcast with optional source metadata.
+    pub fn with_span<V: Into<Expr>, L: Into<Expr>>(
+        value: V,
+        lanes: L,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        let value = PrimExpr::try_from(value.into())?;
+        if value.dtype().lanes != 1 {
+            return Err(Error::new(TYPE_ERROR, "Broadcast value must be scalar", ""));
+        }
+        let (ty, lanes) = vector_type_and_lanes(value.dtype(), lanes.into().try_into()?)?;
+        Ok(Self::from_complete_fields(span.cloned(), ty, value, lanes))
+    }
+
     /// Construct a broadcast from every physical field after external validation.
     pub fn from_complete_fields(
         span: Option<Span>,
@@ -994,6 +1054,80 @@ impl std::ops::Deref for ShuffleObj {
 }
 
 impl Shuffle {
+    /// Construct a shuffle of vectors with the same scalar element type.
+    pub fn new(vectors: Array<PrimExpr>, indices: Array<PrimExpr>) -> Result<Self> {
+        Self::with_span(vectors, indices, None)
+    }
+
+    /// Construct a shuffle with optional source metadata.
+    pub fn with_span(
+        vectors: Array<PrimExpr>,
+        indices: Array<PrimExpr>,
+        span: Option<&Span>,
+    ) -> Result<Self> {
+        if vectors.is_empty() || indices.is_empty() {
+            return Err(Error::new(
+                VALUE_ERROR,
+                "Shuffle vectors and indices must be nonempty",
+                "",
+            ));
+        }
+        let dtype = vectors.get(0)?.dtype();
+        let mut total_lanes = 0_usize;
+        for vector in vectors.iter() {
+            let other = vector.dtype();
+            if other.code != dtype.code || other.bits != dtype.bits {
+                return Err(Error::new(
+                    TYPE_ERROR,
+                    "Shuffle element types must match",
+                    "",
+                ));
+            }
+            total_lanes += fixed_vector_lanes(&vector)?;
+        }
+        if indices.len() > total_lanes {
+            return Err(Error::new(
+                VALUE_ERROR,
+                "Shuffle has more indices than input lanes",
+                "",
+            ));
+        }
+        let ty = PrimType::from_dtype(DLDataType {
+            lanes: indices.len() as u16,
+            ..dtype
+        })?;
+        Ok(Self::from_complete_fields(
+            span.cloned(),
+            ty,
+            vectors,
+            indices,
+        ))
+    }
+
+    /// Concatenate vectors, reusing the input when there is only one.
+    pub fn concat(vectors: Array<PrimExpr>, span: Option<&Span>) -> Result<PrimExpr> {
+        if vectors.len() == 1 {
+            return vectors.get(0);
+        }
+        let mut indices = Vec::new();
+        for vector in vectors.iter() {
+            for _ in 0..fixed_vector_lanes(&vector)? {
+                indices.push(IntImm::new("int32", indices.len() as i64)?.into());
+            }
+        }
+        Ok(Self::with_span(vectors, Array::new(indices), span)?.into())
+    }
+
+    /// Extract one vector lane as a scalar expression.
+    pub fn extract_element(vector: PrimExpr, index: i32, span: Option<&Span>) -> Result<PrimExpr> {
+        Ok(Self::with_span(
+            Array::new(vec![vector]),
+            Array::new(vec![IntImm::new("int32", i64::from(index))?.into()]),
+            span,
+        )?
+        .into())
+    }
+
     /// Construct a shuffle from every physical field after external validation.
     pub fn from_complete_fields(
         span: Option<Span>,
@@ -1009,6 +1143,120 @@ impl Shuffle {
             }),
         }
     }
+}
+
+// Ramp uses TVM's scalar cast semantics: fold literals, otherwise create a Cast.
+fn cast_ramp_stride(ty: PrimType, value: PrimExpr) -> Result<PrimExpr> {
+    let integer = value.as_node::<IntImmObj>().map(|literal| literal.value);
+    let float = value.as_node::<FloatImmObj>().map(|literal| literal.value);
+    if integer.is_none() && float.is_none() {
+        return Ok(Cast::new(ty, value)?.into());
+    }
+    let dtype = ty.dtype;
+    let span = value.span.as_ref();
+    let code = dtype.code;
+    if code == DLDataTypeCode::kDLUInt as u8 {
+        let unsigned = if let Some(integer) = integer {
+            u64::try_from(integer).ok()
+        } else {
+            float
+                .filter(|value| (0.0..18446744073709551616.0).contains(value))
+                .map(|value| value as u64)
+        }
+        .ok_or_else(|| Error::new(VALUE_ERROR, "Stride literal is outside uint64 range", ""))?;
+        if unsigned > i64::MAX as u64 {
+            let word_type = PrimType::new("uint32")?.dtype;
+            return Call::with_metadata(
+                ty,
+                Op::get("tirx.large_uint_imm")?,
+                vec![
+                    IntImm::from_dtype_with_span(word_type, (unsigned & 0xffff_ffff) as i64, span)?
+                        .into(),
+                    IntImm::from_dtype_with_span(word_type, (unsigned >> 32) as i64, span)?.into(),
+                ],
+                None,
+                Vec::new(),
+                span,
+            )
+            .try_cast();
+        }
+        return Ok(IntImm::from_dtype_with_span(dtype, unsigned as i64, span)?.into());
+    }
+    if code == DLDataTypeCode::kDLInt as u8 || code == DLDataTypeCode::kDLBool as u8 {
+        let integer = integer
+            .or_else(|| {
+                float
+                    .map(f64::trunc)
+                    .filter(|value| (-9223372036854775808.0..9223372036854775808.0).contains(value))
+                    .map(|value| value as i64)
+            })
+            .ok_or_else(|| Error::new(VALUE_ERROR, "Stride literal is outside int64 range", ""))?;
+        return Ok(IntImm::from_dtype_with_span(dtype, integer, span)?.into());
+    }
+    // MakeConstScalar does not construct custom floating-point constants.
+    if code >= 129 {
+        return Err(Error::new(
+            TYPE_ERROR,
+            "Cannot cast a stride literal to a custom dtype",
+            "",
+        ));
+    }
+    let float = float.unwrap_or_else(|| integer.unwrap() as f64);
+    Ok(FloatImm::from_dtype_with_span(dtype, float, span)?.into())
+}
+
+fn fixed_vector_lanes(value: &PrimExpr) -> Result<usize> {
+    usize::try_from(value.dtype().lanes as i16).map_err(|_| {
+        Error::new(
+            TYPE_ERROR,
+            "Shuffle requires fixed-length input vectors",
+            "",
+        )
+    })
+}
+
+fn vector_type_and_lanes(dtype: DLDataType, lanes: PrimExpr) -> Result<(PrimType, PrimExpr)> {
+    if let Some(literal) = lanes.as_node::<IntImmObj>() {
+        let count = literal.value as i32;
+        if count <= 1 {
+            return Err(Error::new(
+                VALUE_ERROR,
+                "Vector lane count must be greater than one",
+                "",
+            ));
+        }
+        let ty = PrimType::from_dtype(DLDataType {
+            lanes: count as u16,
+            ..dtype
+        })?;
+        return Ok((ty, IntImm::new("int32", i64::from(count))?.into()));
+    }
+    let vscale = Op::get("ir.prim.vscale")?;
+    let factor = lanes.as_node::<MulObj>().and_then(|multiply| {
+        [(&multiply.a, &multiply.b), (&multiply.b, &multiply.a)]
+            .into_iter()
+            .find_map(|(constant, call)| {
+                let constant = constant.as_node::<IntImmObj>()?;
+                let call = call.as_node::<CallObj>()?;
+                call.op.same_as(&vscale).then_some(constant.value as i32)
+            })
+    });
+    let factor = factor
+        .filter(|factor| (2..32768).contains(factor))
+        .ok_or_else(|| {
+            Error::new(
+                VALUE_ERROR,
+                "Scalable lanes must be vscale() times a factor in 2..32768",
+                "",
+            )
+        })?;
+    let ty = PrimType::from_dtype(DLDataType {
+        lanes: (-factor) as u16,
+        ..dtype
+    })?;
+    let call = Call::new(PrimType::new("int32")?, vscale, Vec::new());
+    let lanes = Mul::new(call, IntImm::new("int32", i64::from(factor))?)?.into();
+    Ok((ty, lanes))
 }
 
 /// ABI-complete Rust representation of TVM's `SelectNode`.
