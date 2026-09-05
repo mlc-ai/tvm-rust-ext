@@ -18,23 +18,30 @@
  */
 
 use tvm_ffi::{
-    Any, Array, DLDataTypeCode, DLDataTypeExt, Function, MapValue, Mutator, ObjectRefCast,
-    ObjectRefCore, Result, String,
+    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Function, MapValue, Mutator,
+    ObjectRefCast, ObjectRefCore, Result, String,
 };
 
+#[cfg(test)]
+#[path = "../../tests/unit/lower_intrin_scopes.rs"]
+mod scope_tests;
+
 use super::utils::{
-    binary_op, get_operator, int_value, mutate_expr_default, mutate_stmt_default, value_error,
-    with_prim_func_body,
+    binary_op, cast_prim_expr, finish_constraint_contexts, get_operator, int_value,
+    mutate_expr_default, option_same_as, value_error, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
-use crate::analysis::Analyzer;
+use crate::analysis::{side_effect, Analyzer, CallEffectKind};
 use crate::ir::prim::{
-    Add, And, Broadcast, BroadcastObj, Cast, CastObj, Div, FloorDiv, FloorDivObj, FloorMod,
-    FloorModObj, Let, Max, Mod, MulObj, Or, Ramp, Select, EQ, GE, LE, LT, NE,
+    Add, Broadcast, BroadcastObj, Cast, CastObj, FloorDiv, FloorDivObj, FloorMod, FloorModObj, Let,
+    Max, MulObj, Not, Ramp, Select, EQ, GT, NE,
 };
-use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::target::Target;
-use crate::tirx::{BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt};
+use crate::tirx::{
+    AssertStmt, AttrStmt, Bind, BufferType, BufferVar, DeclBuffer, Evaluate, For, IfThenElse,
+    IterVar, PrimFunc, PrimVar, Stmt,
+};
 
 /// Lower target-independent intrinsics using the function's target metadata.
 pub fn lower_intrin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
@@ -72,8 +79,9 @@ fn lower_intrin_prim_func_with_config(
         })?
         .try_into()?;
     let mut injecter = IntrinInjecter::new(&target, enable_fast_math)?;
-    let body: Stmt =
-        tvm_ffi::structural_mutate(function.body.clone(), &mut injecter)?.try_into()?;
+    let body = injecter.with_scope(|injecter| {
+        tvm_ffi::structural_mutate(function.body.clone(), injecter)?.try_into()
+    })?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -84,6 +92,8 @@ struct AccessPtrAlias {
 
 struct IntrinInjecter {
     analyzer: Analyzer,
+    buffer_remaps: BufferRemaps,
+    constraint_exits: Vec<Function>,
     attribute_names: Vec<String>,
     fma_rule: Option<Function>,
     aliases: Vec<AccessPtrAlias>,
@@ -92,8 +102,9 @@ struct IntrinInjecter {
     address_of_operator: Expr,
     fma_operator: Expr,
     floor_operator: Expr,
-    shift_right_operator: Expr,
     bitwise_and_operator: Expr,
+    likely_operator: Expr,
+    if_then_else_operator: Expr,
 }
 
 impl IntrinInjecter {
@@ -138,6 +149,8 @@ impl IntrinInjecter {
         let fma_rule = first_operator_rule(&fma_operator, &attribute_names)?;
         Ok(Self {
             analyzer: Analyzer::new()?,
+            buffer_remaps: BufferRemaps::default(),
+            constraint_exits: Vec::new(),
             attribute_names,
             fma_rule,
             aliases: Vec::new(),
@@ -146,9 +159,67 @@ impl IntrinInjecter {
             address_of_operator: get_operator("tirx.address_of")?,
             fma_operator,
             floor_operator: get_operator("tirx.floor")?,
-            shift_right_operator: get_operator("ir.prim.shift_right")?,
             bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
+            likely_operator: get_operator("ir.prim.likely")?,
+            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
         })
+    }
+
+    fn with_scope<T>(&mut self, operation: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let begin = self.constraint_exits.len();
+        let result = operation(self);
+        finish_constraint_contexts(result, self.constraint_exits.split_off(begin))
+    }
+
+    fn with_constraint<T>(
+        &mut self,
+        condition: &PrimExpr,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        self.with_scope(|this| {
+            this.constraint_exits
+                .push(this.analyzer.enter_constraint(condition)?);
+            operation(this)
+        })
+    }
+
+    fn with_constraint_facts<T>(
+        &mut self,
+        condition: &PrimExpr,
+        operation: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        self.with_scope(|this| {
+            let exits = super::analyzer_constraints::enter_constraint_facts(
+                &this.analyzer,
+                condition,
+                &this.bitwise_and_operator,
+            )?;
+            this.constraint_exits.extend(exits);
+            operation(this)
+        })
+    }
+
+    // The native VisitStmt wrapper emits access-pointer aliases around every
+    // statement, including statements with custom Analyzer scope handling.
+    fn with_aliases(&mut self, operation: impl FnOnce(&mut Self) -> Result<Stmt>) -> Result<Stmt> {
+        let begin = self.aliases.len();
+        let result = operation(self);
+        let aliases = self.aliases.split_off(begin);
+        let mut mapped = result?;
+        for alias in aliases.into_iter().rev() {
+            mapped = Stmt::sequence(vec![
+                DeclBuffer::new(alias.buffer, alias.data)?.into(),
+                mapped,
+            ])?;
+        }
+        Ok(mapped)
+    }
+
+    fn bind_pure_value(&self, variable: &Var, value: &PrimExpr) -> Result<()> {
+        if side_effect(value)? <= CallEffectKind::kPure {
+            self.analyzer.bind_expression(variable, value)?;
+        }
+        Ok(())
     }
 
     fn lower_access_ptr(&mut self, call: &Call) -> Result<Expr> {
@@ -190,15 +261,15 @@ impl IntrinInjecter {
         })?;
 
         let scalar_dtype = with_lanes(&dtype, 1)?;
-        let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1))?;
+        let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1)?)?;
         if dtype.dtype.lanes != 1 {
             let lanes = i64::from(dtype.dtype.lanes);
-            offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes))?;
-            scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes))?;
+            offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes)?)?;
+            scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes)?)?;
             offset = Ramp::new(
                 offset,
-                int_like(&scalar_extent, 1),
-                int_like(&scalar_extent, lanes),
+                int_like(&scalar_extent, 1)?,
+                int_like(&scalar_extent, lanes)?,
             )?
             .into();
         }
@@ -251,6 +322,9 @@ impl IntrinInjecter {
     }
 
     fn apply_intrinsic_rule(&mut self, call: &Call, mutator: &mut Mutator) -> Result<Option<Expr>> {
+        if call.op.as_node::<crate::ir::OpObj>().is_none() {
+            return Ok(None);
+        }
         let Ok(primitive) = PrimExpr::try_from(Expr::from(call.clone())) else {
             return Ok(None);
         };
@@ -287,8 +361,13 @@ impl IntrinInjecter {
                     vec![lhs.into(), rhs.into(), c.clone().into()],
                 );
                 let fma = PrimExpr::try_from(Expr::from(fma))?;
-                let lowered: PrimExpr = rule.call_tuple((fma,))?.try_into()?;
-                return mutator.mutate(self, &lowered)?.try_into();
+                let lowered: Option<PrimExpr> = rule.call_tuple((fma,))?.try_into()?;
+                if let Some(lowered) = lowered {
+                    return mutator.mutate(self, &lowered)?.try_into();
+                }
+                // Like C++ MakeFMA, a declined rule visits the original Add,
+                // without applying the Broadcast/Cast swaps attempted above.
+                return mutate_expr_default(self, mutator, original.clone().into())?.try_into();
             }
         }
         if !lhs.same_as(a) || !rhs.same_as(b) {
@@ -338,23 +417,193 @@ impl IntrinInjecter {
     }
 
     fn can_prove_nonnegative(&self, value: &PrimExpr) -> Result<bool> {
-        self.analyzer
-            .can_prove(&GE::new(value.clone(), int_like(value, 0))?.into())
+        if let Some(literal) = int_value(value) {
+            return Ok(literal >= 0);
+        }
+        // Match Analyzer::CanProveGreaterEqual, including vector element bounds.
+        let simplified = self.analyzer.rewrite_simplify(value)?;
+        Ok(self.analyzer.const_int_bound(&simplified)?.min_value >= 0)
     }
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl IntrinInjecter {
-    fn mutate_statement(&mut self, value: Stmt, mutator: &mut Mutator) -> Result<Stmt> {
-        let alias_begin = self.aliases.len();
-        let mut mapped = mutate_stmt_default(self, mutator, value)?;
-        for alias in self.aliases.drain(alias_begin..).rev() {
-            mapped = Stmt::sequence(vec![
-                DeclBuffer::new(alias.buffer, alias.data)?.into(),
-                mapped,
-            ])?;
+    fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            this.with_scope(|this| {
+                this.analyzer.bind(
+                    value.loop_var.as_var(),
+                    &Range::from_min_extent(value.min.clone(), value.extent.clone())?,
+                )?;
+                let minimum: PrimExpr = mutator.mutate(this, &value.min)?.try_into()?;
+                let extent: PrimExpr = mutator.mutate(this, &value.extent)?.try_into()?;
+                let step = mutator.mutate(this, &value.step)?.try_into()?;
+                let positive = GT::new(extent.clone(), int_like(&extent, 0)?)?.into();
+                let body: Stmt = this.with_constraint_facts(&positive, |this| {
+                    mutator.mutate(this, &value.body)?.try_into()
+                })?;
+                if minimum.same_as(&value.min)
+                    && extent.same_as(&value.extent)
+                    && option_same_as(&step, &value.step)
+                    && body.same_as(&value.body)
+                {
+                    return Ok(value.into());
+                }
+                Ok(For::from_complete_fields(
+                    value.span.clone(),
+                    value.loop_var.clone(),
+                    minimum,
+                    extent,
+                    value.kind,
+                    body,
+                    value.thread_binding.clone(),
+                    value.annotations.clone(),
+                    step,
+                )
+                .into())
+            })
+        })
+    }
+
+    fn mutate_conditional(&mut self, value: IfThenElse, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            this.with_scope(|this| {
+                let condition: PrimExpr = mutator.mutate(this, &value.condition)?.try_into()?;
+                let real_condition = if let Some(call) = condition.as_node::<CallObj>() {
+                    if call.op.same_as(&this.likely_operator) {
+                        call.args.get(0)?.try_into()?
+                    } else {
+                        condition.clone()
+                    }
+                } else {
+                    condition.clone()
+                };
+                let then_case: Stmt = this.with_constraint_facts(&real_condition, |this| {
+                    mutator.mutate(this, &value.then_case)?.try_into()
+                })?;
+                let else_case = value
+                    .else_case
+                    .as_ref()
+                    .map(|branch| {
+                        let negative = this
+                            .analyzer
+                            .rewrite_simplify(&Not::new(real_condition.clone())?.into())?;
+                        this.with_constraint(&negative, |this| {
+                            mutator.mutate(this, branch)?.try_into()
+                        })
+                    })
+                    .transpose()?;
+                match int_value(&real_condition) {
+                    Some(1) => return Ok(then_case),
+                    Some(0) => {
+                        return else_case
+                            .map(Ok)
+                            .unwrap_or_else(|| Evaluate::from_i64(0).map(Into::into))
+                    }
+                    _ => {}
+                }
+                if condition.same_as(&value.condition)
+                    && then_case.same_as(&value.then_case)
+                    && option_same_as(&else_case, &value.else_case)
+                {
+                    return Ok(value.into());
+                }
+                Ok(IfThenElse::from_complete_fields(
+                    value.span.clone(),
+                    condition,
+                    then_case,
+                    else_case,
+                )
+                .into())
+            })
+        })
+    }
+
+    fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            this.with_scope(|this| {
+                if matches!(value.attr_key.as_str(), "thread_extent" | "virtual_thread") {
+                    let iteration: IterVar = value.node.clone().try_into()?;
+                    if iteration.thread_tag()?.is_empty() {
+                        return Err(value_error("thread extent requires a thread tag"));
+                    }
+                    this.analyzer.bind(
+                        iteration.var()?.as_var(),
+                        &Range::from_min_extent(int_like(&value.value, 0)?, value.value.clone())?,
+                    )?;
+                }
+                BufferRemaps::mutate_stmt(this, mutator, value.into(), |state| {
+                    &mut state.buffer_remaps
+                })
+            })
+        })
+    }
+
+    fn mutate_binding(&mut self, value: Bind, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            let bound: Expr = mutator.mutate(this, &value.value)?.try_into()?;
+            if let Ok(primitive) = PrimExpr::try_from(&bound) {
+                this.bind_pure_value(&value.var, &primitive)?;
+            }
+            if bound.same_as(&value.value) {
+                return Ok(value.into());
+            }
+            Ok(value.copy_with(value.var.clone(), bound).into())
+        })
+    }
+
+    fn mutate_assertion(&mut self, value: AssertStmt, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            let condition: PrimExpr = mutator.mutate(this, &value.condition)?.try_into()?;
+            // Assert facts remain active for following siblings until the enclosing scope ends.
+            this.constraint_exits
+                .push(this.analyzer.enter_constraint(&condition)?);
+            if condition.same_as(&value.condition) {
+                return Ok(value.into());
+            }
+            Ok(value
+                .copy_with(
+                    condition,
+                    value.error_kind.clone(),
+                    value.message_parts.clone(),
+                )
+                .into())
+        })
+    }
+
+    fn mutate_let(&mut self, value: Let, mutator: &mut Mutator) -> Result<Let> {
+        let bound: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        self.bind_pure_value(&value.var, &bound)?;
+        let body: PrimExpr = mutator.mutate(self, &value.body)?.try_into()?;
+        if bound.same_as(&value.value) && body.same_as(&value.body) {
+            return Ok(value);
         }
-        Ok(mapped)
+        Let::new(value.var.clone(), bound, body)
+    }
+
+    fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
+        let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
+        let true_value: PrimExpr = self.with_constraint_facts(&condition, |this| {
+            mutator.mutate(this, &value.true_value)?.try_into()
+        })?;
+        let negative = self
+            .analyzer
+            .rewrite_simplify(&Not::new(condition.clone())?.into())?;
+        let false_value: PrimExpr = self.with_constraint(&negative, |this| {
+            mutator.mutate(this, &value.false_value)?.try_into()
+        })?;
+        match int_value(&condition) {
+            Some(0) => return Ok(false_value),
+            Some(1) => return Ok(true_value),
+            _ => {}
+        }
+        if condition.same_as(&value.condition)
+            && true_value.same_as(&value.true_value)
+            && false_value.same_as(&value.false_value)
+        {
+            return Ok(value.into());
+        }
+        Select::new(condition, true_value, false_value).map(Into::into)
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
@@ -364,6 +613,38 @@ impl IntrinInjecter {
         }
         if let Some(lowered) = self.apply_intrinsic_rule(&value, mutator)? {
             return Ok(lowered);
+        }
+        if value.op.same_as(&self.if_then_else_operator) {
+            let condition: PrimExpr = mutator.mutate(self, &value.args.get(0)?)?.try_into()?;
+            let old_true = value.args.get(1)?;
+            let old_false = value.args.get(2)?;
+            let true_value: Expr = self.with_constraint_facts(&condition, |this| {
+                mutator.mutate(this, &old_true)?.try_into()
+            })?;
+            let negative = Not::new(condition.clone())?.into();
+            let false_value: Expr = self.with_constraint(&negative, |this| {
+                mutator.mutate(this, &old_false)?.try_into()
+            })?;
+            match int_value(&condition) {
+                Some(0) => return Ok(false_value),
+                Some(1) => return Ok(true_value),
+                _ => {}
+            }
+            if condition.same_as(&value.args.get(0)?)
+                && true_value.same_as(&old_true)
+                && false_value.same_as(&old_false)
+            {
+                return Ok(value.into());
+            }
+            return Ok(Call::with_metadata(
+                value.ty.clone(),
+                value.op.clone(),
+                vec![condition.into(), true_value, false_value],
+                value.attrs.clone(),
+                Vec::new(),
+                value.span.as_ref(),
+            )
+            .into());
         }
         mutate_expr_default(self, mutator, value.into())
     }
@@ -387,73 +668,69 @@ impl IntrinInjecter {
         let mapped = mapped_node;
         let dtype = mapped.a.type_annotation();
         if let Some(shift) = constant_power_of_two(&mapped.b) {
-            return shift_right(
-                &self.shift_right_operator,
+            return binary_op(
+                "tirx.right_shift",
                 mapped.a.clone(),
-                int_like(&mapped.a, i64::from(shift)),
+                int_like(&mapped.a, i64::from(shift))?,
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
             if self.can_prove_nonnegative(&mapped.a)? || self.can_prove_nonnegative(&original)? {
-                return Ok(Div::new(mapped.a.clone(), mapped.b.clone())?.into());
+                return binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone());
             }
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
-                    let shifted =
-                        Add::new(mapped.a.clone(), int_like(&mapped.a, divisor * coefficient))?;
-                    return Ok(crate::ir::prim::Sub::new(
-                        Div::new(shifted, mapped.b.clone())?,
-                        int_like(&mapped.a, coefficient),
-                    )?
-                    .into());
+                    let shifted = binary_op(
+                        "tirx._OpAdd",
+                        mapped.a.clone(),
+                        int_like(&mapped.a, divisor * coefficient)?,
+                    )?;
+                    return binary_op(
+                        "tirx._OpSub",
+                        binary_op("tirx._OpTruncDiv", shifted, mapped.b.clone())?,
+                        int_like(&mapped.a, coefficient)?,
+                    );
                 }
             }
-            let quotient: PrimExpr = Div::new(mapped.a.clone(), mapped.b.clone())?.into();
-            let remainder: PrimExpr = Mod::new(mapped.a.clone(), mapped.b.clone())?.into();
-            if matches!(dtype.dtype.bits, 32 | 64) {
-                let correction = shift_right(
-                    &self.shift_right_operator,
+            let quotient = binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?;
+            let remainder = binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
+            if dtype.dtype.code == DLDataTypeCode::kDLInt as u8
+                && dtype.dtype.lanes == 1
+                && matches!(dtype.dtype.bits, 32 | 64)
+            {
+                let correction = binary_op(
+                    "tirx.right_shift",
                     remainder,
-                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1)),
+                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
-                return Ok(Add::new(quotient, correction)?.into());
+                return binary_op("tirx._OpAdd", quotient, correction);
             }
             return Ok(Select::new(
-                GE::new(remainder.clone(), int_like(&remainder, 0))?,
+                binary_op("tirx._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
                 quotient.clone(),
-                crate::ir::prim::Sub::new(quotient, int_like(&mapped.a, 1))?,
+                binary_op("tirx._OpSub", quotient, int_like(&mapped.a, 1)?)?,
             )?
             .into());
         }
         if dtype.dtype.code == DLDataTypeCode::kDLFloat as u8 {
-            let division: PrimExpr = Div::new(mapped.a.clone(), mapped.b.clone())?.into();
+            let division = binary_op("tirx._OpDiv", mapped.a.clone(), mapped.b.clone())?;
             let floor = Call::new(dtype, self.floor_operator.clone(), vec![division.into()]);
             return mutator.mutate(self, &floor)?.try_into();
         }
-        let remainder = Var::with_type("rmod", dtype.clone());
-        let quotient = Var::with_type("rdiv", dtype);
-        let zero = int_like(&mapped.a, 0);
-        let condition = Or::new(
-            And::new(
-                GE::new(mapped.b.clone(), zero.clone())?,
-                GE::new(remainder.clone(), zero.clone())?,
-            )?,
-            And::new(
-                LT::new(mapped.b.clone(), zero.clone())?,
-                LE::new(remainder.clone(), zero)?,
-            )?,
-        )?;
+        let remainder: PrimVar = Var::with_type("rmod", dtype.clone()).try_into()?;
+        let quotient: PrimVar = Var::with_type("rdiv", dtype).try_into()?;
+        let condition = floor_remainder_has_correct_sign(mapped.b.clone(), (&remainder).into())?;
         let selected = Select::new(
             condition,
             quotient.clone(),
-            crate::ir::prim::Sub::new(quotient.clone(), int_like(&mapped.a, 1))?,
+            binary_op("tirx._OpSub", (&quotient).into(), int_like(&mapped.a, 1)?)?,
         )?;
         Ok(Let::new(
-            remainder,
-            Mod::new(mapped.a.clone(), mapped.b.clone())?,
+            remainder.into(),
+            binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
             Let::new(
-                quotient,
-                Div::new(mapped.a.clone(), mapped.b.clone())?,
+                quotient.into(),
+                binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?,
                 selected,
             )?,
         )?
@@ -473,75 +750,72 @@ impl IntrinInjecter {
         let dtype = mapped.a.type_annotation();
         if let Some(shift) = constant_power_of_two(&mapped.b) {
             let mask = (1_i64 << shift) - 1;
-            return bitwise_and(
-                &self.bitwise_and_operator,
+            return binary_op(
+                "tirx.bitwise_and",
                 mapped.a.clone(),
-                int_like(&mapped.a, mask),
+                int_like(&mapped.a, mask)?,
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
             if self.can_prove_nonnegative(&mapped.a)? {
-                return Ok(Mod::new(mapped.a.clone(), mapped.b.clone())?.into());
+                return binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone());
             }
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
-                    return Ok(Mod::new(
-                        Add::new(mapped.a.clone(), int_like(&mapped.a, divisor * coefficient))?,
+                    return binary_op(
+                        "tirx._OpTruncMod",
+                        binary_op(
+                            "tirx._OpAdd",
+                            mapped.a.clone(),
+                            int_like(&mapped.a, divisor * coefficient)?,
+                        )?,
                         mapped.b.clone(),
-                    )?
-                    .into());
+                    );
                 }
             }
-            let remainder: PrimExpr = Mod::new(mapped.a.clone(), mapped.b.clone())?.into();
-            if matches!(dtype.dtype.bits, 32 | 64) {
-                let sign = shift_right(
-                    &self.shift_right_operator,
+            let remainder = binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
+            if dtype.dtype.code == DLDataTypeCode::kDLInt as u8
+                && dtype.dtype.lanes == 1
+                && matches!(dtype.dtype.bits, 32 | 64)
+            {
+                let sign = binary_op(
+                    "tirx.right_shift",
                     remainder.clone(),
-                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1)),
+                    int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
-                let correction = bitwise_and(&self.bitwise_and_operator, mapped.b.clone(), sign)?;
-                return Ok(Add::new(remainder, correction)?.into());
+                let correction = binary_op("tirx.bitwise_and", mapped.b.clone(), sign)?;
+                return binary_op("tirx._OpAdd", remainder, correction);
             }
             return Ok(Select::new(
-                GE::new(remainder.clone(), int_like(&remainder, 0))?,
+                binary_op("tirx._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
                 remainder.clone(),
-                Add::new(remainder, mapped.b.clone())?,
+                binary_op("tirx._OpAdd", remainder, mapped.b.clone())?,
             )?
             .into());
         }
         if dtype.dtype.code == DLDataTypeCode::kDLFloat as u8 {
-            let division: PrimExpr = Div::new(mapped.a.clone(), mapped.b.clone())?.into();
+            let division = binary_op("tirx._OpDiv", mapped.a.clone(), mapped.b.clone())?;
             let floor: PrimExpr = mutator
                 .mutate(
                     self,
                     &Call::new(dtype, self.floor_operator.clone(), vec![division.into()]),
                 )?
                 .try_into()?;
-            return Ok(crate::ir::prim::Sub::new(
+            return binary_op(
+                "tirx._OpSub",
                 mapped.a.clone(),
-                crate::ir::prim::Mul::new(floor, mapped.b.clone())?,
-            )?
-            .into());
+                binary_op("tirx._OpMul", floor, mapped.b.clone())?,
+            );
         }
-        let remainder = Var::with_type("rmod", dtype);
-        let zero = int_like(&mapped.a, 0);
-        let condition = Or::new(
-            And::new(
-                GE::new(mapped.b.clone(), zero.clone())?,
-                GE::new(remainder.clone(), zero.clone())?,
-            )?,
-            And::new(
-                LT::new(mapped.b.clone(), zero.clone())?,
-                LE::new(remainder.clone(), zero)?,
-            )?,
-        )?;
+        let remainder: PrimVar = Var::with_type("rmod", dtype).try_into()?;
+        let condition = floor_remainder_has_correct_sign(mapped.b.clone(), (&remainder).into())?;
         Ok(Let::new(
-            remainder.clone(),
-            Mod::new(mapped.a.clone(), mapped.b.clone())?,
+            (&remainder).into(),
+            binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
             Select::new(
                 condition,
                 remainder.clone(),
-                Add::new(remainder, mapped.b.clone())?,
+                binary_op("tirx._OpAdd", remainder.into(), mapped.b.clone())?,
             )?,
         )?
         .into())
@@ -553,11 +827,9 @@ impl IntrinInjecter {
                 && self.can_prove_nonnegative(&divide.b)?
                 && int_value(&value.b).is_some_and(|value| value >= 0)
             {
-                let lowered = Max::new(
-                    Div::new(divide.a.clone(), divide.b.clone())?,
-                    value.b.clone(),
-                )?;
-                return mutator.mutate(self, &lowered)?.try_into();
+                let quotient = binary_op("tirx._OpTruncDiv", divide.a.clone(), divide.b.clone())?;
+                let quotient = mutator.mutate(self, &quotient)?.try_into()?;
+                return binary_op("tirx._OpMax", quotient, value.b.clone());
             }
         }
         mutate_expr_default(self, mutator, value.into())?.try_into()
@@ -566,8 +838,9 @@ impl IntrinInjecter {
     fn mutate_equal(&mut self, value: EQ, mutator: &mut Mutator) -> Result<PrimExpr> {
         if let Some(remainder) = value.a.as_node::<FloorModObj>() {
             if int_value(&value.b) == Some(0) {
-                let lowered = EQ::new(
-                    Mod::new(remainder.a.clone(), remainder.b.clone())?,
+                let lowered = binary_op(
+                    "tirx._OpEQ",
+                    binary_op("tirx._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
                     value.b.clone(),
                 )?;
                 return mutator.mutate(self, &lowered)?.try_into();
@@ -579,8 +852,9 @@ impl IntrinInjecter {
     fn mutate_not_equal(&mut self, value: NE, mutator: &mut Mutator) -> Result<PrimExpr> {
         if let Some(remainder) = value.a.as_node::<FloorModObj>() {
             if int_value(&value.b) == Some(0) {
-                let lowered = NE::new(
-                    Mod::new(remainder.a.clone(), remainder.b.clone())?,
+                let lowered = binary_op(
+                    "tirx._OpNE",
+                    binary_op("tirx._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
                     value.b.clone(),
                 )?;
                 return mutator.mutate(self, &lowered)?.try_into();
@@ -589,11 +863,15 @@ impl IntrinInjecter {
         mutate_expr_default(self, mutator, value.into())?.try_into()
     }
 
+    // Dispatch uses the first match, so keep this after the specific statement handlers.
+    fn mutate_statement(&mut self, value: Stmt, mutator: &mut Mutator) -> Result<Stmt> {
+        self.with_aliases(|this| {
+            BufferRemaps::mutate_stmt(this, mutator, value, |state| &mut state.buffer_remaps)
+        })
+    }
+
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
-        if let Some(expression) = value.cast::<Expr>() {
-            return mutate_expr_default(self, mutator, expression).map(Into::into);
-        }
-        mutator.default_mutate(self)
+        BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }
 
@@ -626,37 +904,21 @@ fn swap_broadcast_cast(value: &PrimExpr) -> Result<PrimExpr> {
         return Ok(value.clone());
     };
     let cast_dtype = value.dtype();
-    let value_type = cast.value.type_annotation();
+    let value_dtype = cast.value.dtype();
     let integer_like = matches!(
         cast_dtype.code,
         x if x == DLDataTypeCode::kDLInt as u8 || x == DLDataTypeCode::kDLUInt as u8
     ) && matches!(
-        value_type.dtype.code,
+        value_dtype.code,
         x if x == DLDataTypeCode::kDLInt as u8 || x == DLDataTypeCode::kDLUInt as u8
     );
-    if cast_dtype.bits != value_type.dtype.bits * 2
-        && !(integer_like && cast_dtype.bits > value_type.dtype.bits)
+    if cast_dtype.bits != value_dtype.bits * 2
+        && !(integer_like && cast_dtype.bits > value_dtype.bits)
     {
         return Ok(value.clone());
     }
-    let lanes = int_value(&broadcast.lanes)
-        .ok_or_else(|| value_error("broadcast(cast(...)) must have a constant lane count"))?;
-    let vector_type = with_lanes(
-        &value_type,
-        u16::try_from(lanes).map_err(|_| {
-            value_error("broadcast lane count does not fit the dtype representation")
-        })?,
-    )?;
-    let broadcast = Broadcast::from_complete_fields(
-        broadcast.span.clone(),
-        vector_type,
-        cast.value.clone(),
-        broadcast.lanes.clone(),
-    );
-    Ok(
-        Cast::from_complete_fields(cast.span.clone(), value.type_annotation(), broadcast.into())
-            .into(),
-    )
+    let broadcast = Broadcast::new(cast.value.clone(), broadcast.lanes.clone())?;
+    Ok(Cast::new(value.type_annotation(), broadcast)?.into())
 }
 
 fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {
@@ -665,20 +927,21 @@ fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {
     PrimType::from_dtype(dtype)
 }
 
-fn shift_right(operator: &Expr, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    PrimExpr::try_from(Expr::from(Call::new(
-        lhs.type_annotation(),
-        operator.clone(),
-        vec![lhs.into(), rhs.into()],
-    )))
-}
-
-fn bitwise_and(operator: &Expr, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    PrimExpr::try_from(Expr::from(Call::new(
-        lhs.type_annotation(),
-        operator.clone(),
-        vec![lhs.into(), rhs.into()],
-    )))
+fn floor_remainder_has_correct_sign(divisor: PrimExpr, remainder: PrimExpr) -> Result<PrimExpr> {
+    let zero = int_like(&divisor, 0)?;
+    binary_op(
+        "tirx._OpOr",
+        binary_op(
+            "tirx._OpAnd",
+            binary_op("tirx._OpGE", divisor.clone(), zero.clone())?,
+            binary_op("tirx._OpGE", remainder.clone(), zero.clone())?,
+        )?,
+        binary_op(
+            "tirx._OpAnd",
+            binary_op("tirx._OpLT", divisor, zero.clone())?,
+            binary_op("tirx._OpLE", remainder, zero)?,
+        )?,
+    )
 }
 
 fn constant_power_of_two(value: &PrimExpr) -> Option<u32> {
@@ -686,8 +949,15 @@ fn constant_power_of_two(value: &PrimExpr) -> Option<u32> {
     (value > 0 && (value as u64).is_power_of_two()).then(|| (value as u64).trailing_zeros())
 }
 
-fn int_like(value: &PrimExpr, literal: i64) -> PrimExpr {
-    IntImm::from_complete_fields(None, value.type_annotation(), literal).into()
+fn int_like(value: &PrimExpr, literal: i64) -> Result<PrimExpr> {
+    let dtype = value.dtype();
+    let scalar = IntImm::from_dtype(DLDataType { lanes: 1, ..dtype }, literal)?.into();
+    if dtype.lanes == 1 {
+        Ok(scalar)
+    } else {
+        // The semantic cast broadcasts a scalar to fixed or scalable lanes.
+        cast_prim_expr(scalar, value.type_annotation())
+    }
 }
 
 fn pass_config_bool(context: &PassContext, key: &str) -> Result<bool> {

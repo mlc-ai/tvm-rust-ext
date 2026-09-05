@@ -175,6 +175,13 @@ impl Analyzer {
             .try_into()
     }
 
+    /// Apply TVM's rewrite simplifier without the canonicalization stage.
+    pub fn rewrite_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
+        tvm_ffi::cached_global_func!("arith.AnalyzerRewriteSimplify")
+            .call_tuple((self, expression))?
+            .try_into()
+    }
+
     /// Canonicalize one primitive expression with TVM's arithmetic normalizer.
     pub fn canonical_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
         tvm_ffi::cached_global_func!("arith.AnalyzerCanonicalSimplify")

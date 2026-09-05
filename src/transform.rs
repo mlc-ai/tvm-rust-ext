@@ -25,6 +25,7 @@ use tvm_ffi::{
 use crate::ir::IRModule;
 use crate::tirx::PrimFunc;
 
+mod analyzer_constraints;
 mod annotate_entry_func;
 mod bind_target;
 mod common_subexpr_elim;

@@ -26,16 +26,11 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, is_opaque_expr, mutate_buffer_region_with_buffer, mutate_stmt_expr_default,
-    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
+    array_same_as, is_opaque_expr, visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_module_pass, Pass};
-use crate::ir::{
-    BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, PrimExpr, TensorLoad, Var,
-};
-use crate::tirx::{
-    AllocBuffer, BufferRegion, BufferStore, BufferVar, DeclBuffer, Evaluate, PrimFunc, Stmt,
-};
+use crate::ir::{BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, Var};
+use crate::tirx::{BufferVar, Evaluate, PrimFunc, Stmt};
 
 type FunctionTable = HashMap<ObjectIdentity, (GlobalVar, PrimFunc)>;
 
@@ -223,67 +218,6 @@ impl PrimFuncInliner {
 
 #[tvm_ffi::dispatch(mutate)]
 impl PrimFuncInliner {
-    fn mutate_variable(&mut self, value: Var) -> Var {
-        self.buffer_remaps.use_variable(&value)
-    }
-
-    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
-        let source: BufferVar = (&value.source).try_into()?;
-        let source = self.buffer_remaps.use_buffer(&source);
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(source.into(), indices))
-    }
-
-    fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        let stored_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if buffer.same_as(&value.buffer)
-            && stored_value.same_as(&value.value)
-            && array_same_as(&indices, &value.indices)
-        {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer, stored_value, indices))
-    }
-
-    fn mutate_buffer_region(
-        &mut self,
-        value: BufferRegion,
-        mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
-    }
-
-    fn mutate_allocation(
-        &mut self,
-        value: AllocBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer))
-    }
-
-    fn mutate_declaration(
-        &mut self,
-        value: DeclBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer, data))
-    }
-
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Stmt> {
         if let Some(call) = value.value.as_node::<crate::ir::CallObj>() {
             if let Some(global) = call.op.as_node::<GlobalVarObj>() {
@@ -340,21 +274,8 @@ impl PrimFuncInliner {
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
-        mutate_stmt_expr_default(self, mutator, value)
+        BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
-}
-
-fn mutate_buffer_definition(
-    inliner: &mut PrimFuncInliner,
-    mutator: &mut Mutator,
-    buffer: &BufferVar,
-) -> Result<BufferVar> {
-    BufferRemaps::mutate_definition(
-        inliner,
-        buffer,
-        |state| &mut state.buffer_remaps,
-        |state, expression| mutator.mutate(state, expression)?.try_into(),
-    )
 }
 
 fn function_target(function: &PrimFunc) -> Result<Option<Any>> {
