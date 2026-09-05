@@ -1239,12 +1239,3 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
     assert_eq!(memory_access_statistics(&rust_result).unwrap().loads, 1);
     assert_eq!(memory_access_statistics(&rust_result).unwrap().stores, 1);
 }
-
-#[test]
-fn call_effect_kind_preserves_future_native_values() {
-    let future_value = CallEffectKind::from_raw(17);
-    assert_eq!(future_value.as_raw(), 17);
-    assert!(future_value.may_update_state());
-    assert_eq!(CallEffectKind::try_from(17).unwrap(), future_value);
-    assert!(CallEffectKind::try_from(i64::MAX).is_err());
-}

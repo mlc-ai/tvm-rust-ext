@@ -19,6 +19,7 @@
 
 //! Reflection contracts and constructor checks for the object slice listed below.
 
+use tvm::analysis::CallEffectKind;
 use tvm::ir::prim::{
     AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj, GTObj,
     LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, RampObj, SelectObj,
@@ -760,6 +761,11 @@ fn native_enum_values_preserve_width_and_unknown_variants() {
     assert_eq!(IterVarType::try_from(99_i64).unwrap().as_raw(), 99);
     assert!(ForKind::try_from(i64::from(i32::MAX) + 1).is_err());
     assert!(IterVarType::try_from(i64::from(i32::MIN) - 1).is_err());
+    let effect = CallEffectKind::from_raw(17);
+    assert_eq!(effect.as_raw(), 17);
+    assert!(effect.may_update_state());
+    assert_eq!(CallEffectKind::try_from(17).unwrap(), effect);
+    assert!(CallEffectKind::try_from(i64::MAX).is_err());
 }
 
 #[test]

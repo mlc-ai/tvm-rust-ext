@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm::analysis::{loop_nesting, memory_access_statistics, node_statistics, CallEffectKind};
+use tvm::analysis::{loop_nesting, memory_access_statistics, node_statistics};
 use tvm::ir::prim::{
     Add, FloorDiv, FloorMod, Let, Mul, Not, Select, StringImm, EQ, GE, GT, LE, LT, NE,
 };

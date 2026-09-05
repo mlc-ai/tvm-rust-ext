@@ -26,8 +26,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, mutate_buffer_region_with_buffer, mutate_expr_default, mutate_stmt_default,
-    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
+    mutate_expr_default, visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{
@@ -37,8 +36,8 @@ use crate::ir::prim::{
 use crate::ir::{Call, Expr, FloatImm, IntImm, PrimExpr, TensorLoad, Var};
 use crate::te::Reduce;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, DeclBuffer, For, IfThenElse,
-    PrimFunc, SeqStmt, Stmt, TileLayout, While,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, PrimFunc,
+    SeqStmt, Stmt, TileLayout, While,
 };
 
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
@@ -720,96 +719,21 @@ impl CseRewriter {
     }
 }
 
-fn mutate_expression_children(
-    rewriter: &mut CseRewriter,
-    mutator: &mut Mutator,
-    value: Expr,
-) -> Result<Expr> {
-    if let Ok(variable) = value.clone().try_cast::<Var>() {
-        return Ok(rewriter.buffer_remaps.use_variable(&variable).into());
-    }
-    if let Ok(load) = value.clone().try_cast::<TensorLoad>() {
-        let source: BufferVar = (&load.source).try_into()?;
-        let source = rewriter.buffer_remaps.use_buffer(&source);
-        let indices = mutator.mutate(rewriter, &load.indices)?.try_into()?;
-        if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
-            return Ok(value);
-        }
-        return Ok(load.copy_with(source.into(), indices).into());
-    }
-    mutate_expr_default(rewriter, mutator, value)
-}
-
-fn mutate_statement_children(
-    rewriter: &mut CseRewriter,
-    mutator: &mut Mutator,
-    value: Stmt,
-) -> Result<Stmt> {
-    if let Ok(allocation) = value.clone().try_cast::<AllocBuffer>() {
-        let buffer = mutate_buffer_definition(rewriter, mutator, &allocation.buffer)?;
-        if buffer.same_as(&allocation.buffer) {
-            return Ok(value);
-        }
-        return Ok(allocation.copy_with(buffer).into());
-    }
-    if let Ok(declaration) = value.clone().try_cast::<DeclBuffer>() {
-        let data: Expr = mutator.mutate(rewriter, &declaration.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(rewriter, mutator, &declaration.buffer)?;
-        if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
-            return Ok(value);
-        }
-        return Ok(declaration.copy_with(buffer, data).into());
-    }
-    if let Ok(store) = value.clone().try_cast::<BufferStore>() {
-        let buffer = rewriter.buffer_remaps.use_buffer(&store.buffer);
-        let stored_value: PrimExpr = mutator.mutate(rewriter, &store.value)?.try_into()?;
-        let indices = mutator.mutate(rewriter, &store.indices)?.try_into()?;
-        if buffer.same_as(&store.buffer)
-            && stored_value.same_as(&store.value)
-            && array_same_as(&indices, &store.indices)
-        {
-            return Ok(value);
-        }
-        return Ok(store.copy_with(buffer, stored_value, indices).into());
-    }
-    mutate_stmt_default(rewriter, mutator, value)
-}
-
-fn mutate_buffer_definition(
-    rewriter: &mut CseRewriter,
-    mutator: &mut Mutator,
-    buffer: &BufferVar,
-) -> Result<BufferVar> {
-    BufferRemaps::mutate_definition(
-        rewriter,
-        buffer,
-        |state| &mut state.buffer_remaps,
-        |state, expression| mutator.mutate(state, expression)?.try_into(),
-    )
-}
-
 #[tvm_ffi::dispatch(mutate)]
 impl CseRewriter {
-    fn mutate_buffer_region(
-        &mut self,
-        value: BufferRegion,
-        mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
-    }
-
     fn mutate_expression(&mut self, value: Expr, mutator: &mut Mutator) -> Result<Expr> {
         if let Ok(expression) = PrimExpr::try_from(value.clone()) {
             if let Some(replacement) = self.replacement(&expression)? {
                 return Ok(replacement);
             }
         }
-        mutate_expression_children(self, mutator, value)
+        BufferRemaps::mutate_expr(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 
     fn mutate_statement(&mut self, value: Stmt, mutator: &mut Mutator) -> Result<Stmt> {
-        let mut visited = mutate_statement_children(self, mutator, value.clone())?;
+        let mut visited = BufferRemaps::mutate_stmt(self, mutator, value.clone(), |state| {
+            &mut state.buffer_remaps
+        })?;
         if let Ok(sequence) = visited.clone().try_cast::<SeqStmt>() {
             visited = sequence.flatten()?;
         }

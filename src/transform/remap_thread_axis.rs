@@ -24,16 +24,10 @@ use tvm_ffi::{
     Result, String as FfiString, RUNTIME_ERROR,
 };
 
-use super::utils::{
-    array_same_as, mutate_buffer_region_with_buffer, mutate_stmt_expr_default, option_same_as,
-    with_prim_func_attr, with_prim_func_body, BufferRemaps,
-};
+use super::utils::{option_same_as, with_prim_func_attr, with_prim_func_body, BufferRemaps};
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{Expr, PrimExpr, TensorLoad, Var};
-use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferRegion, BufferStore, BufferVar, DeclBuffer, For, IterVar,
-    PrimFunc, Stmt,
-};
+use crate::ir::{PrimExpr, Var};
+use crate::tirx::{AttrStmt, For, IterVar, PrimFunc, Stmt};
 
 const KERNEL_LAUNCH_PARAMS: &str = "tirx.kernel_launch_params";
 const THREAD_EXTENT: &str = "thread_extent";
@@ -150,79 +144,9 @@ impl ThreadAxisRewriter {
         self.buffer_remaps.use_variable(&value)
     }
 
-    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
-        let source: BufferVar = (&value.source).try_into()?;
-        let source = self.buffer_remaps.use_buffer(&source);
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if source.as_var().same_as(&value.source) && array_same_as(&indices, &value.indices) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(source.into(), indices))
-    }
-
-    fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        let stored_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if buffer.same_as(&value.buffer)
-            && stored_value.same_as(&value.value)
-            && array_same_as(&indices, &value.indices)
-        {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer, stored_value, indices))
-    }
-
-    fn mutate_buffer_region(
-        &mut self,
-        value: BufferRegion,
-        mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
-    }
-
-    fn mutate_allocation(
-        &mut self,
-        value: AllocBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer))
-    }
-
-    fn mutate_declaration(
-        &mut self,
-        value: DeclBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer, data))
-    }
-
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
-        mutate_stmt_expr_default(self, mutator, value)
+        BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
-}
-
-fn mutate_buffer_definition(
-    rewriter: &mut ThreadAxisRewriter,
-    mutator: &mut Mutator,
-    buffer: &BufferVar,
-) -> Result<BufferVar> {
-    BufferRemaps::mutate_definition(
-        rewriter,
-        buffer,
-        |state| &mut state.buffer_remaps,
-        |state, expression| mutator.mutate(state, expression)?.try_into(),
-    )
 }
 
 fn mutate_regular_attribute(

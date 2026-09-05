@@ -37,11 +37,12 @@ use crate::ir::{
     Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, UniqueNameSupply, Var, VarObj,
 };
 use crate::tirx::{
-    AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BreakObj,
-    BufferRegion, BufferRegionObj, BufferRegionType, BufferStore, BufferStoreObj, BufferType,
-    BufferTypeObj, BufferVar, ContinueObj, DeclBuffer, DeclBufferObj, Evaluate, EvaluateObj, For,
-    ForObj, IfThenElse, IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj, ScopeIdDef,
-    ScopeIdDefStmt, SeqStmt, SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While, WhileObj,
+    AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj,
+    BreakObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferStore, BufferStoreObj,
+    BufferType, BufferTypeObj, BufferVar, ContinueObj, DeclBuffer, DeclBufferObj, Evaluate,
+    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj,
+    ScopeIdDef, ScopeIdDefStmt, SeqStmt, SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While,
+    WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
@@ -230,6 +231,99 @@ impl BufferRemaps {
             .get(&ObjectIdentity::of(variable))
             .map(|buffer| buffer.as_var().clone())
             .unwrap_or_else(|| variable.clone())
+    }
+
+    /// Match StmtExprMutator: rewrite buffer definitions once, then reuse them.
+    pub(super) fn mutate_stmt<D: MutateDispatch>(
+        dispatch: &mut D,
+        mutator: &mut Mutator,
+        value: Stmt,
+        remaps: impl Fn(&mut D) -> &mut Self,
+    ) -> Result<Stmt> {
+        if let Some(allocation) = clone_downcast::<AllocBuffer>(&value)? {
+            let buffer = Self::mutate_definition(
+                dispatch,
+                &allocation.buffer,
+                remaps,
+                |dispatch, expression| mutator.mutate(dispatch, expression)?.try_into(),
+            )?;
+            if buffer.same_as(&allocation.buffer) {
+                return Ok(value);
+            }
+            return Ok(allocation.copy_with(buffer).into());
+        }
+        if let Some(declaration) = clone_downcast::<DeclBuffer>(&value)? {
+            let data: Expr = mutator.mutate(dispatch, &declaration.data)?.try_into()?;
+            let buffer = Self::mutate_definition(
+                dispatch,
+                &declaration.buffer,
+                remaps,
+                |dispatch, expression| mutator.mutate(dispatch, expression)?.try_into(),
+            )?;
+            if data.same_as(&declaration.data) && buffer.same_as(&declaration.buffer) {
+                return Ok(value);
+            }
+            return Ok(declaration.copy_with(buffer, data).into());
+        }
+        if let Some(store) = clone_downcast::<BufferStore>(&value)? {
+            let buffer = remaps(dispatch).use_buffer(&store.buffer);
+            let stored_value: PrimExpr = mutator.mutate(dispatch, &store.value)?.try_into()?;
+            let indices = mutator.mutate(dispatch, &store.indices)?.try_into()?;
+            if buffer.same_as(&store.buffer)
+                && stored_value.same_as(&store.value)
+                && array_same_as(&indices, &store.indices)
+            {
+                return Ok(value);
+            }
+            return Ok(store.copy_with(buffer, stored_value, indices).into());
+        }
+        mutate_stmt_default(dispatch, mutator, value)
+    }
+
+    pub(super) fn mutate_expr<D: MutateDispatch>(
+        dispatch: &mut D,
+        mutator: &mut Mutator,
+        value: Expr,
+        remaps: impl Fn(&mut D) -> &mut Self,
+    ) -> Result<Expr> {
+        if let Some(variable) = clone_downcast::<Var>(&value)? {
+            return Ok(remaps(dispatch).use_variable(&variable).into());
+        }
+        if let Some(load) = clone_downcast::<TensorLoad>(&value)? {
+            let source: BufferVar = (&load.source).try_into()?;
+            let source = remaps(dispatch).use_buffer(&source);
+            let indices: Array<PrimExpr> = mutator.mutate(dispatch, &load.indices)?.try_into()?;
+            if source.as_var().same_as(&load.source) && array_same_as(&indices, &load.indices) {
+                return Ok(value);
+            }
+            return Ok(TensorLoad::from_buffer_with_span(
+                source.into(),
+                indices.iter().map(Into::into).collect(),
+                load.span.as_ref(),
+            )?
+            .into());
+        }
+        if let Some(region) = clone_downcast::<BufferRegion>(&value)? {
+            let buffer = remaps(dispatch).use_buffer(&region.buffer);
+            return mutate_buffer_region_with_buffer(dispatch, mutator, region, buffer)
+                .map(Into::into);
+        }
+        mutate_expr_default(dispatch, mutator, value)
+    }
+
+    pub(super) fn mutate_default<D: MutateDispatch>(
+        dispatch: &mut D,
+        mutator: &mut Mutator,
+        value: &MapValue,
+        remaps: impl Fn(&mut D) -> &mut Self,
+    ) -> Result<Any> {
+        if let Some(statement) = value.cast::<Stmt>() {
+            return Self::mutate_stmt(dispatch, mutator, statement, remaps).map(Into::into);
+        }
+        if let Some(expression) = value.cast::<Expr>() {
+            return Self::mutate_expr(dispatch, mutator, expression, remaps).map(Into::into);
+        }
+        mutator.default_mutate(dispatch)
     }
 
     pub(super) fn mutate_definition<D, F>(

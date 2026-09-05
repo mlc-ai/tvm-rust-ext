@@ -154,13 +154,19 @@ this does not mean every native method or convenience constructor is exposed.
   with no implementation or registration to port.
 - Analyzer-aware recursion lives in Rust helpers. There is no shared C++
   `__s_mutate_with_analyzer__` protocol in this implementation.
+  `LowerIntrin` binds loop/thread ranges and pure `Bind`/`Let` values, applies
+  branch constraints, and accumulates assertions across sequence siblings.
+  Constraints are removed when their enclosing scope finishes, including on
+  recursive errors. Derived constraint facts are shared with `RemoveNoOp`.
 - Supporting APIs are not exhaustive either: operator argument metadata
   (`ArgumentInfo`), `EnvFunc`, and general pass instrumentation have no typed
   wrappers yet. These are not missing TIRx statement kinds.
 
 Differential tests cover definition reuse, GPU thread-scope boundaries, vector
 types, and BF16/FP8 buffer legalization. Buffer tests include metadata rewrites,
-references to earlier buffer definitions, and masked loads/stores. Pipeline
+references to earlier buffer definitions, and masked loads/stores. `LowerIntrin`
+cases check rewriting buffer shapes, strides, element offsets,
+and layout iterators while keeping definitions and their uses in sync. Pipeline
 tests also compare Rust and C++ after each of SSA conversion, index narrowing,
 simplification, no-op removal, and unrolling, then check SSA validity.
 Index-narrowing cases cover shared variables that need different widths,

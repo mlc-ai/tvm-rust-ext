@@ -32,20 +32,16 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, finish_constraint_contexts, get_operator, int_value, is_call,
-    is_evaluate_zero as is_no_op, mutate_buffer_region_with_buffer, mutate_stmt_expr_default,
-    option_same_as, with_prim_func_body, BufferRemaps,
+    is_evaluate_zero as is_no_op, option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
-use crate::ir::prim::{
-    Add, AndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Let, Mul, Not, Select, Sub, GE,
-    GT, LE, LT,
-};
+use crate::ir::prim::{Let, Not, Select, Sub, GT, LE};
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, TensorLoadObj, Var};
 use crate::te::Reduce;
 use crate::tirx::{
-    AllocBuffer, AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar,
-    DeclBuffer, Evaluate, For, IfThenElse, IterVar, PrimFunc, SeqStmt, Stmt,
+    AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse,
+    IterVar, PrimFunc, SeqStmt, Stmt,
 };
 
 const DEBUG_SKIP_REGION: &str = "pragma_debug_skip_region";
@@ -525,56 +521,8 @@ impl NoOpRemover {
         finish_constraint_contexts(result, exits)
     }
 
-    fn mutate_variable(&mut self, value: Var) -> Var {
-        self.buffer_remaps.use_variable(&value)
-    }
-
-    fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<TensorLoad> {
-        let old_source: BufferVar = (&value.source).try_into()?;
-        let source = self.buffer_remaps.use_buffer(&old_source).as_var().clone();
-        let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if source.same_as(old_source.as_var()) && array_same_as(&indices, &value.indices) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(source.into(), indices))
-    }
-
-    fn mutate_buffer_region(
-        &mut self,
-        value: BufferRegion,
-        mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
-        mutate_buffer_region_with_buffer(self, mutator, value, buffer)
-    }
-
-    fn mutate_allocation(
-        &mut self,
-        value: AllocBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<AllocBuffer> {
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer))
-    }
-
-    fn mutate_declaration(
-        &mut self,
-        value: DeclBuffer,
-        mutator: &mut Mutator,
-    ) -> Result<DeclBuffer> {
-        let data: Expr = mutator.mutate(self, &value.data)?.try_into()?;
-        let buffer = mutate_buffer_definition(self, mutator, &value.buffer)?;
-        if data.same_as(&value.data) && buffer.same_as(&value.buffer) {
-            return Ok(value);
-        }
-        Ok(value.copy_with(buffer, data))
-    }
-
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
-        mutate_stmt_expr_default(self, mutator, value)
+        BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }
 
@@ -652,19 +600,6 @@ impl NoOpRemover {
         self.make_evaluate_values(std::iter::once(store.value.clone()).chain(store.indices.iter()))
     }
 
-    fn enter_constraint_facts(&self, constraint: &PrimExpr) -> Result<Vec<Function>> {
-        let mut constraints = vec![constraint.clone()];
-        collect_derived_constraint_facts(constraint, &self.bitwise_and_operator, &mut constraints)?;
-        let mut exits = Vec::with_capacity(constraints.len());
-        for constraint in constraints {
-            match self.analyzer.enter_constraint(&constraint) {
-                Ok(exit) => exits.push(exit),
-                Err(error) => return finish_constraint_contexts(Err(error), exits),
-            }
-        }
-        Ok(exits)
-    }
-
     fn buffer_geometry_equal(&self, lhs: &BufferVar, rhs: &BufferVar) -> Result<bool> {
         let lhs_type = lhs.type_annotation();
         let rhs_type = rhs.type_annotation();
@@ -692,19 +627,6 @@ impl NoOpRemover {
     }
 }
 
-fn mutate_buffer_definition(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    buffer: &BufferVar,
-) -> Result<BufferVar> {
-    BufferRemaps::mutate_definition(
-        remover,
-        buffer,
-        |state| &mut state.buffer_remaps,
-        |state, expression| mutator.mutate(state, expression)?.try_into(),
-    )
-}
-
 fn mutate_under_constraint<T>(
     remover: &mut NoOpRemover,
     mutator: &mut Mutator,
@@ -727,117 +649,13 @@ fn mutate_under_constraint_with_facts<T>(
 where
     T: AnyCompatible + TryFrom<Any, Error = tvm_ffi::Error>,
 {
-    let exits = remover.enter_constraint_facts(constraint)?;
+    let exits = super::analyzer_constraints::enter_constraint_facts(
+        &remover.analyzer,
+        constraint,
+        &remover.bitwise_and_operator,
+    )?;
     let result = mutator.mutate(remover, value).and_then(T::try_from);
     finish_constraint_contexts(result, exits)
-}
-
-#[derive(Clone, Copy)]
-enum CompareKind {
-    Equal,
-    LessThan,
-    LessEqual,
-    GreaterThan,
-    GreaterEqual,
-}
-
-fn collect_derived_constraint_facts(
-    condition: &PrimExpr,
-    bitwise_and_operator: &Expr,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    if let Some(and) = condition.as_node::<AndObj>() {
-        collect_derived_constraint_facts(&and.a, bitwise_and_operator, output)?;
-        collect_derived_constraint_facts(&and.b, bitwise_and_operator, output)?;
-        return Ok(());
-    }
-    if let Some(call) = condition.as_node::<CallObj>() {
-        if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
-            let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
-            let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
-            if is_bool8(&lhs) && is_bool8(&rhs) {
-                collect_derived_constraint_facts(&lhs, bitwise_and_operator, output)?;
-                collect_derived_constraint_facts(&rhs, bitwise_and_operator, output)?;
-                return Ok(());
-            }
-        }
-    }
-
-    if let Some(compare) = condition.as_node::<EQObj>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::Equal, output)?;
-    } else if let Some(compare) = condition.as_node::<LTObj>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessThan, output)?;
-    } else if let Some(compare) = condition.as_node::<LEObj>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::LessEqual, output)?;
-    } else if let Some(compare) = condition.as_node::<GTObj>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterThan, output)?;
-    } else if let Some(compare) = condition.as_node::<GEObj>() {
-        collect_floor_div_constraints(&compare.a, &compare.b, CompareKind::GreaterEqual, output)?;
-    }
-    Ok(())
-}
-
-fn collect_floor_div_constraints(
-    lhs: &PrimExpr,
-    rhs: &PrimExpr,
-    kind: CompareKind,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    if let (Some(div), Some(value)) = (lhs.as_node::<FloorDivObj>(), int_value(rhs)) {
-        append_floor_div_constraints(div, value, kind, output)?;
-    }
-    if let (Some(div), Some(value)) = (rhs.as_node::<FloorDivObj>(), int_value(lhs)) {
-        append_floor_div_constraints(div, value, invert_compare(kind), output)?;
-    }
-    Ok(())
-}
-
-fn append_floor_div_constraints(
-    division: &FloorDivObj,
-    value: i64,
-    kind: CompareKind,
-    output: &mut Vec<PrimExpr>,
-) -> Result<()> {
-    let Some(divisor_value) = int_value(&division.b) else {
-        return Ok(());
-    };
-    if divisor_value <= 0 {
-        return Ok(());
-    }
-    let dtype = division.a.dtype();
-    let divisor: PrimExpr = IntImm::from_dtype(dtype, divisor_value)?.into();
-    let k: PrimExpr = IntImm::from_dtype(dtype, value)?.into();
-    let one: PrimExpr = IntImm::from_dtype(dtype, 1)?.into();
-    let lower: PrimExpr = Mul::new(k.clone(), divisor.clone())?.into();
-    let next: PrimExpr = Add::new(k, one)?.into();
-    let upper: PrimExpr = Mul::new(next, divisor)?.into();
-
-    match kind {
-        CompareKind::Equal => {
-            output.push(GE::new(division.a.clone(), lower)?.into());
-            output.push(LT::new(division.a.clone(), upper)?.into());
-        }
-        CompareKind::LessThan => output.push(LT::new(division.a.clone(), lower)?.into()),
-        CompareKind::LessEqual => output.push(LT::new(division.a.clone(), upper)?.into()),
-        CompareKind::GreaterThan => output.push(GE::new(division.a.clone(), upper)?.into()),
-        CompareKind::GreaterEqual => output.push(GE::new(division.a.clone(), lower)?.into()),
-    }
-    Ok(())
-}
-
-fn invert_compare(kind: CompareKind) -> CompareKind {
-    match kind {
-        CompareKind::Equal => CompareKind::Equal,
-        CompareKind::LessThan => CompareKind::GreaterThan,
-        CompareKind::LessEqual => CompareKind::GreaterEqual,
-        CompareKind::GreaterThan => CompareKind::LessThan,
-        CompareKind::GreaterEqual => CompareKind::LessEqual,
-    }
-}
-
-fn is_bool8(value: &PrimExpr) -> bool {
-    let dtype = value.dtype();
-    dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8
 }
 
 fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {

@@ -335,76 +335,478 @@ fn rust_lower_tirx_dedup_cu_tensor_maps_matches_cpp() {
 }
 
 #[test]
-fn rust_lower_intrin_matches_cpp_for_signed_floor_operations() {
+fn rust_lower_intrin_matches_cpp_for_scalar_and_vector_floor_operations() -> Result<()> {
+    use tvm::ir::prim::{Broadcast, Max};
+
     load_tvm_compiler();
-    let value = Var::new("value", "int32").unwrap();
-    let operations: [PrimExpr; 2] = [
-        FloorDiv::new(value.clone(), IntImm::new("int32", 8).unwrap())
-            .unwrap()
-            .into(),
-        FloorMod::new(value.clone(), IntImm::new("int32", 3).unwrap())
-            .unwrap()
-            .into(),
-    ];
+    let scalable: PrimExpr = Mul::new(
+        int_expression(4),
+        Call::new(
+            PrimType::new("int32")?,
+            tvm::ir::Op::get("ir.prim.vscale")?,
+            Vec::new(),
+        ),
+    )?
+    .into();
     let attrs = DictAttrs::from_dictionary(Map::from_iter([(
-        tvm::tvm_ffi::String::from("target"),
-        Any::from(tvm::target::Target::new("llvm").unwrap()),
+        "target".into(),
+        Any::from(tvm::target::Target::new("llvm")?),
     )]));
     let cpp = cpp_pass("tirx.transform.LowerIntrin");
-    for operation in operations {
-        let function = PrimFunc::with_metadata(
-            vec![value.clone()],
-            Evaluate::new(operation).unwrap(),
-            Type::missing(),
-            attrs.clone(),
-            None,
-        )
-        .unwrap();
-        let module = IRModule::from_expr(&function).unwrap();
-        let rust_result =
-            IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
-        let cpp_result = cpp.run(module).unwrap();
-        assert_structural_equal(&rust_result, &cpp_result);
+    for dtype in ["int16", "int32", "int64", "uint32"] {
+        for lanes in [None, Some(prim_int_expression(4)), Some(scalable.clone())] {
+            let constant = |number| -> Result<PrimExpr> {
+                let scalar = IntImm::new(dtype, number)?;
+                match &lanes {
+                    Some(lanes) => Ok(Broadcast::new(scalar, lanes)?.into()),
+                    None => Ok(scalar.into()),
+                }
+            };
+            let ty = constant(0)?.type_annotation();
+            let value = Var::with_type("value", ty.clone());
+            let divisor = Var::with_type("divisor", ty);
+            let variable: PrimExpr = Expr::from(&value).try_into()?;
+            let mut cases = vec![
+                ("by_one", variable.clone(), constant(1)?),
+                ("by_three", variable.clone(), constant(3)?),
+                ("by_eight", variable.clone(), constant(8)?),
+                (
+                    "by_variable",
+                    variable.clone(),
+                    Expr::from(&divisor).try_into()?,
+                ),
+                ("constants", constant(10)?, constant(3)?),
+            ];
+            if dtype.starts_with("int") {
+                cases.push(("negative_divisor", variable, constant(-3)?));
+                cases.push(("negative_dividend", constant(-10)?, constant(3)?));
+            }
+            for (name, lhs, rhs) in cases {
+                let division = FloorDiv::new(&lhs, &rhs)?;
+                let remainder = FloorMod::new(&lhs, &rhs)?;
+                let operations: [PrimExpr; 5] = [
+                    division.clone().into(),
+                    remainder.clone().into(),
+                    Max::new(division, constant(0)?)?.into(),
+                    EQ::new(&remainder, constant(0)?)?.into(),
+                    NE::new(remainder, constant(0)?)?.into(),
+                ];
+                for operation in operations {
+                    eprintln!(
+                        "LowerIntrin floor operation: {name}, {dtype}, lanes={}",
+                        operation.dtype().lanes
+                    );
+                    let function = PrimFunc::with_metadata(
+                        vec![value.clone(), divisor.clone()],
+                        Evaluate::new(operation)?,
+                        Type::missing(),
+                        attrs.clone(),
+                        None,
+                    )?;
+                    let module = IRModule::from_expr(&function)?;
+                    let rust_function = transform::lower_intrin_prim_func(function)?;
+                    structural_walk(
+                        &rust_function,
+                        |literal: IntImm| {
+                            assert_eq!(
+                                PrimExpr::from(literal).dtype().lanes,
+                                1,
+                                "IntImm must be scalar"
+                            );
+                            WalkResult::Advance
+                        },
+                        WalkOrder::PreOrder,
+                    )?;
+                    assert_structural_equal(
+                        &IRModule::from_expr(rust_function)?,
+                        &cpp.run(module)?,
+                    );
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn rust_lower_intrin_matches_cpp_for_access_pointer() {
+fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
     load_tvm_compiler();
-    let element_type = PrimType::new("float32").unwrap();
-    let pointer_type = PointerType::new(element_type, "global").unwrap();
+    let n = Var::new("n", "int32")?;
+    let i = Var::new("i", "int32")?;
+    let thread = Var::new("thread", "int32")?;
+    let quotient = |value: Var| -> Result<Stmt> {
+        Ok(Evaluate::new(FloorDiv::new(value, int_expression(3))?)?.into())
+    };
+    let condition: PrimExpr = GE::new(n.clone(), int_expression(0))?.into();
+    let negative: PrimExpr = tvm::ir::prim::Sub::new(int_expression(0), n.clone())?.into();
+    let division: PrimExpr = FloorDiv::new(n.clone(), int_expression(3))?.into();
+    let negative_division: PrimExpr = FloorDiv::new(negative, int_expression(3))?.into();
+    let assertion = AssertStmt::new(condition.clone(), "ValueError", "nonnegative")?;
+    let iter = IterVar::with_metadata(
+        None,
+        thread.clone(),
+        IterVarType::kThreadIndex,
+        "threadIdx.x",
+        None,
+    )?;
+    let bound = Var::new("bound", "int32")?;
+    let cases: Vec<(&str, Stmt)> = vec![
+        (
+            "loop",
+            For::new(
+                i.clone(),
+                int_expression(0),
+                int_expression(10),
+                quotient(i.clone())?,
+            )?
+            .into(),
+        ),
+        (
+            "branch",
+            IfThenElse::with_span(
+                condition.clone(),
+                quotient(n.clone())?,
+                Some(quotient(n.clone())?),
+                None,
+            )?
+            .into(),
+        ),
+        (
+            "loop_extent_and_exit",
+            SeqStmt::new(vec![
+                For::new(
+                    i.clone(),
+                    int_expression(0),
+                    n.clone(),
+                    quotient(n.clone())?,
+                )?
+                .into(),
+                quotient(n.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "likely",
+            IfThenElse::new(
+                Call::new(
+                    PrimType::new("bool")?,
+                    tvm::ir::Op::get("ir.prim.likely")?,
+                    vec![condition.clone().into()],
+                ),
+                quotient(n.clone())?,
+            )?
+            .into(),
+        ),
+        (
+            "select",
+            Evaluate::new(Select::new(
+                condition.clone(),
+                division.clone(),
+                negative_division.clone(),
+            )?)?
+            .into(),
+        ),
+        (
+            "if_then_else_call",
+            Evaluate::new(Call::new(
+                PrimType::new("int32")?,
+                tvm::ir::Op::get("ir.prim.if_then_else")?,
+                vec![
+                    condition.clone().into(),
+                    division.into(),
+                    negative_division.into(),
+                ],
+            ))?
+            .into(),
+        ),
+        (
+            "assert_siblings",
+            SeqStmt::new(vec![assertion.clone().into(), quotient(n.clone())?])?.into(),
+        ),
+        (
+            "nested_sequence",
+            SeqStmt::new(vec![
+                SeqStmt::new(vec![
+                    assertion.clone().into(),
+                    Evaluate::from_i64(1)?.into(),
+                ])?
+                .into(),
+                quotient(n.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "branch_exit",
+            SeqStmt::new(vec![
+                IfThenElse::new(GE::new(n.clone(), int_expression(-10))?, assertion.clone())?
+                    .into(),
+                quotient(n.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "attribute_exit",
+            SeqStmt::new(vec![
+                AttrStmt::new(
+                    n.clone(),
+                    "scope",
+                    int_expression(1),
+                    SeqStmt::new(vec![assertion.into(), quotient(n.clone())?])?,
+                )?
+                .into(),
+                quotient(n.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "thread_extent",
+            AttrStmt::new(
+                iter.clone(),
+                "thread_extent",
+                int_expression(32),
+                quotient(thread.clone())?,
+            )?
+            .into(),
+        ),
+        (
+            "virtual_thread",
+            AttrStmt::new(
+                iter,
+                "virtual_thread",
+                int_expression(32),
+                quotient(thread.clone())?,
+            )?
+            .into(),
+        ),
+        (
+            "bind",
+            SeqStmt::new(vec![
+                Bind::new(bound.clone(), int_expression(6))?.into(),
+                quotient(bound.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "let",
+            Evaluate::new(Let::new(
+                bound.clone(),
+                int_expression(6),
+                FloorDiv::new(bound.clone(), int_expression(3))?,
+            )?)?
+            .into(),
+        ),
+        (
+            "constant_branch",
+            IfThenElse::new(IntImm::new("bool", 1)?, quotient(n.clone())?)?.into(),
+        ),
+        (
+            "constant_select",
+            Evaluate::new(Select::new(
+                IntImm::new("bool", 0)?,
+                n.clone(),
+                int_expression(4),
+            )?)?
+            .into(),
+        ),
+        (
+            "constant_false_without_else",
+            IfThenElse::new(IntImm::new("bool", 0)?, quotient(n.clone())?)?.into(),
+        ),
+        (
+            "effectful_binding",
+            SeqStmt::new(vec![
+                Bind::new(
+                    bound.clone(),
+                    Call::new(
+                        PrimType::new("int32")?,
+                        tvm::ir::Op::get("tirx.call_extern")?,
+                        vec![StringImm::new("read_value").into()],
+                    ),
+                )?
+                .into(),
+                quotient(bound.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "ordinary_function_binding",
+            SeqStmt::new(vec![
+                Bind::new(
+                    bound.clone(),
+                    Call::new(
+                        PrimType::new("int32")?,
+                        GlobalVar::new("callee"),
+                        vec![n.clone().into()],
+                    ),
+                )?
+                .into(),
+                quotient(bound.clone())?,
+            ])?
+            .into(),
+        ),
+        (
+            "rewritten_assertion",
+            SeqStmt::new(vec![
+                AssertStmt::new(
+                    GE::new(
+                        FloorDiv::new(n.clone(), int_expression(8))?,
+                        int_expression(0),
+                    )?,
+                    "ValueError",
+                    "quotient is nonnegative",
+                )?
+                .into(),
+                quotient(n.clone())?,
+            ])?
+            .into(),
+        ),
+    ];
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        "target".into(),
+        Any::from(tvm::target::Target::new("llvm")?),
+    )]));
+    let native = cpp_pass("tirx.transform.LowerIntrin");
+    for (name, body) in cases {
+        eprintln!("LowerIntrin analyzer case: {name}");
+        let function =
+            PrimFunc::with_metadata(vec![n.clone()], body, Type::missing(), attrs.clone(), None)?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone())?;
+        let actual = transform::lower_intrin()?.run(module)?;
+        assert_structural_equal(&actual, &expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_lower_intrin_rewrites_buffer_definitions_and_uses() -> Result<()> {
+    load_tvm_compiler();
+    let n = Var::new("n", "int32")?;
+    let extent: Expr = FloorDiv::new(n.clone(), int_expression(8))?.into();
+    let iteration = Iter::new(extent.clone(), extent.clone(), Axis::get("m")?)?;
+    let buffer = BufferType::with_metadata(
+        "local",
+        PrimType::new("int32")?,
+        vec![extent.clone()],
+        vec![extent.clone()],
+        extent.clone(),
+        64,
+        1,
+        Some(TileLayout::new(vec![iteration], Vec::new(), Map::new())?.into()),
+        Vec::new(),
+        None,
+    )?
+    .new_var("buffer");
+    let data = Var::with_type("data", PointerType::new(PrimType::new("int32")?, "local")?);
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        "target".into(),
+        Any::from(tvm::target::Target::new("llvm")?),
+    )]));
+    let native = cpp_pass("tirx.transform.LowerIntrin");
+    for definition in [
+        Stmt::from(AllocBuffer::new(&buffer)?),
+        DeclBuffer::new(&buffer, &data)?.into(),
+    ] {
+        let body = SeqStmt::new(vec![
+            definition,
+            BufferStore::new(&buffer, int_expression(1), vec![int_expression(0)])?.into(),
+            Evaluate::new(TensorLoad::from_buffer(&buffer, vec![int_expression(0)])?)?.into(),
+            Evaluate::new(Call::new(
+                PrimType::new("int32")?,
+                tvm::ir::Op::get("tirx.call_extern")?,
+                vec![
+                    StringImm::new("use_buffer").into(),
+                    BufferRegion::new(
+                        &buffer,
+                        vec![Range::from_min_extent(
+                            int_expression(0),
+                            int_expression(1),
+                        )?],
+                    )?
+                    .into(),
+                    buffer.clone().into(),
+                ],
+            ))?
+            .into(),
+        ])?;
+        let function = PrimFunc::with_metadata(
+            vec![n.clone(), data.clone()],
+            body,
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone())?;
+        let actual = transform::lower_intrin()?.run(module)?;
+        assert_structural_equal(&actual, &expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_lower_intrin_matches_cpp_for_access_pointer() -> Result<()> {
+    load_tvm_compiler();
+    let pointer_type = PointerType::new(PrimType::new("float32")?, "global")?;
     let data = Var::with_type("data", pointer_type.clone());
-    let access_ptr: Expr = tvm::ir::Op::get("tirx.tvm_access_ptr").unwrap().into();
     let access = Call::new(
         pointer_type,
-        access_ptr,
+        tvm::ir::Op::get("tirx.tvm_access_ptr")?,
         vec![
-            FloatImm::new("float32", 0.0).unwrap().into(),
+            FloatImm::new("float32", 0.0)?.into(),
             data.clone().into(),
             int_expression(3),
             int_expression(8),
             int_expression(1),
         ],
     );
+    let use_pointer = |dtype: &str| -> Result<Call> {
+        Ok(Call::new(
+            PrimType::new(dtype)?,
+            tvm::ir::Op::get("tirx.call_extern")?,
+            vec![StringImm::new("use_pointer").into(), access.clone().into()],
+        ))
+    };
+    // Aliases must also surround statements handled by typed callbacks.
+    let bodies: Vec<Stmt> = vec![
+        Evaluate::new(access.clone())?.into(),
+        For::new(
+            Var::new("i", "int32")?,
+            int_expression(0),
+            use_pointer("int32")?,
+            Evaluate::from_i64(0)?,
+        )?
+        .into(),
+        IfThenElse::new(use_pointer("bool")?, Evaluate::from_i64(0)?)?.into(),
+        AttrStmt::new(
+            data.clone(),
+            "scope",
+            use_pointer("int32")?,
+            Evaluate::from_i64(0)?,
+        )?
+        .into(),
+        AssertStmt::new(use_pointer("bool")?, "ValueError", "pointer check")?.into(),
+        Bind::new(Var::new("bound", "int32")?, use_pointer("int32")?)?.into(),
+    ];
     let attrs = DictAttrs::from_dictionary(Map::from_iter([(
-        tvm::tvm_ffi::String::from("target"),
-        Any::from(tvm::target::Target::new("llvm").unwrap()),
+        "target".into(),
+        Any::from(tvm::target::Target::new("llvm")?),
     )]));
-    let function = PrimFunc::with_metadata(
-        vec![data],
-        Evaluate::new(access).unwrap(),
-        Type::missing(),
-        attrs,
-        None,
-    )
-    .unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
+    let native = cpp_pass("tirx.transform.LowerIntrin");
+    for body in bodies {
+        let function = PrimFunc::with_metadata(
+            vec![data.clone()],
+            body,
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone())?;
+        let actual = transform::lower_intrin()?.run(module)?;
+        assert_structural_equal(&actual, &expected);
+    }
+    Ok(())
 }
 
 #[test]
@@ -424,34 +826,6 @@ fn rust_lower_intrin_matches_cpp_for_registered_target_rule() {
     )]));
     let function =
         PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() {
-    load_tvm_compiler();
-    let a = Var::new("a", "float32").unwrap();
-    let b = Var::new("b", "float32").unwrap();
-    let c = Var::new("c", "float32").unwrap();
-    let expression = Add::new(Mul::new(a.clone(), b.clone()).unwrap(), c.clone()).unwrap();
-    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
-        tvm::tvm_ffi::String::from("target"),
-        Any::from(tvm::target::Target::new("llvm").unwrap()),
-    )]));
-    let function = PrimFunc::with_metadata(
-        vec![a, b, c],
-        Evaluate::new(expression).unwrap(),
-        Type::missing(),
-        attrs,
-        None,
-    )
-    .unwrap();
     let module = IRModule::from_expr(function.clone()).unwrap();
 
     let rust_result =
