@@ -25,14 +25,15 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    get_operator, int_value, is_buffer_type, is_pointer_type, mutate_stmt_default,
-    mutate_stmt_expr_default, value_error, with_prim_func_attr, with_prim_func_body,
+    get_operator, global_name_supply, int_value, is_buffer_type, is_pointer_type,
+    mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_attr,
+    with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
 use crate::ir::prim::StringImm;
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
-    PrimType, TupleType, Type, Var,
+    PrimType, TupleType, Type, UniqueNameSupply, Var,
 };
 use crate::target::Target;
 use crate::tirx::{
@@ -63,11 +64,7 @@ const USE_REQUIRED_BLOCK_DIMENSION: &str = "tirx.use_required_block_dimension";
 
 /// Split target-annotated device regions and lower cross-target kernel calls.
 pub fn split_host_device_module(module: IRModule) -> Result<IRModule> {
-    let mut used_names = module
-        .functions
-        .iter()
-        .map(|(global, _)| global.name_hint.as_str().to_owned())
-        .collect::<HashSet<_>>();
+    let names = global_name_supply(&module)?;
     let mut functions = Vec::with_capacity(module.functions.len());
     let mut device_functions = Vec::new();
 
@@ -82,7 +79,7 @@ pub fn split_host_device_module(module: IRModule) -> Result<IRModule> {
         let mut splitter = HostDeviceSplitter {
             current_function: &function,
             kernel_name: format!("{}_kernel", prefix.as_str()),
-            used_names: &mut used_names,
+            names: &names,
             device_functions: &mut device_functions,
         };
         let body: Stmt = structural_mutate(function.body.clone(), &mut splitter)?.try_into()?;
@@ -149,7 +146,7 @@ impl DeviceRegionAnnotator {
 struct HostDeviceSplitter<'a> {
     current_function: &'a PrimFunc,
     kernel_name: String,
-    used_names: &'a mut HashSet<String>,
+    names: &'a UniqueNameSupply,
     device_functions: &'a mut Vec<(GlobalVar, BaseFunc)>,
 }
 
@@ -254,8 +251,8 @@ impl HostDeviceSplitter<'_> {
             }
         }
 
-        let name = fresh_name(&self.kernel_name, self.used_names);
-        let global = GlobalVar::new(&name);
+        let name = self.names.fresh_name(&self.kernel_name, false, true)?;
+        let global = GlobalVar::new(name.as_str());
         self.device_functions
             .push((global.clone(), BaseFunc::from(device_function)));
         if can_propagate_errors {
@@ -717,7 +714,7 @@ impl KernelLaunchRewriter<'_> {
         arguments.extend(value.args.iter());
         for launch_argument in info.launch_arguments.iter() {
             let substituted: PrimExpr = tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((launch_argument, substitutions.clone()))?
+                .call_tuple((launch_argument, &substitutions))?
                 .try_into()?;
             arguments.push(substituted.into());
         }
@@ -800,20 +797,6 @@ fn function_string_attr(function: &PrimFunc, key: &str) -> Result<Option<FfiStri
 
 fn is_handle_parameter(variable: &Var) -> bool {
     is_pointer_type(&variable.ty) || is_buffer_type(&variable.ty)
-}
-
-fn fresh_name(base: &str, used: &mut HashSet<String>) -> String {
-    if used.insert(base.to_owned()) {
-        return base.to_owned();
-    }
-    let mut suffix = 1_usize;
-    loop {
-        let candidate = format!("{base}_{suffix}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        suffix += 1;
-    }
 }
 
 fn target_equal(lhs: &Target, rhs: &Target) -> Result<bool> {

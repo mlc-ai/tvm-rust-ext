@@ -562,7 +562,7 @@ fn rust_split_host_device_matches_cpp_for_cuda_thread_extent() {
     let attrs = DictAttrs::from_dictionary(Map::from_iter([
         (
             tvm::tvm_ffi::String::from("global_symbol"),
-            Any::from(tvm::tvm_ffi::String::from("main")),
+            Any::from(tvm::tvm_ffi::String::from("main.with.dots")),
         ),
         (tvm::tvm_ffi::String::from("target"), Any::from(target)),
     ]));
@@ -575,6 +575,12 @@ fn rust_split_host_device_matches_cpp_for_cuda_thread_extent() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+    for result in [&rust_result, &cpp_result] {
+        assert!(result
+            .functions
+            .iter()
+            .any(|(global, _)| global.name_hint.as_str() == "main_with_dots_kernel"));
+    }
 }
 
 #[test]

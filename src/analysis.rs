@@ -18,6 +18,7 @@
  */
 
 use std::collections::HashMap;
+use std::{marker::PhantomData, rc::Rc};
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
@@ -43,9 +44,20 @@ use crate::tirx::{
 #[type_final]
 pub struct AnalyzerObj {
     base: tvm_ffi::Object,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 /// Shared handle to one TVM arithmetic-analysis context.
+///
+/// Clones share mutable native caches. Keep all aliases on one thread.
+/// This typed handle is neither `Send` nor `Sync`, but the current tvm-ffi
+/// `ObjectRef` can erase that restriction. Casting through it does not make
+/// the native analyzer safe to share across threads.
+///
+/// ```compile_fail
+/// fn require_thread_safe<T: Send + Sync>() {}
+/// require_thread_safe::<tvm::analysis::Analyzer>();
+/// ```
 #[repr(C)]
 #[derive(ObjectRef, Clone)]
 pub struct Analyzer {
@@ -197,7 +209,7 @@ impl Analyzer {
     /// Evaluate the integer set of an expression under explicit variable domains.
     pub fn int_set(&self, expression: &PrimExpr, domains: &Map<Var, IntSet>) -> Result<IntSet> {
         tvm_ffi::cached_global_func!("arith.AnalyzerIntSet")
-            .call_tuple((self, expression, domains.clone()))?
+            .call_tuple((self, expression, domains))?
             .try_into()
     }
 

@@ -335,25 +335,37 @@ fn rust_lower_tirx_dedup_cu_tensor_maps_matches_cpp() {
 }
 
 #[test]
-fn rust_lower_intrin_matches_cpp_for_integer_floor_division() {
+fn rust_lower_intrin_matches_cpp_for_signed_floor_operations() {
     load_tvm_compiler();
     let value = Var::new("value", "int32").unwrap();
-    let body =
-        Evaluate::new(FloorDiv::new(value.clone(), IntImm::new("int32", 8).unwrap()).unwrap())
-            .unwrap();
+    let operations: [PrimExpr; 2] = [
+        FloorDiv::new(value.clone(), IntImm::new("int32", 8).unwrap())
+            .unwrap()
+            .into(),
+        FloorMod::new(value.clone(), IntImm::new("int32", 3).unwrap())
+            .unwrap()
+            .into(),
+    ];
     let attrs = DictAttrs::from_dictionary(Map::from_iter([(
         tvm::tvm_ffi::String::from("target"),
         Any::from(tvm::target::Target::new("llvm").unwrap()),
     )]));
-    let function =
-        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
+    let cpp = cpp_pass("tirx.transform.LowerIntrin");
+    for operation in operations {
+        let function = PrimFunc::with_metadata(
+            vec![value.clone()],
+            Evaluate::new(operation).unwrap(),
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )
+        .unwrap();
+        let module = IRModule::from_expr(&function).unwrap();
+        let rust_result =
+            IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
+        let cpp_result = cpp.run(module).unwrap();
+        assert_structural_equal(&rust_result, &cpp_result);
+    }
 }
 
 #[test]
@@ -386,28 +398,6 @@ fn rust_lower_intrin_matches_cpp_for_access_pointer() {
         None,
     )
     .unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::lower_intrin_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.LowerIntrin").run(module).unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_lower_intrin_matches_cpp_for_signed_floor_remainder() {
-    load_tvm_compiler();
-    let value = Var::new("value", "int32").unwrap();
-    let body =
-        Evaluate::new(FloorMod::new(value.clone(), IntImm::new("int32", 3).unwrap()).unwrap())
-            .unwrap();
-    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
-        tvm::tvm_ffi::String::from("target"),
-        Any::from(tvm::target::Target::new("llvm").unwrap()),
-    )]));
-    let function =
-        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None).unwrap();
     let module = IRModule::from_expr(function.clone()).unwrap();
 
     let rust_result =

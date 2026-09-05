@@ -20,8 +20,9 @@
 //! Minimal handwritten TVM IR bindings used to develop Rust analyses and passes.
 //!
 //! Ordinary nodes with ABI-complete `#[repr(C)]` layouts are allocated by
-//! Rust. Polymorphic, registry-owned, interned, and STL-backed C++ nodes remain
-//! opaque and are allocated by their existing native operations; Rust reads
+//! Rust. Polymorphic and STL-backed C++ nodes remain opaque. Registry-owned
+//! or interned objects also use native creation, even when their layout is
+//! complete (such as `SourceName`). For opaque objects, Rust reads
 //! their reflected fields and calls existing registered operations without
 //! changing native identity, ownership, or virtual ABI. All objects
 //! share the FFI header and runtime type table for ownership, checked casts, and

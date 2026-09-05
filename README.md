@@ -50,6 +50,14 @@ through each reference wrapper's read-only `Deref`; callers write `.clone()`
 explicitly when they need an owning handle. Recursion and rebuilding use `tvm-ffi`'s
 language-independent structural protocol.
 
+`UniqueNameSupply` also stays opaque because its mutable naming state is owned
+by C++. `BindTarget` and `SplitHostDevice` use its existing registered methods
+for normalization and collision handling. The typed `Analyzer` and
+`UniqueNameSupply` handles are `!Send` and `!Sync`. This is not an end-to-end
+thread-safety guarantee: the current tvm-ffi generic `ObjectRef` can erase
+these restrictions and be cast back on another thread. Keep every alias on
+one thread; closing this type-erasure gap requires a separate tvm-ffi fix.
+
 `DispatchContext` also has a complete layout, but its native methods modify
 `callbacks` and `shared_state`. These fields use private `UnsafeCell` storage;
 Rust reads them through `callbacks()` and `shared_state()` snapshots so a
@@ -141,6 +149,9 @@ this does not mean every native method or convenience constructor is exposed.
   with no implementation or registration to port.
 - Analyzer-aware recursion lives in Rust helpers. There is no shared C++
   `__s_mutate_with_analyzer__` protocol in this implementation.
+- Supporting APIs are not exhaustive either: operator argument metadata
+  (`ArgumentInfo`), `EnvFunc`, and general pass instrumentation have no typed
+  wrappers yet. These are not missing TIRx statement kinds.
 
 Differential tests cover representative cases, not all legal inputs or full
 native lowering pipelines. In particular, a passing suite is not proof that

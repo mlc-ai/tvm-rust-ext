@@ -491,7 +491,7 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
     assert!(host.host().unwrap().is_none());
     assert!(host.has_key("cpu").unwrap());
     assert!(!host.has_key("cuda").unwrap());
-    let callee_global = GlobalVar::new("worker");
+    let callee_global = GlobalVar::new("worker.with.dots");
     let callee = PrimFunc::with_metadata(
         Vec::new(),
         Evaluate::from_i64(0).unwrap(),
@@ -529,6 +529,12 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
     let module = IRModule::new(Map::from_iter([
         (callee_global, BaseFunc::from(callee)),
         (GlobalVar::new("main"), BaseFunc::from(caller)),
+        (
+            GlobalVar::new("worker_with_dots_host"),
+            PrimFunc::from_body(Evaluate::from_i64(0).unwrap())
+                .unwrap()
+                .into(),
+        ),
     ]))
     .unwrap();
 
@@ -542,6 +548,12 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
     let cpp_result = cpp_bind.run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+    for result in [&rust_result, &cpp_result] {
+        assert!(result
+            .functions
+            .iter()
+            .any(|(global, _)| global.name_hint.as_str() == "worker_with_dots_host_1"));
+    }
 }
 
 #[test]
@@ -678,59 +690,42 @@ fn rust_fp8_storage_legalize_matches_cpp_for_local_buffer_storage() {
 }
 
 #[test]
-fn rust_bf16_compute_legalize_matches_cpp_across_a_buffer_boundary() {
+fn rust_compute_legalize_matches_cpp_across_buffer_boundaries() {
     load_tvm_compiler();
-    let buffer_type =
-        BufferType::new("global", "bfloat16", vec![typed_int_expression("int64", 4)]).unwrap();
-    let buffer = buffer_type.new_var("values");
-    let index = typed_int_expression("int64", 0);
-    let loaded = TensorLoad::from_buffer(&buffer, vec![index.clone()]).unwrap();
-    let increment = tvm::ir::FloatImm::new("bfloat16", 1.0).unwrap();
-    let updated = Add::new(loaded, increment).unwrap();
-    let body = BufferStore::new(&buffer, updated, vec![index]).unwrap();
-    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::bf16_compute_legalize_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.BF16ComputeLegalize")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_fp8_compute_legalize_matches_cpp_across_a_buffer_boundary() {
-    load_tvm_compiler();
-    let buffer_type = BufferType::new(
-        "global",
-        "float8_e4m3fn",
-        vec![typed_int_expression("int64", 4)],
-    )
-    .unwrap();
-    let buffer = buffer_type.new_var("values");
-    let index = typed_int_expression("int64", 0);
-    let loaded = TensorLoad::from_buffer(&buffer, vec![index.clone()]).unwrap();
-    let increment = tvm::ir::FloatImm::new("float8_e4m3fn", 1.0).unwrap();
-    let updated = Add::new(loaded, increment).unwrap();
-    let body = BufferStore::new(&buffer, updated, vec![index]).unwrap();
-    let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result = IRModule::from_expr(
-        transform::fp8_compute_legalize_prim_func(function, "float16").unwrap(),
-    )
-    .unwrap();
-    let cpp_pass: transform::Pass = Function::get_global("tirx.transform.FP8ComputeLegalize")
+    let cpp_fp8: transform::Pass = Function::get_global("tirx.transform.FP8ComputeLegalize")
         .unwrap()
         .call_tuple((tvm::tvm_ffi::String::from("float16"),))
         .unwrap()
         .try_into()
         .unwrap();
-    let cpp_result = cpp_pass.run(module).unwrap();
+    let cases = [
+        (
+            "bfloat16",
+            transform::bf16_compute_legalize().unwrap(),
+            cpp_pass("tirx.transform.BF16ComputeLegalize"),
+        ),
+        (
+            "float8_e4m3fn",
+            transform::fp8_compute_legalize("float16").unwrap(),
+            cpp_fp8,
+        ),
+    ];
+    for (dtype, rust_pass, cpp_pass) in cases {
+        let buffer_type =
+            BufferType::new("global", dtype, vec![typed_int_expression("int64", 4)]).unwrap();
+        let buffer = buffer_type.new_var("values");
+        let index = typed_int_expression("int64", 0);
+        let loaded = TensorLoad::from_buffer(&buffer, vec![index.clone()]).unwrap();
+        let increment = FloatImm::new(dtype, 1.0).unwrap();
+        let updated = Add::new(loaded, increment).unwrap();
+        let body = BufferStore::new(&buffer, updated, vec![index]).unwrap();
+        let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
+        let module = IRModule::from_expr(function).unwrap();
 
-    assert_structural_equal(&rust_result, &cpp_result);
+        let rust_result = rust_pass.run(module.clone()).unwrap();
+        let cpp_result = cpp_pass.run(module).unwrap();
+        assert_structural_equal(&rust_result, &cpp_result);
+    }
 }
 
 #[test]
