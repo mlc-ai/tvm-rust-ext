@@ -25,7 +25,7 @@ use tvm_ffi::{
 };
 
 use super::force_narrow_index::IndexDataTypeNormalizer;
-use super::utils::with_prim_func_body;
+use super::utils::{visit_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::Cast;
@@ -53,12 +53,11 @@ pub fn narrow_data_type_prim_func(function: PrimFunc, target_bits: u8) -> Result
             visit_variable,
             visit_integer,
             visit_cast,
-            visit_expression,
             visit_default,
         ),
     );
     structural_visit(&function.body, &mut collector)?;
-    let selected_types = collector.into_state().selected_types;
+    let selected_types = collector.into_state().selected_types()?;
     let mut normalizer = IndexDataTypeNormalizer::from_selected_types(target, selected_types)?;
     let body: Stmt = structural_mutate(function.body.clone(), &mut normalizer)?.try_into()?;
     Ok(with_prim_func_body(function, body))
@@ -80,7 +79,8 @@ struct NarrowPlan {
     target_bits: u8,
     current_bits: u8,
     variable_extent_types: HashMap<ObjectIdentity, PrimType>,
-    selected_types: HashMap<ObjectIdentity, PrimType>,
+    // Original type and maximum required width across every use of a node.
+    required_types: HashMap<ObjectIdentity, (PrimType, u8)>,
 }
 
 impl NarrowPlan {
@@ -96,35 +96,41 @@ impl NarrowPlan {
             target_bits,
             current_bits: target_bits,
             variable_extent_types: HashMap::new(),
-            selected_types: HashMap::new(),
+            required_types: HashMap::new(),
         })
     }
 
     fn record_type<T: ObjectRefCore>(&mut self, value: &T, original: &PrimType, bits: u8) {
         let bits = original.dtype.bits.min(bits);
-        let identity = ObjectIdentity::of(value);
-        let bits = self
-            .selected_types
-            .get(&identity)
-            .map_or(bits, |existing| existing.dtype.bits.max(bits));
-        if bits != original.dtype.bits {
-            self.selected_types.insert(
-                identity,
-                PrimType::from_dtype(DLDataType {
+        self.required_types
+            .entry(ObjectIdentity::of(value))
+            .and_modify(|(_, required)| *required = (*required).max(bits))
+            .or_insert_with(|| (original.clone(), bits));
+    }
+
+    fn selected_types(self) -> Result<HashMap<ObjectIdentity, PrimType>> {
+        self.required_types
+            .into_iter()
+            .filter(|(_, (original, bits))| original.dtype.bits != *bits)
+            .map(|(identity, (original, bits))| {
+                let ty = PrimType::from_dtype(DLDataType {
                     bits,
                     ..original.dtype
-                })
-                .expect("an existing integer dtype remains valid after narrowing"),
-            );
-        }
+                })?;
+                Ok((identity, ty))
+            })
+            .collect()
     }
 }
 
 fn visit_tensor_load(value: TensorLoad, visitor: &mut VisitContext<'_, NarrowPlan>) -> Result<()> {
-    visit_with_expression_context(value.into(), visitor, |visitor| {
+    visit_with_expression_context(value.clone().into(), visitor, |visitor| {
         let old_bits = visitor.state().current_bits;
         visitor.state_mut().current_bits = visitor.state().target_bits;
-        let result = visitor.visit_children().map(|_| ());
+        let result = value
+            .indices
+            .iter()
+            .try_for_each(|index| visitor.visit(&index).map(|_| ()));
         visitor.state_mut().current_bits = old_bits;
         result
     })
@@ -140,7 +146,12 @@ fn visit_loop(value: For, visitor: &mut VisitContext<'_, NarrowPlan>) -> Result<
         ObjectIdentity::of(value.loop_var.as_var()),
         value.extent.type_annotation(),
     );
-    visitor.visit_children()?;
+    visitor.visit(&value.min)?;
+    visitor.visit(&value.extent)?;
+    if let Some(step) = &value.step {
+        visitor.visit(step)?;
+    }
+    visitor.visit(&value.body)?;
     Ok(())
 }
 
@@ -164,7 +175,8 @@ fn visit_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, NarrowPlan>) 
             .variable_extent_types
             .insert(ObjectIdentity::of(variable.as_var()), value_type);
     }
-    visitor.visit_children()?;
+    visitor.visit(&value.value)?;
+    visitor.visit(&value.body)?;
     Ok(())
 }
 
@@ -199,7 +211,6 @@ fn visit_variable(value: Var, visitor: &mut VisitContext<'_, NarrowPlan>) -> Res
             let bits = extent_type.dtype.bits.min(visitor.state().current_bits);
             visitor.state_mut().record_type(&value, &original, bits);
         }
-        visitor.visit_children()?;
         Ok(())
     })
 }
@@ -211,7 +222,6 @@ fn visit_integer(value: IntImm, visitor: &mut VisitContext<'_, NarrowPlan>) -> R
             let bits = visitor.state().current_bits;
             visitor.state_mut().record_type(&value, &original, bits);
         }
-        visitor.visit_children()?;
         Ok(())
     })
 }
@@ -223,33 +233,29 @@ fn visit_cast(value: Cast, visitor: &mut VisitContext<'_, NarrowPlan>) -> Result
             let bits = visitor.state().current_bits;
             visitor.state_mut().record_type(&value, &original, bits);
         }
-        visitor.visit_children()?;
-        Ok(())
-    })
-}
-
-fn visit_expression(value: Expr, visitor: &mut VisitContext<'_, NarrowPlan>) -> Result<()> {
-    visit_with_expression_context(value, visitor, |visitor| {
-        visitor.visit_children()?;
+        visitor.visit(&value.value)?;
         Ok(())
     })
 }
 
 fn visit_default(
-    _value: &VisitValue,
+    value: &VisitValue,
     visitor: &mut VisitContext<'_, NarrowPlan>,
 ) -> Result<Option<VisitInterrupt>> {
-    visitor.visit_children()
+    if let Some(expression) = value.cast::<Expr>() {
+        visit_with_expression_context(expression, visitor, |visitor| {
+            visit_stmt_expr_default(visitor, value)
+        })
+    } else {
+        visit_stmt_expr_default(visitor, value)
+    }
 }
 
-fn visit_with_expression_context<F>(
+fn visit_with_expression_context<T>(
     value: Expr,
     visitor: &mut VisitContext<'_, NarrowPlan>,
-    operation: F,
-) -> Result<()>
-where
-    F: FnOnce(&mut VisitContext<'_, NarrowPlan>) -> Result<()>,
-{
+    operation: impl FnOnce(&mut VisitContext<'_, NarrowPlan>) -> Result<T>,
+) -> Result<T> {
     let old_bits = visitor.state().current_bits;
     let mut active_bits = old_bits;
     if let Ok(primitive) = PrimExpr::try_from(value) {

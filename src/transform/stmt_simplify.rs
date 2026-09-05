@@ -415,6 +415,11 @@ impl StmtSimplifier {
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        // C++ simplifies every PrimExpr before dispatching on its node kind.
+        if super::utils::is_primitive_type(&value.ty) {
+            let primitive: PrimExpr = Expr::from(value).try_into()?;
+            return Ok(self.analyzer.simplify(&primitive)?.into());
+        }
         if value.op.same_as(&self.if_then_else_operator) && value.args.len() == 3 {
             let original_condition =
                 PrimExpr::try_from(value.args.get(0).expect("three call arguments are present"))?;
@@ -454,11 +459,11 @@ impl StmtSimplifier {
         super::utils::mutate_expr_default(self, mutator, value.into())
     }
 
-    fn mutate_expression(&mut self, value: Expr) -> Result<Expr> {
+    fn mutate_expression(&mut self, value: Expr, mutator: &mut Mutator) -> Result<Expr> {
         if let Ok(primitive) = PrimExpr::try_from(&value) {
             return Ok(self.analyzer.simplify(&primitive)?.into());
         }
-        Ok(value)
+        super::utils::mutate_expr_default(self, mutator, value)
     }
 
     fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {

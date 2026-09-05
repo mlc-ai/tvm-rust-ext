@@ -25,7 +25,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, cast_prim_expr, get_operator, is_primitive_type,
+    array_same_as, binary_op, cast_prim_expr, get_operator, is_primitive_type,
     mutate_buffer_region_with_buffer, mutate_expr_default, mutate_stmt_expr_default,
     option_same_as, with_prim_func_body, BufferRemaps,
 };
@@ -191,11 +191,12 @@ impl IndexDataTypeNormalizer {
     fn mutate_buffer_definition(&mut self, buffer: &BufferVar) -> Result<BufferVar> {
         let old_enabled = self.enabled;
         self.enabled = true;
-        let mut remaps = std::mem::take(&mut self.buffer_remaps);
-        let result = remaps.mutate_definition(buffer, |expression| {
-            structural_mutate(expression.clone(), &mut *self)?.try_into()
-        });
-        self.buffer_remaps = remaps;
+        let result = BufferRemaps::mutate_definition(
+            self,
+            buffer,
+            |state| &mut state.buffer_remaps,
+            |state, expression| structural_mutate(expression.clone(), state)?.try_into(),
+        );
         self.enabled = old_enabled;
         result
     }
@@ -226,17 +227,31 @@ impl IndexDataTypeNormalizer {
         original_a: &PrimExpr,
         original_b: &PrimExpr,
         original: &T,
-        construct: impl FnOnce(PrimExpr, PrimExpr) -> Result<PrimExpr>,
+        operator: &str,
     ) -> Result<PrimExpr>
     where
         T: Clone + Into<PrimExpr>,
     {
-        let a: PrimExpr = mutator.mutate(self, original_a)?.try_into()?;
-        let b: PrimExpr = mutator.mutate(self, original_b)?.try_into()?;
+        let mut a: PrimExpr = mutator.mutate(self, original_a)?.try_into()?;
+        let mut b: PrimExpr = mutator.mutate(self, original_b)?.try_into()?;
         if a.same_as(original_a) && b.same_as(original_b) && a.dtype() == b.dtype() {
             return Ok(original.clone().into());
         }
-        construct(a, b)
+        if self.selected_types.is_some() && a.dtype() != b.dtype() {
+            // NarrowDataType rewrites variables everywhere. Retry constants and
+            // casts in this expression too when their types no longer match.
+            let old_enabled = self.enabled;
+            self.enabled = true;
+            let result = (|| -> Result<(PrimExpr, PrimExpr)> {
+                Ok((
+                    mutator.mutate(self, original_a)?.try_into()?,
+                    mutator.mutate(self, original_b)?.try_into()?,
+                ))
+            })();
+            self.enabled = old_enabled;
+            (a, b) = result?;
+        }
+        binary_op(operator, a, b)
     }
 
     fn mutate_comparison<T>(
@@ -245,16 +260,19 @@ impl IndexDataTypeNormalizer {
         original_a: &PrimExpr,
         original_b: &PrimExpr,
         original: &T,
-        construct: impl FnOnce(PrimExpr, PrimExpr) -> Result<PrimExpr>,
+        operator: &str,
     ) -> Result<PrimExpr>
     where
         T: Clone + Into<PrimExpr>,
     {
+        if self.selected_types.is_some() {
+            return self.mutate_binary(mutator, original_a, original_b, original, operator);
+        }
         let old_enabled = self.enabled;
         self.enabled = self.condition
             && is_signed_integer(original_a.dtype())
             && is_signed_integer(original_b.dtype());
-        let result = self.mutate_binary(mutator, original_a, original_b, original, construct);
+        let result = self.mutate_binary(mutator, original_a, original_b, original, operator);
         self.enabled = old_enabled;
         result
     }
@@ -353,93 +371,63 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Add::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpAdd")
     }
 
     fn mutate_subtract(&mut self, value: Sub, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Sub::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpSub")
     }
 
     fn mutate_multiply(&mut self, value: Mul, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Mul::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMul")
     }
 
     fn mutate_divide(&mut self, value: Div, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Div::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpDiv")
     }
 
     fn mutate_modulo(&mut self, value: Mod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Mod::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMod")
     }
 
     fn mutate_floor_divide(&mut self, value: FloorDiv, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(FloorDiv::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorDiv")
     }
 
     fn mutate_floor_modulo(&mut self, value: FloorMod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(FloorMod::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorMod")
     }
 
     fn mutate_minimum(&mut self, value: Min, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Min::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMin")
     }
 
     fn mutate_maximum(&mut self, value: Max, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(Max::new(a, b)?.into())
-        })
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMax")
     }
 
     fn mutate_equal(&mut self, value: EQ, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(EQ::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpEQ")
     }
 
     fn mutate_not_equal(&mut self, value: NE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(NE::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpNE")
     }
 
     fn mutate_less_than(&mut self, value: LT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(LT::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLT")
     }
 
     fn mutate_less_equal(&mut self, value: LE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(LE::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLE")
     }
 
     fn mutate_greater_than(&mut self, value: GT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(GT::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGT")
     }
 
     fn mutate_greater_equal(&mut self, value: GE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, |a, b| {
-            Ok(GE::new(a, b)?.into())
-        })
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGE")
     }
 
     fn mutate_ramp(&mut self, value: Ramp, mutator: &mut Mutator) -> Result<PrimExpr> {

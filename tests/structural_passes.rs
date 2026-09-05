@@ -128,3 +128,5 @@ mod module_and_opaque;
 mod simplify_and_legalize;
 #[path = "structural_passes/structural_api.rs"]
 mod structural_api;
+#[path = "structural_passes/verification.rs"]
+mod verification;

@@ -116,7 +116,8 @@ The crate also adapts Rust closures into TVM PrimFunc and module passes.  The
 current Rust ports cover statement and expression simplification, loop and
 pragma lowering, buffer and pointer rewrites, dtype legalization, target
 binding, host/device splitting, packed-API construction, and module-level
-function transforms; [`src/transform.rs`](src/transform.rs) is the authoritative
+function transforms, as well as SSA and GPU memory-access verification;
+[`src/transform.rs`](src/transform.rs) is the authoritative
 public list.  Differential tests compare these implementations with their C++
 counterparts using structural equality.  Arithmetic passes reuse an opaque
 handle to TVM's existing `arith.Analyzer` instead of copying its compiler rules
@@ -140,11 +141,15 @@ All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 types and accesses, layouts, and tile-dispatch metadata are also represented;
 this does not mean every native method or convenience constructor is exposed.
 
-- `Ramp`, `Broadcast`, and `Shuffle` have complete layouts and field allocators,
-  but no public semantic `new` constructor yet.
+- `Ramp`, `Broadcast`, and `Shuffle` expose Rust `new` constructors with native
+  lane normalization and result-type rules. Expression mutation uses these
+  constructors when children change, so vector types are recomputed too.
 - The registered transformation factories under `src/tirx/transform` have Rust
   counterparts. `VerifySSA` and `VerifyMemory`, registered under
-  `src/tirx/analysis`, still lack Rust pass entry points.
+  `src/tirx/analysis`, also have Rust implementations: `analysis::verify_ssa`
+  and `analysis::verify_memory` return a boolean, while `transform::verify_ssa`
+  and `transform::verify_memory` construct read-only module passes that fail
+  on invalid input and preserve module identity on success.
 - `UnifiedStaticMemoryPlanner` has only a declaration in this TVM revision,
   with no implementation or registration to port.
 - Analyzer-aware recursion lives in Rust helpers. There is no shared C++
@@ -153,9 +158,23 @@ this does not mean every native method or convenience constructor is exposed.
   (`ArgumentInfo`), `EnvFunc`, and general pass instrumentation have no typed
   wrappers yet. These are not missing TIRx statement kinds.
 
-Differential tests cover representative cases, not all legal inputs or full
-native lowering pipelines. In particular, a passing suite is not proof that
-every pass has complete C++ semantic parity.
+Differential tests cover definition reuse, GPU thread-scope boundaries, vector
+types, and BF16/FP8 buffer legalization. Buffer tests include metadata rewrites,
+references to earlier buffer definitions, and masked loads/stores. Pipeline
+tests also compare Rust and C++ after each of SSA conversion, index narrowing,
+simplification, no-op removal, and unrolling, then check SSA validity.
+Index-narrowing cases cover shared variables that need different widths,
+ignored loop annotations, and arithmetic type matching and constant folding.
+Storage-rewrite cases cover loop-carried lifetimes, thread/parallel allocation
+placement, buffer references nested in tuples, target/configuration reuse rules,
+same-statement in-place reuse and its rejection conditions, symbolic allocation
+sizes, free-block selection, and offsets in masked accesses and access pointers.
+They also check rejection of unflattened or still-vectorized inputs. Statement-simplification
+cases include nested tuples and primitive calls, not just arithmetic node handlers.
+Unsupported inputs matter too:
+compute legalization rejects scalable-vector stores in the tested C++ revision,
+and the Rust tests check the same boundary. This coverage is not exhaustive or
+a proof of equivalence for all inputs.
 
 The focused acceptance tests are in
 [`tests/stubgen_acceptance.rs`](tests/stubgen_acceptance.rs).  They use only

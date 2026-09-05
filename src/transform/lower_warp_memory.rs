@@ -26,7 +26,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, get_operator, int_value as optional_int_value, mutate_expr_default,
+    array_same_as, binary_op, get_operator, int_value as optional_int_value, mutate_expr_default,
     mutate_stmt_expr_default, value_error, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
@@ -560,11 +560,12 @@ impl WarpAccessRewriter {
                 return Err(value_error("vector warp access requires unit stride"));
             }
             let (local, group) = self.split_index_by_group(&ramp.base)?;
-            let local = ramp_expression(
+            let local = Ramp::new(
                 local,
-                IntImm::from_dtype(ramp.stride.dtype(), 1)?.into(),
+                IntImm::from_dtype(ramp.stride.dtype(), 1)?,
                 ramp.lanes.clone(),
-            )?;
+            )?
+            .into();
             return Ok((local, group));
         }
         let coefficient: PrimExpr =
@@ -855,18 +856,6 @@ fn expression_var_identity(expression: &Expr) -> Option<ObjectIdentity> {
     expression
         .as_node::<VarObj>()
         .map(|_| ObjectIdentity::of(expression))
-}
-
-fn ramp_expression(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Ramp")
-        .call_tuple((base, stride, lanes, Option::<crate::ir::Span>::None))?
-        .try_into()
-}
-
-fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
 }
 
 fn function_target(function: &PrimFunc) -> Result<Target> {

@@ -167,6 +167,30 @@ fn rust_stmt_simplify_matches_cpp_for_loop_constraints_and_redundant_store() {
 }
 
 #[test]
+fn rust_stmt_simplify_matches_cpp_for_nested_expression_dispatch() -> Result<()> {
+    use tvm::ir::{Op, Tuple, TupleGetItem};
+
+    load_tvm_compiler();
+    let sum: Expr = Add::new(int_expression(1), int_expression(2))?.into();
+    let tuple = Tuple::new(vec![sum.clone(), Tuple::new(vec![sum]).into()]);
+    let call = Call::new(
+        PrimType::new("int32")?,
+        Op::get("ir.prim.shift_left")?,
+        vec![int_expression(3), int_expression(1)],
+    );
+    let body = SeqStmt::new(vec![
+        Evaluate::new(tuple.clone())?.into(),
+        Evaluate::new(TupleGetItem::new(tuple, 0)?)?.into(),
+        Evaluate::new(call)?.into(),
+    ])?;
+    let module = IRModule::from_expr(PrimFunc::from_body(body)?)?;
+    let native = cpp_pass("tirx.transform.StmtSimplify").run(module.clone())?;
+    let rust = transform::stmt_simplify()?.run(module)?;
+    assert_structural_equal(&rust, &native);
+    Ok(())
+}
+
+#[test]
 fn rust_stmt_simplify_matches_cpp_for_scope_definition_extents() {
     load_tvm_compiler();
     let extent_variable = Var::new("extent", "int32").unwrap();
@@ -351,11 +375,27 @@ fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
             .into()],
     )
     .unwrap();
+    let broadcast: PrimExpr = tvm::ir::prim::Broadcast::new(
+        IntImm::new("int64", 9).unwrap(),
+        IntImm::new("int32", 4).unwrap(),
+    )
+    .unwrap()
+    .into();
+    let shuffle = tvm::ir::prim::Shuffle::new(
+        Array::new(vec![broadcast.clone()]),
+        Array::new(vec![prim_int_expression(1)]),
+    )
+    .unwrap();
     let body = For::new(
         index,
         typed_int_expression("int64", 0),
         typed_int_expression("int64", 15),
-        store,
+        Stmt::sequence(vec![
+            store.into(),
+            Evaluate::new(broadcast).unwrap().into(),
+            Evaluate::new(shuffle).unwrap().into(),
+        ])
+        .unwrap(),
     )
     .unwrap();
     let function = PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap();
@@ -369,6 +409,26 @@ fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+}
+
+#[test]
+fn rust_force_narrow_preserves_buffer_remaps_inside_later_definitions() -> Result<()> {
+    load_tvm_compiler();
+    let first =
+        BufferType::new("local", "int32", vec![typed_int_expression("int64", 8)])?.new_var("first");
+    let extent = TensorLoad::from_buffer(&first, vec![int_expression(0)])?;
+    let second = BufferType::new("local", "int32", vec![extent.into()])?.new_var("second");
+    let function = PrimFunc::from_body(SeqStmt::new(vec![
+        AllocBuffer::new(&first)?.into(),
+        BufferStore::new(&first, int_expression(4), vec![int_expression(0)])?.into(),
+        AllocBuffer::new(&second)?.into(),
+        BufferStore::new(&second, int_expression(1), vec![int_expression(0)])?.into(),
+    ])?)?;
+    let module = IRModule::from_expr(function)?;
+    let native = cpp_pass("tirx.transform.ForceNarrowIndexToInt32").run(module.clone())?;
+    let rust = transform::force_narrow_index_to_int32()?.run(module)?;
+    assert_structural_equal(&rust, &native);
+    Ok(())
 }
 
 #[test]
@@ -428,50 +488,120 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
 }
 
 #[test]
-fn rust_narrow_data_type_matches_cpp_for_proven_and_unproven_ranges() {
+fn rust_narrow_data_type_matches_cpp_for_ranges_and_shared_uses() -> Result<()> {
     load_tvm_compiler();
-    let build = |name: &str, extent: i64| {
-        let buffer_type = BufferType::new(
-            "global",
-            "int32",
-            vec![typed_int_expression("int64", extent)],
-        )
-        .unwrap();
-        let buffer = buffer_type.new_var(name);
-        let index = Var::new(&format!("{name}_index"), "int64").unwrap();
-        let body = For::new(
-            index.clone(),
-            typed_int_expression("int64", 0),
-            typed_int_expression("int64", extent),
-            BufferStore::new(&buffer, int_expression(1), vec![index.into()]).unwrap(),
-        )
-        .unwrap();
-        PrimFunc::new(vec![buffer.as_var().clone()], body).unwrap()
-    };
-    let safe = build("safe", 16);
-    let unsafe_range = build("wide", 70_000);
-    let module =
-        module_from_named_prim_funcs(vec![("safe", safe.clone()), ("wide", unsafe_range.clone())]);
-
-    let rust_module = module_from_named_prim_funcs(vec![
+    let index = Var::new("i", "int64")?;
+    let buffer = BufferType::new(
+        "global",
+        "int32",
+        vec![typed_int_expression("int64", 70_000)],
+    )?
+    .new_var("data");
+    let narrow_use: Stmt =
+        BufferStore::new(&buffer, int_expression(1), vec![index.clone().into()])?.into();
+    let wide_expression = Mul::new(&index, typed_int_expression("int64", 1_000_000))?;
+    let wide_use: Stmt = Evaluate::new(wide_expression.clone())?.into();
+    let cases = [
+        ("proven_range", 16, narrow_use.clone(), Map::new()),
+        ("unproven_range", 70_000, narrow_use.clone(), Map::new()),
         (
-            "safe",
-            transform::narrow_data_type_prim_func(safe, 16).unwrap(),
+            "narrow_then_wide",
+            16,
+            SeqStmt::new(vec![narrow_use.clone(), wide_use.clone()])?.into(),
+            Map::new(),
         ),
         (
-            "wide",
-            transform::narrow_data_type_prim_func(unsafe_range, 16).unwrap(),
+            "wide_then_narrow",
+            16,
+            SeqStmt::new(vec![wide_use, narrow_use.clone()])?.into(),
+            Map::new(),
         ),
-    ]);
-    let cpp_narrow: transform::Pass = Function::get_global("tirx.transform.NarrowDataType")
-        .unwrap()
-        .call_tuple((16_i64,))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let cpp_module = cpp_narrow.run(module).unwrap();
+        (
+            "ignored_annotation",
+            16,
+            narrow_use,
+            Map::from_iter([("test_annotation".into(), Any::from(wide_expression))]),
+        ),
+    ];
+    let mut functions = Vec::new();
+    for (name, extent, body, annotations) in cases {
+        let function = PrimFunc::new(
+            vec![buffer.as_var().clone()],
+            For::with_metadata(
+                index.clone(),
+                typed_int_expression("int64", 0),
+                typed_int_expression("int64", extent),
+                ForKind::kSerial,
+                body,
+                None,
+                annotations,
+                None,
+                None,
+            )?,
+        )?;
+        functions.push((name, function));
+    }
+    let module = module_from_named_prim_funcs(functions);
+    let native_pass: transform::Pass = Function::get_global("tirx.transform.NarrowDataType")?
+        .call_tuple((16_i64,))?
+        .try_into()?;
+    let native = native_pass.run(module.clone())?;
+    let rust = transform::narrow_data_type(16)?.run(module)?;
+    assert_structural_equal(&rust, &native);
+    Ok(())
+}
 
-    assert_structural_equal(&rust_module, &cpp_module);
+#[test]
+fn rust_index_narrowing_matches_cpp_for_arithmetic_rebuilding() -> Result<()> {
+    use tvm::ir::prim::{Div, Max, Min, Mod, Sub};
+
+    load_tvm_compiler();
+    let index = Var::new("i", "int64")?;
+    let one = typed_int_expression("int64", 1);
+    let arithmetic: Vec<PrimExpr> = vec![
+        Add::new(&index, &one)?.into(),
+        Add::new(&index, typed_int_expression("int64", 0))?.into(),
+        Sub::new(&index, &index)?.into(),
+        Mul::new(&index, &one)?.into(),
+        Div::new(&index, &one)?.into(),
+        Mod::new(&index, &one)?.into(),
+        FloorDiv::new(&index, &one)?.into(),
+        FloorMod::new(&index, &one)?.into(),
+        Min::new(&index, &index)?.into(),
+        Max::new(&index, &index)?.into(),
+        EQ::new(&index, &one)?.into(),
+        NE::new(&index, &one)?.into(),
+        LT::new(&index, &one)?.into(),
+        LE::new(&index, &one)?.into(),
+        GT::new(&index, &one)?.into(),
+        GE::new(&index, &one)?.into(),
+    ];
+    let body = arithmetic
+        .into_iter()
+        .map(|expression| Evaluate::new(expression).map(Stmt::from))
+        .collect::<Result<Vec<_>>>()?;
+    let function = PrimFunc::from_body(For::new(
+        index,
+        typed_int_expression("int64", 0),
+        typed_int_expression("int64", 16),
+        SeqStmt::new(body)?,
+    )?)?;
+    let module = IRModule::from_expr(function)?;
+    let native_narrow: transform::Pass = Function::get_global("tirx.transform.NarrowDataType")?
+        .call_tuple((16_i64,))?
+        .try_into()?;
+    for (rust_pass, native_pass) in [
+        (transform::narrow_data_type(16)?, native_narrow),
+        (
+            transform::force_narrow_index_to_int32()?,
+            cpp_pass("tirx.transform.ForceNarrowIndexToInt32"),
+        ),
+    ] {
+        let native = native_pass.run(module.clone())?;
+        let rust = rust_pass.run(module.clone())?;
+        assert_structural_equal(&rust, &native);
+    }
+    Ok(())
 }
 
 #[test]
@@ -616,77 +746,84 @@ fn rust_lower_tirx_cleanup_matches_cpp_for_a_layout_buffer_parameter() {
 }
 
 #[test]
-fn rust_bf16_storage_legalize_matches_cpp_for_local_buffer_storage() {
+fn rust_storage_legalize_matches_cpp_for_local_and_masked_accesses() -> Result<()> {
+    use tvm::ir::Op;
+
     load_tvm_compiler();
-    let buffer_type =
-        BufferType::new("local", "bfloat16", vec![typed_int_expression("int64", 4)]).unwrap();
-    let buffer = buffer_type.new_var("values");
-    let stored: PrimExpr = Function::get_global("tirx.reinterpret")
-        .unwrap()
-        .call_tuple((
-            PrimType::new("bfloat16").unwrap(),
-            IntImm::new("uint16", 0x3f80).unwrap(),
-            Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let body = SeqStmt::new(vec![
-        AllocBuffer::new(&buffer).unwrap().into(),
-        BufferStore::new(&buffer, stored, vec![typed_int_expression("int64", 0)])
-            .unwrap()
-            .into(),
-    ])
-    .unwrap();
-    let function = PrimFunc::from_body(body).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::bf16_storage_legalize_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.BF16StorageLegalize")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
-}
-
-#[test]
-fn rust_fp8_storage_legalize_matches_cpp_for_local_buffer_storage() {
-    load_tvm_compiler();
-    let buffer_type = BufferType::new(
-        "local",
-        "float8_e4m3fn",
-        vec![typed_int_expression("int64", 4)],
-    )
-    .unwrap();
-    let buffer = buffer_type.new_var("values");
-    let stored: PrimExpr = Function::get_global("tirx.reinterpret")
-        .unwrap()
-        .call_tuple((
-            PrimType::new("float8_e4m3fn").unwrap(),
-            IntImm::new("uint8", 0x38).unwrap(),
-            Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let body = SeqStmt::new(vec![
-        AllocBuffer::new(&buffer).unwrap().into(),
-        BufferStore::new(&buffer, stored, vec![typed_int_expression("int64", 0)])
-            .unwrap()
-            .into(),
-    ])
-    .unwrap();
-    let function = PrimFunc::from_body(body).unwrap();
-    let module = IRModule::from_expr(&function).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::fp8_storage_legalize_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.FP8StorageLegalize")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
+    let span = Span::new(SourceName::get("storage.rs")?, 1, 1, 1, 10)?;
+    for (dtype, uint_dtype, bits, rust_pass, native_pass) in [
+        (
+            "bfloat16",
+            "uint16",
+            0x3f80,
+            transform::bf16_storage_legalize()?,
+            cpp_pass("tirx.transform.BF16StorageLegalize"),
+        ),
+        (
+            "float8_e4m3fn",
+            "uint8",
+            0x38,
+            transform::fp8_storage_legalize()?,
+            cpp_pass("tirx.transform.FP8StorageLegalize"),
+        ),
+    ] {
+        let buffer = BufferType::new("local", dtype, vec![int_expression(4)])?.new_var("values");
+        let stored: PrimExpr = Function::get_global("tirx.reinterpret")?
+            .call_tuple((
+                PrimType::new(dtype)?,
+                IntImm::new(uint_dtype, bits)?,
+                Option::<Span>::None,
+            ))?
+            .try_into()?;
+        let index = int_expression(0);
+        let predicate = typed_int_expression("bool", 1);
+        let load = Call::new(
+            PrimType::new(dtype)?,
+            Op::get("tirx.masked_load")?,
+            vec![
+                buffer.as_var().clone().into(),
+                index.clone(),
+                predicate.clone(),
+            ],
+        );
+        let store = Call::new(
+            PrimType::void(),
+            Op::get("tirx.masked_store")?,
+            vec![
+                buffer.as_var().clone().into(),
+                stored.clone().into(),
+                index.clone(),
+                predicate,
+            ],
+        );
+        let access = AttrStmt::with_span(
+            buffer.clone(),
+            "test.buffer",
+            int_expression(0),
+            SeqStmt::new(vec![
+                BufferStore::new(&buffer, stored, vec![index])?.into(),
+                Evaluate::new(load)?.into(),
+                Evaluate::new(store)?.into(),
+            ])?,
+            Some(&span),
+        )?;
+        let function = PrimFunc::from_body(SeqStmt::new(vec![
+            AllocBuffer::new(&buffer)?.into(),
+            access.into(),
+        ])?)?;
+        let module = IRModule::from_expr(function)?;
+        let rust = rust_pass.run(module.clone())?;
+        let native = native_pass.run(module)?;
+        assert_structural_equal(&rust, &native);
+        for result in [rust, native] {
+            let function: PrimFunc = result.functions.iter().next().unwrap().1.try_cast()?;
+            let body: SeqStmt = function.body.clone().try_cast()?;
+            let attribute: AttrStmt = body.seq.get(1)?.try_cast()?;
+            // Native legalization reconstructs attributes when their node is remapped.
+            assert!(attribute.span.is_none());
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -698,18 +835,27 @@ fn rust_compute_legalize_matches_cpp_across_buffer_boundaries() {
         .unwrap()
         .try_into()
         .unwrap();
-    let cases = [
-        (
-            "bfloat16",
-            transform::bf16_compute_legalize().unwrap(),
-            cpp_pass("tirx.transform.BF16ComputeLegalize"),
-        ),
-        (
-            "float8_e4m3fn",
+    let mut cases = vec![(
+        "bfloat16",
+        transform::bf16_compute_legalize().unwrap(),
+        cpp_pass("tirx.transform.BF16ComputeLegalize"),
+    )];
+    for dtype in [
+        "float8_e3m4",
+        "float8_e4m3",
+        "float8_e4m3b11fnuz",
+        "float8_e4m3fn",
+        "float8_e4m3fnuz",
+        "float8_e5m2",
+        "float8_e5m2fnuz",
+        "float8_e8m0fnu",
+    ] {
+        cases.push((
+            dtype,
             transform::fp8_compute_legalize("float16").unwrap(),
-            cpp_fp8,
-        ),
-    ];
+            cpp_fp8.clone(),
+        ));
+    }
     for (dtype, rust_pass, cpp_pass) in cases {
         let buffer_type =
             BufferType::new("global", dtype, vec![typed_int_expression("int64", 4)]).unwrap();
@@ -726,6 +872,132 @@ fn rust_compute_legalize_matches_cpp_across_buffer_boundaries() {
         let cpp_result = cpp_pass.run(module).unwrap();
         assert_structural_equal(&rust_result, &cpp_result);
     }
+}
+
+#[test]
+fn rust_compute_legalize_recurses_into_allocated_buffer_metadata() -> Result<()> {
+    use tvm::ir::prim::Cast;
+
+    load_tvm_compiler();
+    let extent: Expr = Cast::new(PrimType::new("int32")?, FloatImm::new("bfloat16", 8.0)?)?.into();
+    let buffer = BufferType::new("local", "int32", vec![extent])?.new_var("buffer");
+    let function = PrimFunc::from_body(SeqStmt::new(vec![
+        AllocBuffer::new(&buffer)?.into(),
+        Evaluate::new(TensorLoad::from_buffer(&buffer, vec![int_expression(0)])?)?.into(),
+    ])?)?;
+    let module = IRModule::from_expr(function)?;
+    let native = cpp_pass("tirx.transform.BF16ComputeLegalize").run(module.clone())?;
+    let rust = transform::bf16_compute_legalize()?.run(module)?;
+    assert_structural_equal(&rust, &native);
+    Ok(())
+}
+
+#[test]
+fn rust_compute_legalize_preserves_buffers_referenced_by_layouts() -> Result<()> {
+    use tvm::ir::Op;
+
+    load_tvm_compiler();
+    let buffer = BufferType::new("local", "bfloat16", vec![int_expression(8)])?.new_var("data");
+    let extent = Call::new(
+        PrimType::new("int32")?,
+        Op::get("tirx.call_extern")?,
+        vec![
+            StringImm::new("layout_extent").into(),
+            Call::new(
+                PointerType::new(PrimType::new("bfloat16")?, "local")?,
+                Op::get("tirx.buffer_data")?,
+                vec![buffer.as_var().clone().into()],
+            )
+            .into(),
+        ],
+    );
+    let iteration = Iter::new(extent, int_expression(1), Axis::get("m")?)?;
+    let rust_pass = transform::bf16_compute_legalize()?;
+    let native_pass = cpp_pass("tirx.transform.BF16ComputeLegalize");
+    for (shard, replica) in [
+        (vec![iteration.clone()], Vec::new()),
+        (Vec::new(), vec![iteration.clone()]),
+    ] {
+        let layout = TileLayout::new(shard, replica, Map::new())?;
+        let layout_buffer = BufferType::with_metadata(
+            "local",
+            PrimType::new("int32")?,
+            vec![int_expression(8)],
+            Vec::new(),
+            int_expression(0),
+            64,
+            1,
+            Some(layout.into()),
+            Vec::new(),
+            None,
+        )?
+        .new_var("layout_buffer");
+        let function = PrimFunc::from_body(SeqStmt::new(vec![
+            AllocBuffer::new(&buffer)?.into(),
+            AllocBuffer::new(layout_buffer)?.into(),
+            Evaluate::new(TensorLoad::from_buffer(&buffer, vec![int_expression(0)])?)?.into(),
+        ])?)?;
+        let module = IRModule::from_expr(function)?;
+        let native = native_pass.run(module.clone())?;
+        let rust = rust_pass.run(module.clone())?;
+        assert_structural_equal(&rust, &native);
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_compute_legalize_matches_cpp_for_fixed_and_scalable_vector_stores() -> Result<()> {
+    use tvm::ir::prim::{Broadcast, Ramp};
+    use tvm::ir::Op;
+
+    load_tvm_compiler();
+    let scalable: Expr = Mul::new(
+        Call::new(
+            PrimType::new("int32")?,
+            Op::get("ir.prim.vscale")?,
+            Vec::new(),
+        ),
+        IntImm::new("int32", 4)?,
+    )?
+    .into();
+    let cpp_fp8: transform::Pass = Function::get_global("tirx.transform.FP8ComputeLegalize")?
+        .call_tuple((tvm::tvm_ffi::String::from("float16"),))?
+        .try_into()?;
+    for (dtype, rust_pass, native_pass) in [
+        (
+            "bfloat16",
+            transform::bf16_compute_legalize()?,
+            cpp_pass("tirx.transform.BF16ComputeLegalize"),
+        ),
+        (
+            "float8_e4m3fn",
+            transform::fp8_compute_legalize("float16")?,
+            cpp_fp8,
+        ),
+    ] {
+        for (lanes, supported) in [(int_expression(4), true), (scalable.clone(), false)] {
+            let buffer =
+                BufferType::new("global", dtype, vec![int_expression(64)])?.new_var("data");
+            let index = Ramp::new(int_expression(0), int_expression(1), &lanes)?;
+            let value = Broadcast::new(FloatImm::new(dtype, 1.0)?, &lanes)?;
+            let function = PrimFunc::new(
+                vec![buffer.as_var().clone()],
+                BufferStore::new(&buffer, value, vec![index.into()])?,
+            )?;
+            let module = IRModule::from_expr(function)?;
+            let native = native_pass.run(module.clone());
+            let rust = rust_pass.run(module);
+            assert_eq!(native.is_ok(), supported, "{dtype}");
+            assert_eq!(rust.is_ok(), supported, "{dtype}");
+            if supported {
+                assert_structural_equal(&rust?, &native?);
+            } else {
+                assert!(native.err().unwrap().to_string().contains("scalable"));
+                assert!(rust.err().unwrap().to_string().contains("scalable"));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]

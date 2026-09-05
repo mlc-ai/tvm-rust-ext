@@ -23,7 +23,7 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    get_operator, int_value, is_pointer_type, is_string_imm, mutate_expr_default,
+    binary_op, get_operator, int_value, is_pointer_type, is_string_imm, mutate_expr_default,
     mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
@@ -1130,12 +1130,6 @@ fn constant_allocation_size(shape: &Array<PrimExpr>) -> Option<i64> {
     shape.iter().try_fold(1_i64, |size, extent| {
         int_value(&extent).and_then(|extent| size.checked_mul(extent))
     })
-}
-
-fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
 }
 
 fn is_array_handle(value: &Expr, struct_get_operator: &Expr) -> Result<bool> {

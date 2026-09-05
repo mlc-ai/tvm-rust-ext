@@ -20,6 +20,109 @@
 use super::*;
 
 #[test]
+fn rust_pass_pipeline_matches_cpp_across_loop_and_definition_boundaries() -> Result<()> {
+    use tvm::ir::Op;
+
+    load_tvm_compiler();
+    let stages = [
+        (
+            "ConvertSSA",
+            transform::convert_ssa()?,
+            cpp_pass("tirx.transform.ConvertSSA"),
+        ),
+        (
+            "ForceNarrowIndexToInt32",
+            transform::force_narrow_index_to_int32()?,
+            cpp_pass("tirx.transform.ForceNarrowIndexToInt32"),
+        ),
+        (
+            "StmtSimplify",
+            transform::stmt_simplify()?,
+            cpp_pass("tirx.transform.StmtSimplify"),
+        ),
+        (
+            "RemoveNoOp",
+            transform::remove_no_op()?,
+            cpp_pass("tirx.transform.RemoveNoOp"),
+        ),
+        (
+            "UnrollLoop",
+            transform::unroll_loop()?,
+            cpp_pass("tirx.transform.UnrollLoop"),
+        ),
+    ];
+    let native_verify = Function::get_global("tirx.analysis.verify_ssa")?;
+    for minimum in [-2, 0, 3] {
+        for extent in [0, 1, 4] {
+            let variable = Var::new("i", "int64")?;
+            let temporary = Var::new("temporary", "int64")?;
+            let buffer =
+                BufferType::new("global", "float32", vec![typed_int_expression("int64", 16)])?
+                    .new_var("data");
+            let index = Add::new(&variable, typed_int_expression("int64", 4))?;
+            let update = Add::new(
+                TensorLoad::from_buffer(&buffer, vec![index.clone().into()])?,
+                FloatImm::new("float32", 1.0)?,
+            )?;
+            let body = SeqStmt::new(vec![
+                Bind::new(temporary.clone(), &variable)?.into(),
+                Bind::new(
+                    temporary.clone(),
+                    Add::new(&temporary, typed_int_expression("int64", 1))?,
+                )?
+                .into(),
+                Evaluate::new(Call::new(
+                    PrimType::new("int32")?,
+                    Op::get("tirx.call_extern")?,
+                    vec![StringImm::new("effect").into(), temporary.into()],
+                ))?
+                .into(),
+                IfThenElse::with_span(
+                    LT::new(&variable, typed_int_expression("int64", minimum + 1))?,
+                    BufferStore::new(&buffer, update, vec![index.into()])?,
+                    Some(Evaluate::from_i64(0)?.into()),
+                    None,
+                )?
+                .into(),
+            ])?;
+            let loop_node = For::with_metadata(
+                variable,
+                typed_int_expression("int64", minimum),
+                typed_int_expression("int64", extent),
+                ForKind::kUnrolled,
+                body.into(),
+                None,
+                Map::new(),
+                None,
+                None,
+            )?;
+            let function = PrimFunc::new(vec![buffer.as_var().clone()], loop_node)?;
+            let mut rust = IRModule::from_expr(function)?;
+            let mut native = rust.clone();
+            for (stage, rust_pass, native_pass) in &stages {
+                rust = rust_pass.run(rust).unwrap_or_else(|error| {
+                    panic!("Rust {stage}, min={minimum}, extent={extent}: {error}")
+                });
+                native = native_pass.run(native).unwrap_or_else(|error| {
+                    panic!("C++ {stage}, min={minimum}, extent={extent}: {error}")
+                });
+                assert_structural_equal(&rust, &native);
+                for (_, function) in rust.functions.iter() {
+                    let function: PrimFunc = function.try_cast()?;
+                    let valid: bool = native_verify.call_tuple((&function,))?.try_into()?;
+                    assert!(valid, "{stage} produced invalid SSA");
+                    assert!(
+                        tvm::analysis::verify_ssa(&function)?,
+                        "{stage} produced invalid SSA"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn rust_unroll_loop_matches_cpp_for_explicit_loop() {
     load_tvm_compiler();
     let loop_var = Var::new("i", "int32").unwrap();

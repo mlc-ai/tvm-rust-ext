@@ -23,14 +23,14 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    get_operator, int_value, mutate_expr_default, mutate_stmt_default, value_error,
+    binary_op, get_operator, int_value, mutate_expr_default, mutate_stmt_default, value_error,
     with_prim_func_body,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
 use crate::ir::prim::{
     Add, And, Broadcast, BroadcastObj, Cast, CastObj, Div, FloorDiv, FloorDivObj, FloorMod,
-    FloorModObj, Let, Max, Mod, MulObj, Or, Select, EQ, GE, LE, LT, NE,
+    FloorModObj, Let, Max, Mod, MulObj, Or, Ramp, Select, EQ, GE, LE, LT, NE,
 };
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::target::Target;
@@ -173,7 +173,7 @@ impl IntrinInjecter {
             }
             let mut inner_offset = inner.args.get(2)?.try_cast::<PrimExpr>()?;
             if inner_offset.dtype() != offset.dtype() {
-                inner_offset = semantic_cast(offset.type_annotation(), inner_offset)?;
+                inner_offset = Cast::new(offset.type_annotation(), inner_offset)?.into();
             }
             offset = binary_op("tirx._OpAdd", inner_offset, offset)?;
             let inner_source = inner.args.get(1)?;
@@ -195,11 +195,12 @@ impl IntrinInjecter {
             let lanes = i64::from(dtype.dtype.lanes);
             offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes))?;
             scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes))?;
-            offset = ramp(
+            offset = Ramp::new(
                 offset,
                 int_like(&scalar_extent, 1),
                 int_like(&scalar_extent, lanes),
-            )?;
+            )?
+            .into();
         }
 
         let mut access_buffer = None;
@@ -656,24 +657,6 @@ fn swap_broadcast_cast(value: &PrimExpr) -> Result<PrimExpr> {
         Cast::from_complete_fields(cast.span.clone(), value.type_annotation(), broadcast.into())
             .into(),
     )
-}
-
-fn ramp(base: PrimExpr, stride: PrimExpr, lanes: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Ramp")
-        .call_tuple((base, stride, lanes, Option::<crate::ir::Span>::None))?
-        .try_into()
-}
-
-fn semantic_cast(ty: PrimType, value: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("ir.prim.Cast")
-        .call_tuple((ty, value, Option::<crate::ir::Span>::None))?
-        .try_into()
-}
-
-fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
 }
 
 fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {

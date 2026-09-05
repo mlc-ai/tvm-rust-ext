@@ -780,12 +780,12 @@ fn mutate_buffer_definition(
     mutator: &mut Mutator,
     buffer: &BufferVar,
 ) -> Result<BufferVar> {
-    let mut remaps = std::mem::take(&mut rewriter.buffer_remaps);
-    let result = remaps.mutate_definition(buffer, |expression| {
-        mutator.mutate(rewriter, expression)?.try_into()
-    });
-    rewriter.buffer_remaps = remaps;
-    result
+    BufferRemaps::mutate_definition(
+        rewriter,
+        buffer,
+        |state| &mut state.buffer_remaps,
+        |state, expression| mutator.mutate(state, expression)?.try_into(),
+    )
 }
 
 #[tvm_ffi::dispatch(mutate)]

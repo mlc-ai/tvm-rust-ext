@@ -34,8 +34,7 @@ use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, PrimExpr, TensorLoad, Var,
 };
 use crate::tirx::{
-    AllocBuffer, AttrStmt, BufferRegion, BufferStore, BufferVar, DeclBuffer, Evaluate, For,
-    PrimFunc, Stmt,
+    AllocBuffer, BufferRegion, BufferStore, BufferVar, DeclBuffer, Evaluate, PrimFunc, Stmt,
 };
 
 type FunctionTable = HashMap<ObjectIdentity, (GlobalVar, PrimFunc)>;
@@ -124,10 +123,8 @@ fn collect_prim_funcs(module: &IRModule) -> FunctionTable {
 fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<ObjectIdentity>> {
     let mut call_graph = HashMap::<ObjectIdentity, HashSet<ObjectIdentity>>::new();
     for (caller_identity, (_, function)) in functions {
-        let mut collector = VisitCallbacks::new(
-            CallGraphState::default(),
-            (visit_call, visit_attribute, visit_loop, visit_default),
-        );
+        let mut collector =
+            VisitCallbacks::new(CallGraphState::default(), (visit_call, visit_default));
         structural_visit(&function.body, &mut collector)?;
         call_graph.insert(caller_identity.clone(), collector.into_state().callees);
     }
@@ -173,22 +170,6 @@ fn visit_call(call: Call, visitor: &mut VisitContext<'_, CallGraphState>) -> Res
     for argument in call.args.iter() {
         visitor.visit(&argument)?;
     }
-    Ok(())
-}
-
-fn visit_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
-    visitor.visit(&value.value)?;
-    visitor.visit(&value.body)?;
-    Ok(())
-}
-
-fn visit_loop(value: For, visitor: &mut VisitContext<'_, CallGraphState>) -> Result<()> {
-    visitor.visit(&value.min)?;
-    visitor.visit(&value.extent)?;
-    if let Some(step) = &value.step {
-        visitor.visit(step)?;
-    }
-    visitor.visit(&value.body)?;
     Ok(())
 }
 
@@ -368,12 +349,12 @@ fn mutate_buffer_definition(
     mutator: &mut Mutator,
     buffer: &BufferVar,
 ) -> Result<BufferVar> {
-    let mut remaps = std::mem::take(&mut inliner.buffer_remaps);
-    let result = remaps.mutate_definition(buffer, |expression| {
-        mutator.mutate(inliner, expression)?.try_into()
-    });
-    inliner.buffer_remaps = remaps;
-    result
+    BufferRemaps::mutate_definition(
+        inliner,
+        buffer,
+        |state| &mut state.buffer_remaps,
+        |state, expression| mutator.mutate(state, expression)?.try_into(),
+    )
 }
 
 fn function_target(function: &PrimFunc) -> Result<Option<Any>> {

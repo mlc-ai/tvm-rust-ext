@@ -2023,7 +2023,7 @@ impl FloatImm {
         let is_floating = matches!(
             dtype.code,
             x if x == DLDataTypeCode::kDLFloat as u8
-                || x == DLDataTypeCode::kDLBfloat as u8
+                || (x == DLDataTypeCode::kDLBfloat as u8 && dtype.bits == 16)
                 || x == DLDataTypeCode::kDLFloat8_e3m4 as u8
                 || x == DLDataTypeCode::kDLFloat8_e4m3 as u8
                 || x == DLDataTypeCode::kDLFloat8_e4m3b11fnuz as u8
@@ -2034,7 +2034,7 @@ impl FloatImm {
                 || x == DLDataTypeCode::kDLFloat8_e8m0fnu as u8
                 || x == DLDataTypeCode::kDLFloat6_e2m3fn as u8
                 || x == DLDataTypeCode::kDLFloat6_e3m2fn as u8
-                || x == DLDataTypeCode::kDLFloat4_e2m1fn as u8
+                || (x == DLDataTypeCode::kDLFloat4_e2m1fn as u8 && dtype.bits == 4)
                 || x >= 129
         );
         if !is_floating {
@@ -2045,6 +2045,7 @@ impl FloatImm {
                 "",
             ));
         }
+        validate_float_literal_range(dtype, value)?;
         Ok(Self::from_complete_fields(
             span.cloned(),
             PrimType::from_dtype(dtype)?,
@@ -2061,6 +2062,44 @@ impl FloatImm {
             }),
         }
     }
+}
+
+fn validate_float_literal_range(dtype: DLDataType, value: f64) -> Result<()> {
+    use DLDataTypeCode::*;
+
+    // Match FloatImm's bounds in src/ir/expr.cc and src/support/limits.h.
+    let code = dtype.code;
+    let (bound, nonnegative) = if dtype.bits == 32 {
+        (f64::from(f32::MAX), false)
+    } else {
+        match code {
+            x if x == kDLFloat as u8 && dtype.bits == 16 => (65504.0, false),
+            x if x == kDLBfloat as u8 => (3.895_313_892_515_355e38, false),
+            x if x == kDLFloat8_e3m4 as u8 => (31.0, false),
+            x if x == kDLFloat8_e4m3 as u8 || x == kDLFloat8_e4m3fn as u8 => (448.0, false),
+            x if x == kDLFloat8_e4m3b11fnuz as u8 => (30.0, true),
+            x if x == kDLFloat8_e4m3fnuz as u8 => (448.0, true),
+            x if x == kDLFloat8_e5m2 as u8 => (57344.0, false),
+            x if x == kDLFloat8_e5m2fnuz as u8 => (57344.0, true),
+            x if x == kDLFloat8_e8m0fnu as u8 => (3.402_823_669_209_385e38, true),
+            x if x == kDLFloat6_e2m3fn as u8 => (7.5, false),
+            x if x == kDLFloat6_e3m2fn as u8 => (28.0, false),
+            x if x == kDLFloat4_e2m1fn as u8 => (6.0, false),
+            _ => return Ok(()),
+        }
+    };
+    let minimum = if nonnegative { 0.0 } else { -bound };
+    if value.is_finite() && !(minimum..=bound).contains(&value) {
+        return Err(Error::new(
+            VALUE_ERROR,
+            &format!(
+                "literal value {value} is outside the range of {}",
+                dtype.to_string()
+            ),
+            "",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_integer_literal(dtype: DLDataType, value: i64) -> Result<()> {
