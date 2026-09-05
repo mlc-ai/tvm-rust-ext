@@ -19,17 +19,21 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
+#[path = "../../tests/unit/constraint_cleanup.rs"]
+mod constraint_cleanup_tests;
+
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, Mutator, ObjectArc,
-    ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
-    RUNTIME_ERROR,
+    structural_mutate, Any, AnyCompatible, Array, FieldGetter, Function, Map, MapValue, Mutator,
+    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
+    String as FfiString, RUNTIME_ERROR,
 };
 
 use super::utils::{
-    array_same_as, get_operator, int_value, is_call, is_evaluate_zero as is_no_op,
-    mutate_buffer_region_with_buffer, mutate_stmt_expr_default, option_same_as,
-    with_prim_func_body, BufferRemaps,
+    array_same_as, finish_constraint_contexts, get_operator, int_value, is_call,
+    is_evaluate_zero as is_no_op, mutate_buffer_region_with_buffer, mutate_stmt_expr_default,
+    option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
@@ -115,31 +119,7 @@ pub fn remove_no_op_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 }
 
 fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> Result<PrimFunc> {
-    let analyzer = Analyzer::new()?;
-    analyzer.set_maximum_rewrite_steps(options.max_simplification_steps)?;
-    let profiler_operators = if options.ignore_profiler_call {
-        [
-            "tirx.timer_init_cuda",
-            "tirx.timer_start_cuda",
-            "tirx.timer_end_cuda",
-            "tirx.timer_finalize_cuda",
-        ]
-        .into_iter()
-        .map(get_operator)
-        .collect::<Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
-    let mut remover = NoOpRemover {
-        analyzer,
-        ignore_profiler_call: options.ignore_profiler_call,
-        profiler_operators,
-        variable_domains: HashMap::new(),
-        buffer_remaps: BufferRemaps::default(),
-        likely_operator: get_operator("ir.prim.likely")?,
-        if_then_else_operator: get_operator("ir.prim.if_then_else")?,
-        bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
-    };
+    let mut remover = NoOpRemover::new(options)?;
     let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
@@ -271,17 +251,12 @@ impl NoOpRemover {
 
     fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
         let condition: PrimExpr = mutator.mutate(self, &value.condition)?.try_into()?;
-        let true_value = mutate_primitive_under_constraint_with_facts(
-            self,
-            mutator,
-            &value.true_value,
-            &condition,
-        )?;
+        let true_value =
+            mutate_under_constraint_with_facts(self, mutator, &value.true_value, &condition)?;
         let negative = self
             .analyzer
             .simplify(&PrimExpr::from(Not::new(condition.clone())?))?;
-        let false_value =
-            mutate_primitive_under_constraint(self, mutator, &value.false_value, &negative)?;
+        let false_value = mutate_under_constraint(self, mutator, &value.false_value, &negative)?;
         if let Some(condition) = int_value(&condition) {
             return if condition != 0 {
                 Ok(true_value)
@@ -313,15 +288,10 @@ impl NoOpRemover {
         let original_true = value.args.get(1).expect("true argument is present");
         let original_false = value.args.get(2).expect("false argument is present");
         let condition: PrimExpr = mutator.mutate(self, &original_condition)?.try_into()?;
-        let true_value = mutate_expression_under_constraint_with_facts(
-            self,
-            mutator,
-            &original_true,
-            &condition,
-        )?;
+        let true_value =
+            mutate_under_constraint_with_facts(self, mutator, &original_true, &condition)?;
         let negative: PrimExpr = Not::new(condition.clone())?.into();
-        let false_value =
-            mutate_expression_under_constraint(self, mutator, &original_false, &negative)?;
+        let false_value = mutate_under_constraint(self, mutator, &original_false, &negative)?;
         if let Some(condition) = int_value(&condition) {
             return if condition != 0 {
                 Ok(true_value)
@@ -609,6 +579,34 @@ impl NoOpRemover {
 }
 
 impl NoOpRemover {
+    fn new(options: RemoveNoOpOptions) -> Result<Self> {
+        let analyzer = Analyzer::new()?;
+        analyzer.set_maximum_rewrite_steps(options.max_simplification_steps)?;
+        let profiler_operators = if options.ignore_profiler_call {
+            [
+                "tirx.timer_init_cuda",
+                "tirx.timer_start_cuda",
+                "tirx.timer_end_cuda",
+                "tirx.timer_finalize_cuda",
+            ]
+            .into_iter()
+            .map(get_operator)
+            .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            analyzer,
+            ignore_profiler_call: options.ignore_profiler_call,
+            profiler_operators,
+            variable_domains: HashMap::new(),
+            buffer_remaps: BufferRemaps::default(),
+            likely_operator: get_operator("ir.prim.likely")?,
+            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
+        })
+    }
+
     fn unwrap_likely(&self, condition: &PrimExpr) -> Result<PrimExpr> {
         let Some(call) = condition.as_node::<CallObj>() else {
             return Ok(condition.clone());
@@ -707,72 +705,30 @@ fn mutate_buffer_definition(
     result
 }
 
-fn mutate_under_constraint(
+fn mutate_under_constraint<T>(
     remover: &mut NoOpRemover,
     mutator: &mut Mutator,
-    statement: &Stmt,
+    value: &T,
     constraint: &PrimExpr,
-) -> Result<Stmt> {
+) -> Result<T>
+where
+    T: AnyCompatible + TryFrom<Any, Error = tvm_ffi::Error>,
+{
     let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, statement)?.try_into()
-    })
+    analyzer.with_constraint(constraint, || mutator.mutate(remover, value)?.try_into())
 }
 
-fn mutate_under_constraint_with_facts(
+fn mutate_under_constraint_with_facts<T>(
     remover: &mut NoOpRemover,
     mutator: &mut Mutator,
-    statement: &Stmt,
+    value: &T,
     constraint: &PrimExpr,
-) -> Result<Stmt> {
+) -> Result<T>
+where
+    T: AnyCompatible + TryFrom<Any, Error = tvm_ffi::Error>,
+{
     let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, statement)?.try_into();
-    finish_constraint_contexts(result, exits)
-}
-
-fn mutate_expression_under_constraint(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &Expr,
-    constraint: &PrimExpr,
-) -> Result<Expr> {
-    let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, expression)?.try_into()
-    })
-}
-
-fn mutate_expression_under_constraint_with_facts(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &Expr,
-    constraint: &PrimExpr,
-) -> Result<Expr> {
-    let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, expression)?.try_into();
-    finish_constraint_contexts(result, exits)
-}
-
-fn mutate_primitive_under_constraint(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &PrimExpr,
-    constraint: &PrimExpr,
-) -> Result<PrimExpr> {
-    let analyzer = remover.analyzer.clone();
-    analyzer.with_constraint(constraint, || {
-        mutator.mutate(remover, expression)?.try_into()
-    })
-}
-
-fn mutate_primitive_under_constraint_with_facts(
-    remover: &mut NoOpRemover,
-    mutator: &mut Mutator,
-    expression: &PrimExpr,
-    constraint: &PrimExpr,
-) -> Result<PrimExpr> {
-    let exits = remover.enter_constraint_facts(constraint)?;
-    let result = mutator.mutate(remover, expression)?.try_into();
+    let result = mutator.mutate(remover, value).and_then(T::try_from);
     finish_constraint_contexts(result, exits)
 }
 
@@ -882,19 +838,6 @@ fn invert_compare(kind: CompareKind) -> CompareKind {
 fn is_bool8(value: &PrimExpr) -> bool {
     let dtype = value.dtype();
     dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 && dtype.bits == 8
-}
-
-fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
-    let mut exit_error = None;
-    for exit in exits.into_iter().rev() {
-        if let Err(error) = exit.call_tuple(()) {
-            exit_error.get_or_insert(error);
-        }
-    }
-    match (result, exit_error) {
-        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
-        (Ok(value), None) => Ok(value),
-    }
 }
 
 fn is_profiler_call(value: &PrimExpr, profiler_operators: &[Expr]) -> bool {

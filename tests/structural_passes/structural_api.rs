@@ -21,6 +21,117 @@ use super::*;
 use tvm::tvm_ffi::AnyView;
 
 #[test]
+fn scalar_and_statement_constructors_match_cpp() {
+    load_tvm_compiler();
+    let lhs = prim_int_expression(1);
+    let rhs = prim_int_expression(2);
+
+    macro_rules! assert_binary_constructor {
+        ($node:ident, $name:literal) => {{
+            let native: Expr = Function::get_global($name)
+                .unwrap()
+                .call_tuple((lhs.clone(), rhs.clone(), Option::<Span>::None))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let rust = $node::new(lhs.clone(), rhs.clone()).unwrap();
+            assert_structural_equal(&rust, &native);
+        }};
+    }
+
+    assert_binary_constructor!(NE, "ir.prim.NE");
+    assert_binary_constructor!(LT, "ir.prim.LT");
+    assert_binary_constructor!(LE, "ir.prim.LE");
+    assert_binary_constructor!(GT, "ir.prim.GT");
+    assert_binary_constructor!(GE, "ir.prim.GE");
+
+    let condition = PrimExpr::try_from(typed_int_expression("bool", 1)).unwrap();
+    let native_not: Expr = Function::get_global("ir.prim.Not")
+        .unwrap()
+        .call_tuple((condition.clone(), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(
+        &Expr::from(Not::new(condition.clone()).unwrap()),
+        &native_not,
+    );
+
+    let rust_select = Select::new(condition.clone(), lhs.clone(), rhs.clone()).unwrap();
+    let native_select: Expr = Function::get_global("ir.prim.Select")
+        .unwrap()
+        .call_tuple((
+            condition.clone(),
+            lhs.clone(),
+            rhs.clone(),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Expr::from(rust_select), &native_select);
+
+    let let_variable = Var::new("let_bound", "int32").unwrap();
+    let rust_let = Let::new(let_variable.clone(), lhs.clone(), rhs.clone()).unwrap();
+    let native_let: Expr = Function::get_global("ir.prim.Let")
+        .unwrap()
+        .call_tuple((let_variable, lhs, rhs, Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Expr::from(rust_let), &native_let);
+
+    let rust_while = While::new(condition.clone(), Evaluate::from_i64(0).unwrap()).unwrap();
+    let native_while: Stmt = Function::get_global("tirx.While")
+        .unwrap()
+        .call_tuple((
+            condition,
+            Stmt::from(Evaluate::from_i64(0).unwrap()),
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&Stmt::from(rust_while), &native_while);
+
+    let variable = Var::new("bound", "int32").unwrap();
+    let rust_bind = Bind::new(variable.clone(), int_expression(1)).unwrap();
+    let native_bind: Bind = Function::get_global("tirx.Bind")
+        .unwrap()
+        .call_tuple((variable, int_expression(1), Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_bind, &native_bind);
+
+    let buffer_type =
+        BufferType::new("global", "int32", vec![typed_int_expression("int64", 4)]).unwrap();
+    let buffer = buffer_type.new_var("buffer");
+    let data = int_expression(0);
+    let rust_decl = DeclBuffer::new(&buffer, data.clone()).unwrap();
+    let native_decl: DeclBuffer = Function::get_global("tirx.DeclBuffer")
+        .unwrap()
+        .call_tuple((buffer.clone(), data, Option::<Span>::None))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_decl, &native_decl);
+
+    let rust_alloc = AllocBuffer::new(&buffer).unwrap();
+    let native_alloc: AllocBuffer = Function::get_global("tirx.AllocBuffer")
+        .unwrap()
+        .call_tuple((
+            buffer,
+            Option::<Map<tvm::tvm_ffi::String, Any>>::None,
+            Option::<Span>::None,
+        ))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_structural_equal(&rust_alloc, &native_alloc);
+}
+
+#[test]
 fn source_and_module_metadata_round_trip_cpp_objects() {
     load_tvm_compiler();
     let source_name = SourceName::get("contract-test.tvm").unwrap();

@@ -41,33 +41,35 @@ the object directly:
 #[type_final]
 pub struct AddObj {
     base: ExprObj,
-    pub a: Expr,
-    pub b: Expr,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
 }
 
 pub fn from_complete_fields(
     span: Option<Span>,
-    ty: Type,
-    a: Expr,
-    b: Expr,
+    ty: PrimType,
+    a: PrimExpr,
+    b: PrimExpr,
 ) -> Add {
     Add {
         data: ObjectArc::new(AddObj {
-            base: ExprObj::new(span, ty),
+            base: ExprObj::new(span, ty.into()),
             a,
             b,
         }),
     }
 }
 
-pub fn new(a: &Expr, b: &Expr) -> Result<Add> {
+pub fn new<L: Into<Expr>, R: Into<Expr>>(a: L, b: R) -> Result<Add> {
     // Validate the same dtype rule as C++, then delegate to the owned path.
-    let result_type = matching_binary_type(a, b)?;
+    let a = a.into();
+    let b = b.into();
+    let result_type = matching_binary_type(&a, &b)?;
     Ok(from_complete_fields(
         None,
         result_type,
-        a.clone(),
-        b.clone(),
+        a.try_into()?,
+        b.try_into()?,
     ))
 }
 ```
@@ -248,6 +250,7 @@ existing TVM operation:
 | C++ polymorphic hierarchy | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |
 | Typed ordinary expression | `BufferRegion` | emit its complete `Expr` layout, use the registered `BufferRegionType` singleton, and allocate the region in Rust |
 | Native STL storage | `Source` | keep the node opaque and construct it through the existing `SourceMapAdd` operation |
+| Native mutable service | `Analyzer`, `UniqueNameSupply` | opaque typed handles with `!Send`/`!Sync`, using existing registered operations; generic `ObjectRef` can still erase these restrictions, so end-to-end thread isolation needs a separate tvm-ffi fix |
 | Non-object optional ABI | `TilePrimitiveCall::dispatch` | emit the complete node with `tvm_ffi::Optional<String>`, check the operator category through `ir.OpGetAttr`, and allocate in Rust |
 | Native mutable fields | `DispatchContext::callbacks`, `DispatchContext::shared_state` | complete layout and Rust allocation with private `UnsafeCell` storage; expose owned snapshots and prevent cross-thread sharing |
 | Complex semantic constructor | `PrimFunc`, match buffer | use reviewed handwritten Rust analysis/validation, then allocate complete fields in Rust |

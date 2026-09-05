@@ -257,7 +257,7 @@ impl IntrinInjecter {
             let Some(rule) = operator_rule(&call.op, attribute_name)? else {
                 continue;
             };
-            let lowered: PrimExpr = rule.call_tuple((primitive.clone(),))?.try_into()?;
+            let lowered: PrimExpr = rule.call_tuple((&primitive,))?.try_into()?;
             if !lowered.same_as(&primitive) {
                 return mutator
                     .mutate(self, &lowered)

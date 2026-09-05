@@ -20,8 +20,9 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    Any, AnyCompatible, Array, DLDataType, Map, MapValue, MutateDispatch, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String, VisitContext, VisitInterrupt, VisitValue,
+    Any, AnyCompatible, Array, DLDataType, Function, Map, MapValue, MutateDispatch, Mutator,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String, VisitContext, VisitInterrupt,
+    VisitValue,
 };
 
 use crate::ir::prim::{
@@ -33,7 +34,7 @@ use crate::ir::prim::{
 use crate::ir::{
     Call, CallObj, DictAttrs, Expr, FloatImmObj, GlobalVarObj, IntImmObj, Op, OpObj, OpaqueExprObj,
     PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, TensorLoadObj,
-    Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, Var, VarObj,
+    Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, UniqueNameSupply, Var, VarObj,
 };
 use crate::tirx::{
     AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj, BreakObj,
@@ -55,8 +56,30 @@ pub(super) fn operator_identity(name: &str) -> Result<ObjectIdentity> {
     Ok(ObjectIdentity::of(&get_operator(name)?))
 }
 
+pub(super) fn global_name_supply(module: &crate::ir::IRModule) -> Result<UniqueNameSupply> {
+    let names = UniqueNameSupply::new("")?;
+    for (global, _) in module.functions.iter() {
+        names.reserve_name(global.name_hint.as_str(), false)?;
+    }
+    Ok(names)
+}
+
 pub(super) fn value_error(message: &str) -> tvm_ffi::Error {
     tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
+}
+
+/// Exit nested analyzer constraints inside-out, preserving the original error.
+pub(super) fn finish_constraint_contexts<T>(result: Result<T>, exits: Vec<Function>) -> Result<T> {
+    let mut exit_error = None;
+    for exit in exits.into_iter().rev() {
+        if let Err(error) = exit.call_tuple(()) {
+            exit_error.get_or_insert(error);
+        }
+    }
+    match (result, exit_error) {
+        (Err(error), _) | (Ok(_), Some(error)) => Err(error),
+        (Ok(value), None) => Ok(value),
+    }
 }
 
 pub(super) fn is_call<T: ObjectRefCore>(value: &T) -> bool {

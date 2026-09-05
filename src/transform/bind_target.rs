@@ -26,8 +26,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    is_opaque_expr, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
-    with_prim_func_attr, with_prim_func_body, without_prim_func_attr,
+    global_name_supply, is_opaque_expr, mutate_expr_default, mutate_stmt_default,
+    mutate_stmt_expr_default, with_prim_func_attr, with_prim_func_body, without_prim_func_attr,
 };
 use super::{create_module_pass, Pass};
 use crate::ir::{BaseFunc, Call, GlobalVar, GlobalVarObj, IRModule};
@@ -43,15 +43,14 @@ const DEVICE_ENTRY: &str = "tirx.device_entry";
 
 /// Bind host and device targets to a module using TIRx call-context rules.
 pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> {
-    let target_host = target.host()?.unwrap_or(Target::new("llvm")?);
+    let target_host = match target.host()? {
+        Some(host) => host,
+        None => Target::new("llvm")?,
+    };
     let target_without_host = target.without_host()?;
     let calls = classify_calls(&module)?;
     let mut replacements = HashMap::<ObjectIdentity, GlobalVar>::new();
-    let mut used_names = module
-        .functions
-        .iter()
-        .map(|(global, _)| global.name_hint.as_str().to_owned())
-        .collect::<HashSet<_>>();
+    let names = global_name_supply(&module)?;
     let mut functions = Vec::with_capacity(module.functions.len());
     let mut additions = Vec::new();
 
@@ -88,13 +87,13 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
             let called_by_device = calls.device.contains(&identity);
             if called_by_host && called_by_device {
                 let host_function: PrimFunc = tvm_ffi::cached_global_func!("s_tir.RenewDefs")
-                    .call_tuple((primitive.clone(),))?
+                    .call_tuple((&primitive,))?
                     .try_into()?;
                 primitive = with_prim_func_attr(primitive, TARGET, target_without_host.clone());
                 let host_function = with_prim_func_attr(host_function, TARGET, target_host.clone());
                 let base = format!("{}_host", global.name_hint.as_str());
-                let name = fresh_name(&base, &mut used_names);
-                let host_global = GlobalVar::new(&name);
+                let name = names.fresh_name(&base, false, true)?;
+                let host_global = GlobalVar::new(name.as_str());
                 replacements.insert(identity, host_global.clone());
                 additions.push((host_global, BaseFunc::from(host_function)));
             } else if called_by_host {
@@ -294,18 +293,4 @@ fn has_nonzero_attr(function: &PrimFunc, key: &str) -> Result<bool> {
         .map(i64::try_from)
         .transpose()
         .map(|value| value.unwrap_or(0) != 0)
-}
-
-fn fresh_name(base: &str, used: &mut HashSet<String>) -> String {
-    if used.insert(base.to_owned()) {
-        return base.to_owned();
-    }
-    let mut suffix = 1_u64;
-    loop {
-        let candidate = format!("{base}_{suffix}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        suffix += 1;
-    }
 }

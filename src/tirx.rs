@@ -19,14 +19,14 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map, ObjectArc, ObjectRefCast,
-    ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
+    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map, ObjectArc, ObjectRefCore,
+    Result, String, TYPE_ERROR, VALUE_ERROR,
 };
 
 use crate::ir::prim::{primitive_type, StringImm};
 use crate::ir::{
-    BaseFuncObj, DictAttrs, Expr, IntImm, IntImmObj, PointerType, PrimExpr, PrimType, Span,
-    TupleType, Type, TypedVar, Var,
+    BaseFuncObj, DictAttrs, Expr, IntImm, IntImmObj, PointerTypeObj, PrimExpr, PrimType,
+    PrimTypeObj, Span, TupleType, TupleTypeObj, Type, TypedVar, Var,
 };
 
 mod buffer;
@@ -1297,14 +1297,14 @@ fn derive_prim_func_types(
 
     let mut parameter_types = Vec::with_capacity(params.len());
     for parameter in params.iter() {
-        let parameter_type = if let Ok(buffer) = parameter.ty.clone().try_cast::<BufferType>() {
+        let parameter_type = if let Some(buffer) = parameter.ty.as_node::<BufferTypeObj>() {
             let mut shape = Vec::with_capacity(buffer.shape.len());
             for dimension in buffer.shape.iter() {
                 shape.push(cast_index_to_i64(dimension.into())?);
             }
             let shape = make_native_shape_expr(Array::new(shape))?;
             make_native_tensor_type(shape, buffer.dtype.clone())?
-        } else if parameter.ty.clone().try_cast::<PointerType>().is_ok() {
+        } else if parameter.ty.as_node::<PointerTypeObj>().is_some() {
             make_native_any_type()?
         } else {
             parameter.ty.clone()
@@ -1312,12 +1312,11 @@ fn derive_prim_func_types(
         parameter_types.push(parameter_type);
     }
 
-    let relax_return_type = if ret_type.clone().try_cast::<PrimType>().is_ok() {
+    let relax_return_type = if ret_type.as_node::<PrimTypeObj>().is_some() {
         ret_type.clone()
     } else if ret_type
-        .clone()
-        .try_cast::<TupleType>()
-        .is_ok_and(|tuple| tuple.fields.is_empty())
+        .as_node::<TupleTypeObj>()
+        .is_some_and(|tuple| tuple.fields.is_empty())
     {
         TupleType::empty().into()
     } else {

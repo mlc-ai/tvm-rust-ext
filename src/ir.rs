@@ -27,6 +27,9 @@ use tvm_ffi::{
 /// Primitive expression nodes shared by TIRx and other IR dialects.
 pub mod prim;
 
+mod unique_name_supply;
+pub use unique_name_supply::{UniqueNameSupply, UniqueNameSupplyObj};
+
 /// ABI-complete Rust representation of TVM's `ExprNode` prefix.
 #[repr(C)]
 #[derive(Object)]

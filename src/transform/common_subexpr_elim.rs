@@ -824,6 +824,6 @@ where
 {
     let node: Any = node.clone().into();
     tvm_ffi::cached_global_func!("tirx.Substitute")
-        .call_tuple((node, replacements.clone()))?
+        .call_tuple((node, replacements))?
         .try_into()
 }

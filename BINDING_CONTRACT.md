@@ -250,6 +250,13 @@ a separately reviewed C++ ABI migration removes that blocker.
 - Existing registered functions take precedence over adding duplicate methods.
   Existing C++ virtual dispatch remains internal to C++ and Rust crosses the
   standard packed-function ABI.
+- Opaque does not imply thread-safe. Native mutable services such as `Analyzer`
+  and `UniqueNameSupply` must remain `!Send` and `!Sync`; hiding their private
+  fields must not accidentally enable Rust's automatic thread-safety traits.
+  This currently constrains the typed handles only. tvm-ffi's generic
+  `ObjectRef` can erase those restrictions, so cross-thread isolation is not
+  enforced through all FFI conversions. That upstream gap remains unresolved;
+  all aliases of these services must stay on one thread.
 
 ## Stubgen output ownership
 
