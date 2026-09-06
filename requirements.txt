@@ -1,4 +1,4 @@
-# Python requirements for developing tvm-rust-ext (pinned 2026-09-03 against
+# Python requirements for developing tvm-rust-ext (pinned 2026-09-06 against
 # Python 3.12; any virtualenv/uv/conda environment works).
 #
 # This file covers the pip layer only. The C++ toolchain (a C++17 compiler,
@@ -12,7 +12,7 @@
 # Provides the `tvm_ffi` Python package, libtvm_ffi.so, and the `tvm-ffi-config`
 # CLI that tvm-ffi-sys/build.rs uses to locate the library.
 # Keep this exact commit in sync with the Rust crate rev in Cargo.toml.
-apache-tvm-ffi @ git+https://github.com/apache/tvm-ffi.git@c7a8cead2523c8a26bdd99f3a2aa8db7ca98919e
+apache-tvm-ffi @ git+https://github.com/apache/tvm-ffi.git@85e72e7853e2fec081f427aa42c10e262ead1145
 
 # --- build tooling (for building tvm-ffi / TVM with --no-build-isolation) ---
 scikit-build-core==1.0.3
@@ -39,10 +39,10 @@ pytest==9.1.1
 pytest-xdist==3.8.0
 
 # --- Apache TVM (not pip-resolvable at main; built from source) -------------
-# The reference environment uses apache/tvm main @ ece32bfaee86dc21920ee0e68e0e4a3681afbc49
+# The reference environment uses apache/tvm main @ 15b607d6bf (see README.md)
 # with 3rdparty/tvm-ffi checked out to the same tvm-ffi commit as above:
 #   git clone --recursive https://github.com/apache/tvm.git <tvm>
-#   git -C <tvm>/3rdparty/tvm-ffi checkout c7a8cead2523c8a26bdd99f3a2aa8db7ca98919e
+#   git -C <tvm>/3rdparty/tvm-ffi checkout 85e72e7853e2fec081f427aa42c10e262ead1145
 #   git -C <tvm>/3rdparty/tvm-ffi submodule update --init --recursive
 #   cp <tvm>/cmake/config.cmake <tvm>/build/   # then edit USE_LLVM / USE_CUDA etc.
 #   cmake -G Ninja -S <tvm> -B <tvm>/build && cmake --build <tvm>/build

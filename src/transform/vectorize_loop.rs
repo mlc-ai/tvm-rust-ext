@@ -220,7 +220,7 @@ impl Vectorizer {
         if lanes != 1 {
             if is_scalar(&lhs) {
                 if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
-                    let base = semantic_binary(operation, lhs, ramp.base.clone())?;
+                    let base = semantic_binary(operation, lhs, ramp.base_.clone())?;
                     let zero = IntImm::from_dtype(ramp.stride.dtype(), 0)?;
                     let stride = semantic_binary(operation, zero.into(), ramp.stride.clone())?;
                     return make_ramp(base, stride, ramp.lanes.clone(), None);
@@ -228,7 +228,7 @@ impl Vectorizer {
             }
             if is_scalar(&rhs) {
                 if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
-                    let base = semantic_binary(operation, ramp.base.clone(), rhs)?;
+                    let base = semantic_binary(operation, ramp.base_.clone(), rhs)?;
                     return make_ramp(base, ramp.stride.clone(), ramp.lanes.clone(), None);
                 }
             }
@@ -330,7 +330,7 @@ impl Vectorizer {
         if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
             if is_scalar(&rhs) && self.is_positive(&rhs)? {
                 return make_ramp(
-                    semantic_binary("tirx._OpMul", ramp.base.clone(), rhs.clone())?,
+                    semantic_binary("tirx._OpMul", ramp.base_.clone(), rhs.clone())?,
                     semantic_binary("tirx._OpMul", ramp.stride.clone(), rhs)?,
                     ramp.lanes.clone(),
                     None,
@@ -340,7 +340,7 @@ impl Vectorizer {
         if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
             if is_scalar(&lhs) && self.is_positive(&lhs)? {
                 return make_ramp(
-                    semantic_binary("tirx._OpMul", ramp.base.clone(), lhs.clone())?,
+                    semantic_binary("tirx._OpMul", ramp.base_.clone(), lhs.clone())?,
                     semantic_binary("tirx._OpMul", ramp.stride.clone(), lhs)?,
                     ramp.lanes.clone(),
                     None,
@@ -422,7 +422,7 @@ impl Vectorizer {
     }
 
     fn mutate_ramp(&mut self, value: Ramp, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let base = self.mutate_prim(mutator, &value.base)?;
+        let base = self.mutate_prim(mutator, &value.base_)?;
         let stride = self.mutate_prim(mutator, &value.stride)?;
         if is_scalable(&base) || is_scalable(&stride) {
             return Err(value_error(
@@ -447,7 +447,7 @@ impl Vectorizer {
                     .can_prove_equal(&base_ramp.stride, &expected)?
                 {
                     return make_ramp(
-                        base_ramp.base.clone(),
+                        base_ramp.base_.clone(),
                         stride,
                         IntImm::from_dtype(value.lanes.dtype(), new_lanes * base_lanes)?.into(),
                         None,

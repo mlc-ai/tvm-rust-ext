@@ -27,6 +27,8 @@ use tvm_ffi::{
     WalkResult, VALUE_ERROR,
 };
 
+pub use crate::ir::{IntSet, IntSetObj};
+
 use crate::ir::prim::{AddObj, MulObj, SubObj};
 use crate::ir::{CallObj, ExprObj, IntImmObj, OpObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
 use crate::tirx::{
@@ -114,29 +116,6 @@ impl std::ops::Deref for ModularSet {
 
 impl std::ops::Deref for ConstIntBound {
     type Target = ConstIntBoundObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-/// Opaque Rust view of TVM's arithmetic integer-set abstraction.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ir.IntSet"]
-pub struct IntSetObj {
-    base: tvm_ffi::Object,
-}
-
-/// Shared handle to a native integer set.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct IntSet {
-    data: ObjectArc<IntSetObj>,
-}
-
-impl std::ops::Deref for IntSet {
-    type Target = IntSetObj;
 
     fn deref(&self) -> &Self::Target {
         &self.data

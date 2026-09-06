@@ -17,40 +17,18 @@
  * under the License.
  */
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{
-    Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectArc, ObjectCore,
-    ObjectRefCast, ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
-};
+//! Buffer types, accesses, regions, and virtual layouts: hand-written semantics for the
+//! generated `tirx.Buffer*`, `tirx.Layout*`, `tirx.Axis`, and `tirx.Iter` bindings in `tirx.rs`.
 
-use super::{primitive_type, PrimVar, Stmt, StmtObj};
+use super::PrimVar;
+use super::*;
 use crate::analysis::Analyzer;
-use crate::ir::{
-    Expr, ExprObj, IntImm, PrimExpr, PrimType, Range, Span, TensorLoad, Type, TypeObj, TypedVar,
-    Var,
+use crate::ir::prim::primitive_type;
+use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, Span, TensorLoad, Type, TypedVar, Var};
+use tvm_ffi::{
+    Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectCore, ObjectRefCast,
+    ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
 };
-
-/// Opaque Rust representation of TVM's polymorphic layout base class.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.Layout"]
-pub struct LayoutObj {
-    base: tvm_ffi::Object,
-}
-/// Reference-counted handle to a TIRx buffer layout.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct Layout {
-    data: ObjectArc<LayoutObj>,
-}
-
-impl std::ops::Deref for Layout {
-    type Target = LayoutObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
 
 impl Layout {
     /// Check whether this layout can describe the supplied logical shape.
@@ -195,33 +173,6 @@ impl Layout {
     }
 }
 
-/// Opaque Rust representation of one registered TIRx layout axis.
-///
-/// Axis objects are native registry singletons.  Rust obtains the registered
-/// object instead of constructing a second object with a copied registry index.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.Axis"]
-#[type_final]
-pub struct AxisObj {
-    base: tvm_ffi::Object,
-}
-
-/// Reference-counted handle to a native axis-registry entry.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct Axis {
-    data: ObjectArc<AxisObj>,
-}
-
-impl std::ops::Deref for Axis {
-    type Target = AxisObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
 impl Axis {
     /// Return the native registry object for `name`.
     pub fn get(name: &str) -> Result<Self> {
@@ -250,33 +201,6 @@ impl Axis {
     }
 }
 
-/// ABI-complete Rust representation of one layout extent/stride/axis component.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.Iter"]
-#[type_final]
-pub struct IterObj {
-    base: tvm_ffi::Object,
-    pub extent: PrimExpr,
-    pub stride: PrimExpr,
-    pub axis: Axis,
-}
-
-/// Reference-counted handle to one layout iterator.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct Iter {
-    data: ObjectArc<IterObj>,
-}
-
-impl std::ops::Deref for Iter {
-    type Target = IterObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
 impl Iter {
     /// Construct one layout iterator directly in Rust.
     pub fn new<E, S, A>(extent: E, stride: S, axis: A) -> Result<Self>
@@ -292,66 +216,6 @@ impl Iter {
         let extent = PrimExpr::try_from(extent)?;
         let stride = PrimExpr::try_from(stride)?;
         Ok(Self::from_complete_fields(extent, stride, axis.into()))
-    }
-
-    /// Construct one layout iterator from every physical field after external validation.
-    pub fn from_complete_fields(extent: PrimExpr, stride: PrimExpr, axis: Axis) -> Self {
-        Self {
-            data: ObjectArc::new(IterObj {
-                base: tvm_ffi::Object::new(),
-                extent,
-                stride,
-                axis,
-            }),
-        }
-    }
-}
-
-/// Opaque Rust representation of TVM's polymorphic tiled layout.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.TileLayout"]
-#[type_final]
-pub struct TileLayoutObj {
-    base: LayoutObj,
-}
-
-/// Reference-counted handle to a tiled layout.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct TileLayout {
-    data: ObjectArc<TileLayoutObj>,
-}
-
-/// Opaque Rust representation of TVM's polymorphic composed layout.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.ComposeLayout"]
-#[type_final]
-pub struct ComposeLayoutObj {
-    base: LayoutObj,
-}
-
-/// Reference-counted handle to a composed tiled layout.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ComposeLayout {
-    data: ObjectArc<ComposeLayoutObj>,
-}
-
-impl std::ops::Deref for ComposeLayout {
-    type Target = ComposeLayoutObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for ComposeLayoutObj {
-    type Target = LayoutObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }
 
@@ -429,22 +293,6 @@ impl ComposeLayout {
     }
 }
 
-impl std::ops::Deref for TileLayout {
-    type Target = TileLayoutObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for TileLayoutObj {
-    type Target = LayoutObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl TileLayout {
     fn field<T>(&self, name: &str) -> Result<T>
     where
@@ -503,24 +351,6 @@ impl TileLayout {
             .call_tuple((Array::new(shard), Array::new(replica), offset))?
             .try_into()
     }
-}
-
-/// ABI-complete Rust representation of TVM's immutable buffer access contract.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.BufferType"]
-#[type_final]
-pub struct BufferTypeObj {
-    base: TypeObj,
-    pub dtype: PrimType,
-    pub storage_scope: String,
-    pub shape: Array<PrimExpr>,
-    pub strides: Array<PrimExpr>,
-    pub elem_offset: PrimExpr,
-    pub data_alignment: i32,
-    pub offset_factor: i32,
-    pub layout: Option<Layout>,
-    pub allocated_addr: Array<PrimExpr>,
 }
 
 /// Checked variable view whose expression type is `BufferType`.
@@ -582,29 +412,6 @@ impl TypedVar<BufferType> {
 // target-code demo. Stubgen should emit them from the native build manifest.
 const DEFAULT_INDEX_DTYPE: &str = "int64";
 const DEFAULT_ALLOC_ALIGNMENT: i32 = 64;
-
-/// Reference-counted buffer type carried by an ordinary `ir.Var`.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct BufferType {
-    data: ObjectArc<BufferTypeObj>,
-}
-
-impl std::ops::Deref for BufferType {
-    type Target = BufferTypeObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for BufferTypeObj {
-    type Target = TypeObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
 
 impl BufferType {
     /// Construct a compact buffer type directly in Rust.
@@ -731,36 +538,6 @@ impl BufferType {
         ))
     }
 
-    /// Construct a buffer type from every physical field without applying defaults.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        dtype: PrimType,
-        storage_scope: String,
-        shape: Array<PrimExpr>,
-        strides: Array<PrimExpr>,
-        elem_offset: PrimExpr,
-        data_alignment: i32,
-        offset_factor: i32,
-        layout: Option<Layout>,
-        allocated_addr: Array<PrimExpr>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(BufferTypeObj {
-                base: TypeObj::new(span),
-                dtype,
-                storage_scope,
-                shape,
-                strides,
-                elem_offset,
-                data_alignment,
-                offset_factor,
-                layout,
-                allocated_addr,
-            }),
-        }
-    }
-
     /// Copy this node with new `storage_scope`, `dtype`, `shape`; every other field, span
     /// included, is carried over from `self`.
     ///
@@ -832,41 +609,6 @@ impl TensorLoad {
     }
 }
 
-/// ABI-complete Rust representation of a buffer write.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.BufferStore"]
-#[type_final]
-pub struct BufferStoreObj {
-    base: StmtObj,
-    pub buffer: BufferVar,
-    pub value: PrimExpr,
-    pub indices: Array<PrimExpr>,
-}
-
-/// Reference-counted handle to a TIR buffer write.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct BufferStore {
-    data: ObjectArc<BufferStoreObj>,
-}
-
-impl std::ops::Deref for BufferStore {
-    type Target = BufferStoreObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for BufferStoreObj {
-    type Target = StmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl BufferStore {
     /// Construct a buffer write directly in Rust after validating its access types.
     pub fn new<B, V>(buffer: B, value: V, indices: Vec<Expr>) -> Result<Self>
@@ -924,23 +666,6 @@ impl BufferStore {
         ))
     }
 
-    /// Construct a buffer write from every physical field after external validation.
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        buffer: BufferVar,
-        value: PrimExpr,
-        indices: Array<PrimExpr>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(BufferStoreObj {
-                base: StmtObj::new(span),
-                buffer,
-                value,
-                indices,
-            }),
-        }
-    }
-
     /// Copy this node with new `buffer`, `value`, `indices`; every other field, span
     /// included, is carried over from `self`.
     ///
@@ -948,40 +673,6 @@ impl BufferStore {
     /// [`BufferStore::from_complete_fields`], runs no validation.
     pub fn copy_with(&self, buffer: BufferVar, value: PrimExpr, indices: Array<PrimExpr>) -> Self {
         Self::from_complete_fields(self.span.clone(), buffer, value, indices)
-    }
-}
-
-/// ABI-complete Rust representation of TVM's `DeclBufferNode`.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.DeclBuffer"]
-#[type_final]
-pub struct DeclBufferObj {
-    base: StmtObj,
-    pub buffer: BufferVar,
-    pub data: Expr,
-}
-
-/// Reference-counted handle to a buffer declaration.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct DeclBuffer {
-    data: ObjectArc<DeclBufferObj>,
-}
-
-impl std::ops::Deref for DeclBuffer {
-    type Target = DeclBufferObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for DeclBufferObj {
-    type Target = StmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }
 
@@ -1024,17 +715,6 @@ impl DeclBuffer {
         ))
     }
 
-    /// Construct a declaration from every physical field after external validation.
-    pub fn from_complete_fields(span: Option<Span>, buffer: BufferVar, data: Expr) -> Self {
-        Self {
-            data: ObjectArc::new(DeclBufferObj {
-                base: StmtObj::new(span),
-                buffer,
-                data,
-            }),
-        }
-    }
-
     /// Copy this node with new `buffer`, `data`; every other field, span
     /// included, is carried over from `self`.
     ///
@@ -1042,40 +722,6 @@ impl DeclBuffer {
     /// [`DeclBuffer::from_complete_fields`], runs no validation.
     pub fn copy_with(&self, buffer: BufferVar, data: Expr) -> Self {
         Self::from_complete_fields(self.span.clone(), buffer, data)
-    }
-}
-
-/// ABI-complete Rust representation of TVM's `AllocBufferNode`.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.AllocBuffer"]
-#[type_final]
-pub struct AllocBufferObj {
-    base: StmtObj,
-    pub buffer: BufferVar,
-    pub annotations: Map<String, Any>,
-}
-
-/// Reference-counted handle to a buffer allocation declaration.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct AllocBuffer {
-    data: ObjectArc<AllocBufferObj>,
-}
-
-impl std::ops::Deref for AllocBuffer {
-    type Target = AllocBufferObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for AllocBufferObj {
-    type Target = StmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }
 
@@ -1099,21 +745,6 @@ impl AllocBuffer {
             BufferVar::try_from(buffer)?,
             annotations,
         ))
-    }
-
-    /// Construct an allocation from every physical field after external validation.
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        buffer: BufferVar,
-        annotations: Map<String, Any>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(AllocBufferObj {
-                base: StmtObj::new(span),
-                buffer,
-                annotations,
-            }),
-        }
     }
 
     /// Copy this node with new `buffer`; every other field, span
@@ -1225,78 +856,12 @@ fn encoded_lanes(dtype: DLDataType) -> i16 {
     dtype.lanes as i16
 }
 
-/// ABI-complete Rust representation of the singleton buffer-region type.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.BufferRegionType"]
-#[type_final]
-pub struct BufferRegionTypeObj {
-    base: TypeObj,
-}
-
-/// Reference-counted handle to the type of a buffer-region expression.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct BufferRegionType {
-    data: ObjectArc<BufferRegionTypeObj>,
-}
-
-impl std::ops::Deref for BufferRegionType {
-    type Target = BufferRegionTypeObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for BufferRegionTypeObj {
-    type Target = TypeObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl BufferRegionType {
     /// Return TVM's singleton buffer-region type.
     pub fn new() -> Result<Self> {
         tvm_ffi::cached_global_func!("tirx.BufferRegionType")
             .call_tuple(())?
             .try_into()
-    }
-}
-
-/// ABI-complete Rust representation of a declared buffer region expression.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.BufferRegion"]
-#[type_final]
-pub struct BufferRegionObj {
-    base: ExprObj,
-    pub buffer: BufferVar,
-    pub region: Array<Range>,
-}
-
-/// Reference-counted handle to a multidimensional buffer region.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct BufferRegion {
-    data: ObjectArc<BufferRegionObj>,
-}
-
-impl std::ops::Deref for BufferRegion {
-    type Target = BufferRegionObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for BufferRegionObj {
-    type Target = ExprObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }
 
@@ -1327,48 +892,6 @@ impl BufferRegion {
             region,
         ))
     }
-
-    /// Construct a buffer region from every physical field after external validation.
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        ty: BufferRegionType,
-        buffer: BufferVar,
-        region: Array<Range>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(BufferRegionObj {
-                base: ExprObj::new(span, ty.into()),
-                buffer,
-                region,
-            }),
-        }
-    }
-}
-
-/// ABI-complete Rust representation of a match-buffer declaration.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.MatchBufferRegion"]
-#[type_final]
-pub struct MatchBufferRegionObj {
-    base: tvm_ffi::Object,
-    pub buffer: BufferVar,
-    pub source: BufferRegion,
-}
-
-/// Reference-counted handle to a match-buffer declaration.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct MatchBufferRegion {
-    data: ObjectArc<MatchBufferRegionObj>,
-}
-
-impl std::ops::Deref for MatchBufferRegion {
-    type Target = MatchBufferRegionObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
 }
 
 impl MatchBufferRegion {
@@ -1383,17 +906,6 @@ impl MatchBufferRegion {
         validate_match_buffer_region(&buffer, &source)?;
         let buffer = BufferVar::try_from(buffer)?;
         Ok(Self::from_complete_fields(buffer, source))
-    }
-
-    /// Allocate a match-buffer declaration directly after its invariants have been validated.
-    pub fn from_complete_fields(buffer: BufferVar, source: BufferRegion) -> Self {
-        Self {
-            data: ObjectArc::new(MatchBufferRegionObj {
-                base: tvm_ffi::Object::new(),
-                buffer,
-                source,
-            }),
-        }
     }
 }
 
@@ -1457,14 +969,3 @@ fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<(
     }
     Ok(())
 }
-
-tvm_ffi::impl_object_upcast!(
-    TileLayout => Layout,
-    ComposeLayout => Layout,
-    BufferType => Type,
-    BufferRegionType => Type,
-    DeclBuffer => Stmt,
-    AllocBuffer => Stmt,
-    BufferStore => Stmt,
-    BufferRegion => Expr,
-);

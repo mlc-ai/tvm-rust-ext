@@ -253,10 +253,13 @@ a separately reviewed C++ ABI migration removes that blocker.
 - Opaque does not imply thread-safe. Native mutable services such as `Analyzer`
   and `UniqueNameSupply` must remain `!Send` and `!Sync`; hiding their private
   fields must not accidentally enable Rust's automatic thread-safety traits.
-  This currently constrains the typed handles only. tvm-ffi's generic
-  `ObjectRef` can erase those restrictions, so cross-thread isolation is not
-  enforced through all FFI conversions. That upstream gap remains unresolved;
-  all aliases of these services must stay on one thread.
+  The hand-written `Analyzer` carries a `PhantomData<Rc<()>>` marker; the
+  generated opaque `UniqueNameSupply` does not, because stubgen emits only the
+  FFI header and cannot attach the marker until a per-type directive exists.
+  tvm-ffi's generic `ObjectRef` can erase those restrictions as well, so
+  cross-thread isolation is not enforced through all FFI conversions. Both
+  gaps remain unresolved; all aliases of these services must stay on one
+  thread.
 
 ## Stubgen output ownership
 
@@ -307,17 +310,20 @@ The actual stubgen is complete only when one invocation emits the mechanical
 surface from layout input and the remaining handwritten semantic layer composes
 with it without changing the acceptance tests.
 
-The current prototype is **not yet frozen**: stubgen does not yet consume
-authoritative native layout input, and enum declarations plus full semantic
-validation/default logic still need either generator support or a reviewed
-handwritten implementation. Passing the handwritten conformance tests proves
-the current selected build and surface; the next gate is reproducing the
-mechanical portion from generated code.
+Since 2026-09-06 the mechanical portion of `ir`, `ir.prim`, and `tirx` is
+reproduced from generated code: `tvm-ffi-stubgen --target rust` classifies
+every registered type from the reflected size, alignment, finality, and field
+offsets of `libtvm_compiler`, emits the complete layouts and complete-field
+allocators in place (`src/ir.rs`, `src/ir/prim.rs`, `src/tirx.rs`), and keeps
+the handwritten semantic constructors next to the blocks. The handwritten
+layout definitions were deleted and the acceptance tests pass unchanged
+against the `tvm-ffi` revision pinned in `Cargo.toml`. No generated `new()`
+invokes `__ffi_init__` or another packed global.
 
-The acceptance slice is ready to replace only when stubgen can generate the
-same complete layouts and complete-field allocators while preserving the
-handwritten semantic constructors;
-the handwritten definitions can then be deleted and the acceptance tests must
-pass unchanged against the exact workspace `tvm-ffi` revision. A generated
-`new()` that invokes `__ffi_init__` or another packed global does not pass this
-gate.
+What still needs either generator support or a reviewed handwritten
+implementation: enum members (reflection carries no enum metadata, so the
+`enum` directive spells them), the `!Send`/`!Sync` marker on opaque native
+services, semantic validation/default logic (hand-written, marked by
+`custom-new`), and rustfmt-clean output (the formatted files fail
+`tvm-ffi-stubgen --check`). `te`, `target`, `arith`, and the pass
+infrastructure are not generated yet.
