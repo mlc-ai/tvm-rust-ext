@@ -257,13 +257,11 @@ a separately reviewed C++ ABI migration removes that blocker.
 - Opaque does not imply thread-safe. Native mutable services such as `Analyzer`
   and `UniqueNameSupply` must remain `!Send` and `!Sync`; hiding their private
   fields must not accidentally enable Rust's automatic thread-safety traits.
-  The hand-written `Analyzer` carries a `PhantomData<Rc<()>>` marker; the
-  generated opaque `UniqueNameSupply` does not, because stubgen emits only the
-  FFI header and cannot attach the marker until a per-type directive exists.
+  Both typed handles retain a `PhantomData<Rc<()>>` marker. `UniqueNameSupply`
+  is `skip`ped and hand-written until the generator can preserve that restriction.
   tvm-ffi's generic `ObjectRef` can erase those restrictions as well, so
-  cross-thread isolation is not enforced through all FFI conversions. Both
-  gaps remain unresolved; all aliases of these services must stay on one
-  thread.
+  cross-thread isolation is not enforced through all FFI conversions. This gap
+  remains unresolved; all aliases of these services must stay on one thread.
 
 ## Stubgen output ownership
 
@@ -319,15 +317,16 @@ reproduced from generated code: `tvm-ffi-stubgen --target rust` classifies
 every registered type from the reflected size, alignment, finality, and field
 offsets of `libtvm_compiler`, emits the complete layouts and complete-field
 allocators in place (`src/ir.rs`, `src/ir/prim.rs`, `src/tirx.rs`), and keeps
-the handwritten semantic constructors next to the blocks. The handwritten
-layout definitions were deleted and the acceptance tests pass unchanged
-against the `tvm-ffi` revision pinned in `Cargo.toml`. No generated `new()`
-invokes `__ffi_init__` or another packed global.
+the handwritten semantic constructors next to the blocks. `SourceName`,
+`UniqueNameSupply`, and `PrimFunc` retain hand-written layouts; the acceptance
+tests pass unchanged against the `tvm-ffi` revision pinned in `Cargo.toml`.
+No generated `new()` invokes `__ffi_init__` or another packed global.
 
 What still needs either generator support or a reviewed handwritten
 implementation: enum members (reflection carries no enum metadata, so the
 `enum` directive spells them), the `!Send`/`!Sync` marker on opaque native
-services, storage native code can move out of (`PrimFunc.body`, so
+services, complete fields without a direct allocator (`SourceName`),
+storage native code can move out of (`PrimFunc.body`, so
 `tirx.PrimFunc` is `skip`ped and hand-written), semantic validation/default
 logic (hand-written, marked by `custom-new`), and rustfmt-clean output (the
 formatted files fail `tvm-ffi-stubgen --check`). `te`, `target`, `arith`, and

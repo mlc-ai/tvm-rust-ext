@@ -29,13 +29,18 @@
 /// Primitive expression nodes shared by TIRx and other IR dialects.
 pub mod prim;
 
-/// Native-operation wrappers of the generated `UniqueNameSupply` handle.
+/// Native naming service with thread-confined state.
 mod unique_name_supply;
 
 pub use semantic::{PrimExpr, TypedExpr, TypedVar};
+pub use unique_name_supply::{UniqueNameSupply, UniqueNameSupplyObj};
 
 // Every object registered under `ir` gets its block in this file; `skip` leaves one out.
 // tvm-ffi-stubgen(prefix): ir
+// These bindings retain constructor and thread-safety rules not expressed by the generator.
+// tvm-ffi-stubgen(skip): ir.SourceName
+// tvm-ffi-stubgen(skip): ir.UniqueNameSupply
+// tvm-ffi-stubgen(ty-map): ir.SourceName -> SourceName
 // `ir.VDevice.target` refers to the hand-written `target` binding (its object struct is `TargetObj`).
 // tvm-ffi-stubgen(ty-map): target.Target -> crate::target::Target
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
@@ -56,7 +61,6 @@ pub use semantic::{PrimExpr, TypedExpr, TypedVar};
 // tvm-ffi-stubgen(custom-new): ir.Span
 // tvm-ffi-stubgen(custom-new): ir.SequentialSpan
 // tvm-ffi-stubgen(custom-new): ir.SourceMap
-// tvm-ffi-stubgen(custom-new): ir.SourceName
 // tvm-ffi-stubgen(custom-new): ir.Range
 // tvm-ffi-stubgen(custom-new): ir.Tuple
 // tvm-ffi-stubgen(custom-new): ir.TupleGetItem
@@ -1062,8 +1066,7 @@ impl SourceMap {
 }
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.SourceName
-/// Complete: reflected fields fill [24, 40) exactly.
+/// Complete field view of a native interned source name; construction is registry-only.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
 #[type_key = "ir.SourceName"]
@@ -1078,6 +1081,12 @@ const _: () = {
     assert!(::core::mem::align_of::<SourceNameObj>() == 8);
 };
 
+/// A source name obtained through [`SourceName::get`], not a fresh allocation.
+///
+/// ```compile_fail
+/// use tvm::ir::SourceName;
+/// let name = SourceName::from_complete_fields("example.cc".into());
+/// ```
 #[repr(C)]
 #[derive(tvm_ffi::derive::ObjectRef, Clone)]
 pub struct SourceName {
@@ -1090,24 +1099,6 @@ impl Deref for SourceName {
         &self.base
     }
 }
-
-impl SourceNameObj {
-    pub(crate) fn new(name: String) -> Self {
-        let base = Object::new();
-        Self { base, name }
-    }
-}
-
-impl SourceName {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(name: String) -> Self {
-        let obj = SourceNameObj::new(name);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-// tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.Span
 /// Complete: reflected fields fill [24, 48) exactly.
@@ -1837,30 +1828,6 @@ impl TupleType {
 }
 
 tvm_ffi::impl_object_upcast!(TupleType => Type);
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/ir.UniqueNameSupply
-/// Opaque: bytes [24, 64) of [24, 64) are not accounted for by reflected fields. Fields are read through the C ABI getters.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.UniqueNameSupply"]
-#[type_final]
-pub struct UniqueNameSupplyObj {
-    base: Object,
-}
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct UniqueNameSupply {
-    base: ObjectArc<UniqueNameSupplyObj>,
-}
-
-impl Deref for UniqueNameSupply {
-    type Target = UniqueNameSupplyObj;
-    fn deref(&self) -> &UniqueNameSupplyObj {
-        &self.base
-    }
-}
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.VDevice

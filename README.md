@@ -56,14 +56,12 @@ language-independent structural protocol.
 
 `UniqueNameSupply` also stays opaque because its mutable naming state is owned
 by C++. `BindTarget` and `SplitHostDevice` use its existing registered methods
-for normalization and collision handling. The hand-written `Analyzer` handle
-is `!Send` and `!Sync`; the generated `UniqueNameSupply` handle currently is
-not, because stubgen emits an opaque object as the FFI header alone and
-attaching a `PhantomData<Rc<()>>` marker needs a generator directive that does
-not exist yet. Neither is an end-to-end thread-safety guarantee: the current
+for normalization and collision handling. Both `Analyzer` and `UniqueNameSupply`
+keep hand-written `!Send`/`!Sync` handles with a `PhantomData<Rc<()>>` marker.
+`UniqueNameSupply` is excluded from generation until stubgen can preserve that
+restriction. This is not an end-to-end thread-safety guarantee: the current
 tvm-ffi generic `ObjectRef` can erase these restrictions and be cast back on
-another thread. Keep every alias on one thread; the marker directive and the
-type-erasure gap both remain open.
+another thread. Keep every alias on one thread; the type-erasure gap remains open.
 
 `DispatchContext` also has a complete layout, but its native methods modify
 `callbacks` and `shared_state`. These fields use private `UnsafeCell` storage;
@@ -290,12 +288,14 @@ and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an
 `object/<type_key>` block on the next run, a `skip` line leaves one out
-(`tirx.PrimFuncPass`, whose `transform.Pass` parent and `transform.PassInfo`
-field this crate does not bind, and `tirx.PrimFunc`, whose `body` slot native
-code can move out of; that binding stays hand-written in `mod stmt` and the
-`TensorIntrin` fields name it through `field` overrides), and a `ty-map` line
-points a referenced key at a hand-written binding
-(`target.Target -> crate::target::Target`, whose object struct is `TargetObj`).
+(`tirx.PrimFuncPass` and the out-of-scope `tirx.SBlock`/`tirx.SBlockRealize`).
+Three bindings also use `skip` to retain rules the generator cannot express:
+`ir.SourceName` keeps its complete fields but no direct allocator,
+`ir.UniqueNameSupply` keeps its thread-safety marker, and `tirx.PrimFunc`
+keeps its nullable moved-from body storage. A `ty-map` line names a referenced
+hand-written binding (`ir.SourceName -> SourceName`,
+`target.Target -> crate::target::Target`); the `TensorIntrin` fields name
+`PrimFunc` through `field` overrides.
 Every other type key a block refers to must be provided by the same run, so the
 three files are always regenerated together.
 Regenerate with the environment active:
@@ -328,18 +328,18 @@ nodes defined in a file sit at its tail in a nested module (`mod semantic` in
 `use super::*;`, so its imports cannot collide with the regenerated import
 section; the buffer, function, index-map, iteration-variable, and
 tile-primitive semantics keep their own files under `src/tirx/`, and the
-`UniqueNameSupply` and `IntSet` methods stay in `src/ir/unique_name_supply.rs`
+`UniqueNameSupply` binding and `IntSet` methods stay in `src/ir/unique_name_supply.rs`
 and `src/analysis.rs`.  Reflected names win over the earlier handwritten
 spellings: `Ramp.base` is `base_` because `base` is the parent slot of every
 generated struct, and `TupleGetItem.tuple` is `tuple_value`.  The two clippy lints the generated allocators trigger are
 silenced on `pub mod ir;` and `pub mod tirx;` in `src/lib.rs`.
 
-Two generator gaps remain.  The output is not rustfmt-clean (struct literals
+Generator gaps remain. The output is not rustfmt-clean (struct literals
 and the `use` order differ), so `cargo fmt` follows every regeneration; the
 round trip regenerate-then-format is byte-stable, but `tvm-ffi-stubgen
---check` reports the formatted files as stale.  And an opaque handle cannot be
-marked `!Send`/`!Sync` from a directive, which is why the generated
-`UniqueNameSupply` lost that marker (see above).
+--check` reports the formatted files as stale. Per-type thread-safety markers,
+complete field views without allocators, and nullable moved-from storage still
+need the hand-written bindings listed above.
 
 `cargo build` also produces a shared library, `target/<profile>/libtvm.so`
 (`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:
