@@ -238,7 +238,11 @@ implemented `--native-layout` CLI option. Check any gaps against the existing
 layout classifier before proposing new metadata. Neither byte coverage nor a
 generated allocator establishes constructor semantics, registry identity, or
 thread safety by itself; the types the generator cannot express yet
-(`tirx.PrimFunc`, below) are `skip`ped and stay hand-written.
+(`ir.SourceName`, `ir.UniqueNameSupply`, and `tirx.PrimFunc`) are `skip`ped
+and stay hand-written. `SourceName` retains its complete readable fields but
+only exposes the interned lookup, while `UniqueNameSupply` retains its
+`!Send`/`!Sync` marker. Out-of-scope `tirx.SBlock` and `tirx.SBlockRealize`
+are also excluded with `skip`.
 
 ## Constructor classification
 
