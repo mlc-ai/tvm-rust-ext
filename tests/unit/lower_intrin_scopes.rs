@@ -39,13 +39,7 @@ fn lower_intrin_restores_constraints_after_recursive_error() -> Result<()> {
     let roots: Vec<Stmt> = vec![
         failure.clone().into(),
         IfThenElse::new(condition.clone(), failure.clone())?.into(),
-        AttrStmt::new(
-            x.clone(),
-            "scope",
-            IntImm::new("int32", 1)?,
-            failure.clone(),
-        )?
-        .into(),
+        AttrStmt::new(x, "scope", IntImm::new("int32", 1)?, failure.clone())?.into(),
         For::new(
             Var::new("i", "int32")?,
             IntImm::new("int32", 0)?,

@@ -121,6 +121,37 @@ fn vector_constructors_match_cpp() -> Result<()> {
             .call_tuple((&vectors, &indices, &span))
             .is_err());
     }
+    let select = Function::get_global("ir.prim.Select")?;
+    for (condition_type, value_type, false_type, supported) in [
+        ("bool", "int32", "int32", true),
+        ("bool", "int32xvscalex4", "int32xvscalex4", true),
+        ("boolx4", "int32x4", "int32x4", true),
+        ("boolxvscalex4", "int32xvscalex4", "int32xvscalex4", true),
+        ("boolx4", "int32xvscalex4", "int32xvscalex4", true),
+        ("boolxvscalex4", "int32x4", "int32x4", true),
+        ("boolx2", "int32xvscalex4", "int32xvscalex4", false),
+        ("bool", "int32", "float32", false),
+        ("int32", "int32", "int32", false),
+    ] {
+        let condition = Var::new("condition", condition_type)?;
+        let a = Var::new("a", value_type)?;
+        let b = Var::new("b", false_type)?;
+        let rust = Select::with_span(&condition, &a, &b, span.as_ref());
+        let native = select.call_tuple((&condition, &a, &b, &span));
+        assert_eq!(
+            rust.is_ok(),
+            supported,
+            "Rust Select: {condition_type}, {value_type}, {false_type}"
+        );
+        assert_eq!(
+            native.is_ok(),
+            supported,
+            "C++ Select: {condition_type}, {value_type}, {false_type}"
+        );
+        if supported {
+            assert_structural_equal(&rust?, &Expr::try_from(native?)?);
+        }
+    }
     Ok(())
 }
 
@@ -222,29 +253,30 @@ fn scalar_and_statement_constructors_match_cpp() {
         &native_not,
     );
 
-    let rust_select = Select::new(condition.clone(), lhs.clone(), rhs.clone()).unwrap();
-    let native_select: Expr = Function::get_global("ir.prim.Select")
-        .unwrap()
-        .call_tuple((
-            condition.clone(),
-            lhs.clone(),
-            rhs.clone(),
+    let type_span = Span::new(SourceName::get("let_type").unwrap(), 1, 1, 1, 4).unwrap();
+    let int_type = PrimType::from_dtype_with_span(lhs.dtype(), Some(&type_span)).unwrap();
+    for (ty, supported) in [
+        (Type::from(int_type), true),
+        (PrimType::new("float32").unwrap().into(), false),
+        (
+            PointerType::new(PrimType::void(), "global").unwrap().into(),
+            false,
+        ),
+    ] {
+        let variable = Var::with_type("let_bound", ty);
+        let rust = Let::new(variable.clone(), &lhs, &rhs);
+        let native = Function::get_global("ir.prim.Let").unwrap().call_tuple((
+            variable,
+            &lhs,
+            &rhs,
             Option::<Span>::None,
-        ))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_structural_equal(&Expr::from(rust_select), &native_select);
-
-    let let_variable = Var::new("let_bound", "int32").unwrap();
-    let rust_let = Let::new(let_variable.clone(), lhs.clone(), rhs.clone()).unwrap();
-    let native_let: Expr = Function::get_global("ir.prim.Let")
-        .unwrap()
-        .call_tuple((let_variable, lhs, rhs, Option::<Span>::None))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_structural_equal(&Expr::from(rust_let), &native_let);
+        ));
+        assert_eq!(rust.is_ok(), supported);
+        assert_eq!(native.is_ok(), supported);
+        if supported {
+            assert_structural_equal(&rust.unwrap(), &Expr::try_from(native.unwrap()).unwrap());
+        }
+    }
 
     let rust_while = While::new(condition.clone(), Evaluate::from_i64(0).unwrap()).unwrap();
     let native_while: Stmt = Function::get_global("tirx.While")
@@ -425,7 +457,8 @@ fn complete_tile_metadata_layouts_cross_the_native_abi() {
         .unwrap();
     assert_eq!(allocations.len(), 1);
     assert!(allocations.get(0).unwrap().same_as(&scratch));
-    context.clone().add_alloc_buffer(scratch).unwrap();
+    let alias = context.clone();
+    alias.add_alloc_buffer(scratch).unwrap();
     assert_eq!(allocations.len(), 1);
     assert_eq!(
         context
@@ -446,8 +479,7 @@ fn complete_tile_metadata_layouts_cross_the_native_abi() {
         .unwrap();
     assert!(empty_state.is_empty());
     let state = context.shared_state();
-    context
-        .clone()
+    alias
         .set_shared_state("example", &Any::from(Array::<PrimExpr>::new(vec![])))
         .unwrap();
     let previous = state
@@ -915,7 +947,7 @@ fn rust_skip_assert_does_not_rewrite_for_annotations() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let loop_node = function.body.clone().try_cast::<For>().unwrap();
+    let loop_node = function.body().clone().try_cast::<For>().unwrap();
     let annotation = loop_node.annotations.get(&annotation_key).unwrap().unwrap();
     assert!(AssertStmt::try_from(annotation).is_ok());
 }
@@ -943,7 +975,11 @@ fn decorate_device_scope_matches_cpp() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let attribute = mapped_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let attribute = mapped_function
+        .body()
+        .clone()
+        .try_cast::<AttrStmt>()
+        .unwrap();
     assert_eq!(attribute.attr_key.as_str(), "device_scope");
     assert_eq!(i64::try_from(attribute.node.clone()).unwrap(), 0);
     assert_eq!(
@@ -1224,7 +1260,7 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let mapped_outer = mapped_function.body.clone().try_cast::<For>().unwrap();
+    let mapped_outer = mapped_function.body().clone().try_cast::<For>().unwrap();
     let mapped_store = mapped_outer.body.clone().try_cast::<BufferStore>().unwrap();
     let mapped_index = mapped_store
         .indices

@@ -82,7 +82,7 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         }
 
         let mut body: Stmt =
-            structural_mutate(function.body.clone(), &mut flattener)?.try_into()?;
+            structural_mutate(function.body().clone(), &mut flattener)?.try_into()?;
 
         // PrimFunc parameters retain their public N-D contract.  The flattened
         // view used by the body aliases each parameter through a DeclBuffer.

@@ -36,7 +36,7 @@ fn common_subexpr_elim_matches_cpp_for_repeated_arithmetic() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
-    let sequence = rust_function.body.clone().try_cast::<SeqStmt>().unwrap();
+    let sequence = rust_function.body().clone().try_cast::<SeqStmt>().unwrap();
     assert_eq!(sequence.seq.len(), 2);
     let binding = sequence.seq.get(0).unwrap().try_cast::<Bind>().unwrap();
     assert_eq!(binding.var.name.as_str(), "cse_v1");
@@ -474,13 +474,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
         (
             "loop_extent_and_exit",
             SeqStmt::new(vec![
-                For::new(
-                    i.clone(),
-                    int_expression(0),
-                    n.clone(),
-                    quotient(n.clone())?,
-                )?
-                .into(),
+                For::new(i, int_expression(0), n.clone(), quotient(n.clone())?)?.into(),
                 quotient(n.clone())?,
             ])?
             .into(),
@@ -511,11 +505,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
             Evaluate::new(Call::new(
                 PrimType::new("int32")?,
                 tvm::ir::Op::get("ir.prim.if_then_else")?,
-                vec![
-                    condition.clone().into(),
-                    division.into(),
-                    negative_division.into(),
-                ],
+                vec![condition.into(), division.into(), negative_division.into()],
             ))?
             .into(),
         ),
@@ -574,7 +564,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
                 iter,
                 "virtual_thread",
                 int_expression(32),
-                quotient(thread.clone())?,
+                quotient(thread)?,
             )?
             .into(),
         ),
@@ -640,7 +630,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
                     ),
                 )?
                 .into(),
-                quotient(bound.clone())?,
+                quotient(bound)?,
             ])?
             .into(),
         ),
@@ -689,7 +679,7 @@ fn rust_lower_intrin_rewrites_buffer_definitions_and_uses() -> Result<()> {
         PrimType::new("int32")?,
         vec![extent.clone()],
         vec![extent.clone()],
-        extent.clone(),
+        extent,
         64,
         1,
         Some(TileLayout::new(vec![iteration], Vec::new(), Map::new())?.into()),
@@ -805,6 +795,35 @@ fn rust_lower_intrin_matches_cpp_for_access_pointer() -> Result<()> {
         let expected = native.run(module.clone())?;
         let actual = transform::lower_intrin()?.run(module)?;
         assert_structural_equal(&actual, &expected);
+    }
+    for (dtype, supported) in [("float32x4", true), ("float32xvscalex4", false)] {
+        let marker = Var::new("marker", dtype)?;
+        let access = Call::new(
+            data.ty.clone(),
+            tvm::ir::Op::get("tirx.tvm_access_ptr")?,
+            vec![
+                marker.clone().into(),
+                data.clone().into(),
+                int_expression(3),
+                int_expression(8),
+                int_expression(1),
+            ],
+        );
+        let function = PrimFunc::with_metadata(
+            vec![data.clone(), marker],
+            Evaluate::new(access)?,
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone());
+        let actual = transform::lower_intrin()?.run(module);
+        assert_eq!(expected.is_ok(), supported, "C++: {dtype}");
+        assert_eq!(actual.is_ok(), supported, "Rust: {dtype}");
+        if supported {
+            assert_structural_equal(&actual?, &expected?);
+        }
     }
     Ok(())
 }

@@ -204,8 +204,8 @@ generated object.
 
 ## Integration with the existing stubgen
 
-This should extend `tvm-ffi-stubgen`, not create a second TVM-only generator.
-The existing pipeline already:
+Use `tvm-ffi-stubgen`, not a second TVM-only generator. At the pinned
+tvm-ffi revision (`897ece64`), the shared pipeline:
 
 - loads the requested shared libraries from `--dlls`;
 - collects registered type keys and global functions;
@@ -213,27 +213,29 @@ The existing pipeline already:
 - topologically sorts objects by runtime inheritance; and
 - delegates rendering to a pluggable language `Generator`.
 
-Today only `PythonGenerator` is registered and the CLI restricts `--target` to
-`python`. The Rust implementation should register `RustGenerator`, add `.rs`
-marker/scaffolding support, and remove that hard-coded target restriction. The
-language-neutral object model must be extended rather than bypassed: current
-`ObjectInfo` keeps field schemas but drops offsets, sizes, alignments, flags,
-defaults, and total size that are already available on runtime `TypeInfo`.
-Rust generation needs those facts plus the independently generated native
-layout/finality/blocker section described above.
+Both `PythonGenerator` and `RustGenerator` are registered. Rust generation
+already supports `.rs` blocks, complete and opaque wrappers, upcasts, and
+complete-field allocators. The shared object model retains reflected field
+offsets, sizes, and alignments; the layout classifier checks byte coverage and
+the Rust output includes size/alignment assertions. Directives cover enum
+newtypes, field overrides, nullability, and handwritten constructors via
+`custom-new`. These are existing features, not work to reimplement here.
 
-The intended command shape is therefore one existing stubgen invocation, for
-example:
+The upstream `examples/rust_stubgen` demonstrates the current command and
+directive format. For a configured TIRx binding directory, the command shape is:
 
 ```text
-tvm-ffi-stubgen rust/src --dlls build/libtvm_compiler.so --target rust \
-  --native-layout build/rust_native_layout.json
+tvm-ffi-stubgen src/generated --dlls /path/to/libtvm_compiler.so --target rust
 ```
 
-The exact option names can follow the upstream CLI review, but the ownership is
-fixed: runtime registry collection remains shared, native layout is merged
-before rendering, and `RustGenerator` only emits code. It must not rediscover
-C++ layout or guess constructor semantics while formatting Rust.
+This repository has not migrated to that generated directory yet. The remaining
+work is to select the TIRx types, supply the directives and semantic constructors
+this prototype needs, and compare the generated API with the acceptance tests.
+The stronger layout/finality/blocker manifest described above is a target
+contract, not an implemented `--native-layout` CLI option. Check any gaps against
+the existing layout classifier before proposing new metadata. Neither byte
+coverage nor a generated allocator establishes constructor semantics, registry
+identity, or thread safety by itself.
 
 ## Constructor classification
 
@@ -326,7 +328,21 @@ C++ pass APIs use `RValueRef<T>` at some boundaries. `tvm-ffi::RValueRef<T>` is
 the reusable owning packed-argument holder for the same ABI representation. A
 matching callee steals its object slot without an extra reference-count
 increment; an ordinary lvalue remains supported through the C++-compatible
-copy path. Generated pass wrappers should use this standard holder.
+copy path.
+
+The holder does not make Rust-allocated fields safe to move from C++. A native
+pass can move `PrimFunc.body` out, then throw before replacing it. Its storage
+must accept that null state even though an initialized function requires a body.
+The handwritten binding uses a private `Option<Stmt>` field and a borrowing
+`body()` accessor; construction stores `Some(body)`, and ordinary Rust field
+destruction handles a moved-from `None`. Both successful native mutation and
+error cleanup are tested, including a fresh Rust function created inside a native
+`Sequential` while the original input module is retained.
+
+Stubgen must distinguish a required public value from storage that native code
+can move out. Matching field offsets alone is insufficient. Do not use a
+non-null handle as a movable field and try to repair it with a drop-time null
+check, or force COW by retaining the input: neither is a general lifecycle fix.
 
 ## Metadata gaps
 

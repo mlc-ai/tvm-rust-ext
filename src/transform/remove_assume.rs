@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, ObjectIdentity, ObjectRefCore, Result};
+use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, ObjectRefCore, Result};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
@@ -30,11 +30,10 @@ pub fn remove_assume_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 }
 
 fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
-    let assume_op: Expr = Op::get("tirx.assume")?.into();
     let mut remover = AssumeRemover {
-        assume_op: ObjectIdentity::of(&assume_op),
+        assume_op: Op::get("tirx.assume")?,
     };
-    let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -59,14 +58,14 @@ pub fn remove_assume() -> Result<Pass> {
 }
 
 struct AssumeRemover {
-    assume_op: ObjectIdentity,
+    assume_op: Op,
 }
 
 #[tvm_ffi::dispatch(mutate)]
 impl AssumeRemover {
     fn mutate_evaluate(&mut self, value: Evaluate, mutator: &mut Mutator) -> Result<Evaluate> {
         if let Some(call) = value.value.as_node::<CallObj>() {
-            if ObjectIdentity::of(&call.op) == self.assume_op {
+            if call.op.same_as(&self.assume_op) {
                 return Evaluate::from_i64(0);
             }
         }

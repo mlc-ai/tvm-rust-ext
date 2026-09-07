@@ -24,7 +24,7 @@ use tvm_ffi::{
     String, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue, RUNTIME_ERROR,
 };
 
-use super::utils::{is_opaque_expr, operator_identity, value_error, visit_stmt_expr_default};
+use super::utils::{get_operator, is_opaque_expr, value_error, visit_stmt_expr_default};
 use super::{create_module_pass, Pass};
 use crate::ir::{Call, CallObj, Expr, TensorLoad, Var};
 use crate::target::Target;
@@ -99,9 +99,9 @@ fn memory_errors(function: &PrimFunc) -> Result<Vec<std::string::String>> {
         definitions: HashMap::new(),
         in_thread_env: false,
         errors: Vec::new(),
-        struct_get: operator_identity("tirx.tvm_struct_get")?,
-        masked_load: operator_identity("tirx.masked_load")?,
-        masked_store: operator_identity("tirx.masked_store")?,
+        struct_get: get_operator("tirx.tvm_struct_get")?,
+        masked_load: get_operator("tirx.masked_load")?,
+        masked_store: get_operator("tirx.masked_store")?,
     };
     let mut callbacks = VisitCallbacks::new(
         verifier,
@@ -114,7 +114,7 @@ fn memory_errors(function: &PrimFunc) -> Result<Vec<std::string::String>> {
             visit_default,
         ),
     );
-    structural_visit(&function.body, &mut callbacks)?;
+    structural_visit(function.body(), &mut callbacks)?;
     Ok(callbacks.into_state().errors)
 }
 
@@ -124,9 +124,9 @@ struct MemoryVerifier {
     definitions: HashMap<ObjectIdentity, Expr>,
     in_thread_env: bool,
     errors: Vec<std::string::String>,
-    struct_get: ObjectIdentity,
-    masked_load: ObjectIdentity,
-    masked_store: ObjectIdentity,
+    struct_get: Expr,
+    masked_load: Expr,
+    masked_store: Expr,
 }
 
 impl MemoryVerifier {
@@ -146,7 +146,7 @@ impl MemoryVerifier {
             let Some(call) = definition.as_node::<CallObj>() else {
                 return Ok(false);
             };
-            if ObjectIdentity::of(&call.op) != self.struct_get {
+            if !call.op.same_as(&self.struct_get) {
                 return Ok(false);
             }
             let Some(argument) = call.args.iter().next() else {
@@ -213,8 +213,9 @@ fn visit_store(value: BufferStore, visitor: &mut VisitContext<'_, MemoryVerifier
 }
 
 fn visit_call(value: Call, visitor: &mut VisitContext<'_, MemoryVerifier>) -> Result<()> {
-    let identity = ObjectIdentity::of(&value.op);
-    if identity == visitor.state().masked_load || identity == visitor.state().masked_store {
+    if value.op.same_as(&visitor.state().masked_load)
+        || value.op.same_as(&visitor.state().masked_store)
+    {
         if let Some(argument) = value.args.iter().next() {
             visitor
                 .state_mut()

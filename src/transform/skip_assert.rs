@@ -25,7 +25,7 @@ use crate::tirx::{AssertStmt, Evaluate, PrimFunc};
 
 /// Replace every `AssertStmt` in a PrimFunc with `Evaluate(0)`.
 pub fn skip_assert_prim_func(func: PrimFunc) -> Result<PrimFunc> {
-    let body = structural_mutate(func.body.clone(), AssertSkipper)?.try_into()?;
+    let body = structural_mutate(func.body().clone(), AssertSkipper)?.try_into()?;
     Ok(with_prim_func_body(func, body))
 }
 

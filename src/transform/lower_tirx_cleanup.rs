@@ -72,7 +72,7 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         }
     }
 
-    let mut body: Stmt = structural_mutate(function.body.clone(), &mut applier)?.try_into()?;
+    let mut body: Stmt = structural_mutate(function.body().clone(), &mut applier)?.try_into()?;
     for (flattened, source) in parameter_views {
         body = Stmt::sequence(vec![
             DeclBuffer::new(flattened, source.data()?)?.into(),

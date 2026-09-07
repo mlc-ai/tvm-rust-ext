@@ -85,7 +85,7 @@ fn rust_remove_no_op_selects_constant_branches_and_preserves_effect_spans() {
     let module = IRModule::from_expr(&function).unwrap();
 
     let rust_function = transform::remove_no_op_prim_func(function).unwrap();
-    let rust_evaluate = rust_function.body.clone().try_cast::<Evaluate>().unwrap();
+    let rust_evaluate = rust_function.body().clone().try_cast::<Evaluate>().unwrap();
     let cpp_result = cpp_pass("tirx.transform.RemoveNoOp").run(module).unwrap();
 
     assert_eq!(object_pointer(&rust_evaluate), effect_pointer);
@@ -272,7 +272,11 @@ fn rust_stmt_simplify_preserves_unchanged_tile_metadata() {
     .unwrap();
     let result =
         transform::stmt_simplify_prim_func(PrimFunc::new(vec![variable], call).unwrap()).unwrap();
-    let result_call = result.body.clone().try_cast::<TilePrimitiveCall>().unwrap();
+    let result_call = result
+        .body()
+        .clone()
+        .try_cast::<TilePrimitiveCall>()
+        .unwrap();
 
     assert!(result_call.span.as_ref().unwrap().same_as(&span));
     assert!(result_call.config.same_as(&config));
@@ -470,7 +474,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
         .unwrap();
     assert_structural_equal(&rust_result, &cpp_result);
 
-    let sequence = rust_function.body.clone().try_cast::<SeqStmt>().unwrap();
+    let sequence = rust_function.body().clone().try_cast::<SeqStmt>().unwrap();
     let allocation = sequence
         .seq
         .get(0)
@@ -817,7 +821,7 @@ fn rust_storage_legalize_matches_cpp_for_local_and_masked_accesses() -> Result<(
         assert_structural_equal(&rust, &native);
         for result in [rust, native] {
             let function: PrimFunc = result.functions.iter().next().unwrap().1.try_cast()?;
-            let body: SeqStmt = function.body.clone().try_cast()?;
+            let body: SeqStmt = function.body().clone().try_cast()?;
             let attribute: AttrStmt = body.seq.get(1)?.try_cast()?;
             // Native legalization reconstructs attributes when their node is remapped.
             assert!(attribute.span.is_none());
@@ -916,7 +920,7 @@ fn rust_compute_legalize_preserves_buffers_referenced_by_layouts() -> Result<()>
     let native_pass = cpp_pass("tirx.transform.BF16ComputeLegalize");
     for (shard, replica) in [
         (vec![iteration.clone()], Vec::new()),
-        (Vec::new(), vec![iteration.clone()]),
+        (Vec::new(), vec![iteration]),
     ] {
         let layout = TileLayout::new(shard, replica, Map::new())?;
         let layout_buffer = BufferType::with_metadata(

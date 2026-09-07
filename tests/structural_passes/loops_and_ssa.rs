@@ -229,7 +229,7 @@ fn rust_unroll_loop_matches_cpp_when_explicit_expansion_is_disabled() {
         .try_cast::<PrimFunc>()
         .unwrap();
     assert_eq!(
-        function.body.clone().try_cast::<For>().unwrap().kind,
+        function.body().clone().try_cast::<For>().unwrap().kind,
         ForKind::kUnrolled
     );
 }
@@ -450,7 +450,7 @@ fn rust_convert_ssa_keeps_for_annotations_outside_the_ssa_scope() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let sequence = function.body.clone().try_cast::<SeqStmt>().unwrap();
+    let sequence = function.body().clone().try_cast::<SeqStmt>().unwrap();
     let loop_node = sequence.seq.get(1).unwrap().try_cast::<For>().unwrap();
     let annotation =
         Var::try_from(loop_node.annotations.get(&annotation_key).unwrap().unwrap()).unwrap();

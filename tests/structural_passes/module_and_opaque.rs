@@ -398,7 +398,7 @@ fn rust_lower_tirx_opaque_matches_cpp_for_thread_binding_and_pragmas() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
-    let pragma_alpha = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let pragma_alpha = rust_function.body().clone().try_cast::<AttrStmt>().unwrap();
     assert_eq!(pragma_alpha.attr_key.as_str(), "pragma_alpha");
     let pragma_zeta = pragma_alpha.body.clone().try_cast::<AttrStmt>().unwrap();
     assert_eq!(pragma_zeta.attr_key.as_str(), "pragma_zeta");
@@ -456,7 +456,7 @@ fn rust_remap_thread_axis_matches_cpp() {
     let cpp_result = cpp_pass.run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
-    let remapped_attr = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let remapped_attr = rust_function.body().clone().try_cast::<AttrStmt>().unwrap();
     let remapped_axis = IterVar::try_from(remapped_attr.node.clone()).unwrap();
     assert!(remapped_axis.same_as(&new_axis));
     let remapped_body = remapped_attr.body.clone().try_cast::<Evaluate>().unwrap();
@@ -525,7 +525,7 @@ fn rust_remap_thread_axis_does_not_rewrite_loop_annotations() {
     let cpp_result = cpp_pass.run(module).unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
-    let attribute = rust_function.body.clone().try_cast::<AttrStmt>().unwrap();
+    let attribute = rust_function.body().clone().try_cast::<AttrStmt>().unwrap();
     let loop_node = attribute.body.clone().try_cast::<For>().unwrap();
     let annotation =
         Var::try_from(loop_node.annotations.get(&annotation_key).unwrap().unwrap()).unwrap();
@@ -563,7 +563,7 @@ fn rust_remove_assume_matches_cpp_for_a_root_assume() {
         .1
         .try_cast::<PrimFunc>()
         .unwrap();
-    let evaluate = rust_function.body.clone().try_cast::<Evaluate>().unwrap();
+    let evaluate = rust_function.body().clone().try_cast::<Evaluate>().unwrap();
     assert_eq!(
         evaluate.value.clone().try_cast::<IntImm>().unwrap().value,
         0

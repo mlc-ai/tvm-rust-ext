@@ -32,7 +32,7 @@ pub fn decorate_device_scope_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         0i64,
         DEVICE_SCOPE,
         IntImm::new("int32", 0)?,
-        function.body.clone(),
+        function.body().clone(),
     )?;
     Ok(with_prim_func_body(function, body.into()))
 }

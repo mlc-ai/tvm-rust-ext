@@ -27,12 +27,12 @@ use tvm_ffi::{
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
 use super::utils::{
-    array_same_as, binary_op, int_value, mutate_stmt_expr_default, operator_identity, value_error,
+    array_same_as, binary_op, get_operator, int_value, mutate_stmt_expr_default, value_error,
     visit_buffer_definition, visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass_with_context, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var, VarObj};
 use crate::tirx::{
     AllocBuffer, AssertStmt, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer,
     Evaluate, For, ForKind, IfThenElse, PrimFunc, Return, Stmt, While,
@@ -68,13 +68,13 @@ fn storage_rewrite_with_reuse(function: PrimFunc, enable_reuse: bool) -> Result<
             analyze_default,
         ),
     );
-    structural_visit(&function.body, &mut callbacks)?;
+    structural_visit(function.body(), &mut callbacks)?;
     analysis = callbacks.into_state();
 
     let plan = StoragePlan::build(analysis, enable_reuse, require_exact_dtype)?;
     let root_allocations = plan.allocations_at(None);
     let mut rewriter = StoragePlanRewriter::new(plan)?;
-    let rewritten: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let rewritten: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     let body = if root_allocations.is_empty() {
         rewritten
     } else {
@@ -321,8 +321,8 @@ fn is_node<T: ObjectRefCore>(value: &VisitValue) -> bool {
 }
 
 struct InplaceVerifier {
-    destination: ObjectIdentity,
-    source: ObjectIdentity,
+    destination: BufferVar,
+    source: BufferVar,
     store: Option<BufferStore>,
     memory_depth: usize,
     at_root: bool,
@@ -331,8 +331,8 @@ struct InplaceVerifier {
 impl InplaceVerifier {
     fn check(statement: &Stmt, destination: &BufferVar, source: &BufferVar) -> Result<bool> {
         let state = Self {
-            destination: ObjectIdentity::of(destination),
-            source: ObjectIdentity::of(source),
+            destination: destination.clone(),
+            source: source.clone(),
             store: None,
             memory_depth: 0,
             at_root: true,
@@ -359,8 +359,9 @@ fn verify_inplace(
         }
     }
     if let Some(variable) = value.cast::<Var>() {
-        let identity = ObjectIdentity::of(&variable);
-        return if identity == visitor.state().source || identity == visitor.state().destination {
+        return if variable.same_as(&visitor.state().source)
+            || variable.same_as(&visitor.state().destination)
+        {
             reject()
         } else {
             Ok(None)
@@ -374,7 +375,7 @@ fn verify_inplace(
             }
         }
         visitor.state_mut().memory_depth -= 1;
-        let is_destination = ObjectIdentity::of(&store.buffer) == visitor.state().destination;
+        let is_destination = store.buffer.same_as(&visitor.state().destination);
         if is_destination {
             visitor.state_mut().store = Some(store.clone());
         }
@@ -385,11 +386,10 @@ fn verify_inplace(
         return result;
     }
     if let Some(load) = value.cast::<TensorLoad>() {
-        let identity = ObjectIdentity::of(&load.source);
-        if identity == visitor.state().destination || visitor.state().memory_depth != 0 {
+        if load.source.same_as(&visitor.state().destination) || visitor.state().memory_depth != 0 {
             return reject();
         }
-        if identity == visitor.state().source {
+        if load.source.same_as(&visitor.state().source) {
             let Some(store) = &visitor.state().store else {
                 return reject();
             };
@@ -701,9 +701,9 @@ impl StoragePlan {
 struct StoragePlanRewriter {
     plan: StoragePlan,
     buffer_views: HashMap<ObjectIdentity, BufferVar>,
-    masked_load: ObjectIdentity,
-    masked_store: ObjectIdentity,
-    access_ptr: ObjectIdentity,
+    masked_load: Expr,
+    masked_store: Expr,
+    access_ptr: Expr,
 }
 
 impl StoragePlanRewriter {
@@ -711,9 +711,9 @@ impl StoragePlanRewriter {
         Ok(Self {
             plan,
             buffer_views: HashMap::new(),
-            masked_load: operator_identity("tirx.masked_load")?,
-            masked_store: operator_identity("tirx.masked_store")?,
-            access_ptr: operator_identity("tirx.tvm_access_ptr")?,
+            masked_load: get_operator("tirx.masked_load")?,
+            masked_store: get_operator("tirx.masked_store")?,
+            access_ptr: get_operator("tirx.tvm_access_ptr")?,
         })
     }
 
@@ -767,9 +767,8 @@ impl StoragePlanRewriter {
 #[tvm_ffi::dispatch(mutate)]
 impl StoragePlanRewriter {
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let operator = ObjectIdentity::of(&value.op);
-        let is_load = operator == self.masked_load;
-        if is_load || operator == self.masked_store {
+        let is_load = value.op.same_as(&self.masked_load);
+        if is_load || value.op.same_as(&self.masked_store) {
             let first_index = if is_load { 1 } else { 2 };
             if value.args.len() < first_index + 2 {
                 return Err(value_error(
@@ -813,7 +812,7 @@ impl StoragePlanRewriter {
                 .copy_with(ty, value.op.clone(), Array::new(arguments))
                 .into());
         }
-        if operator == self.access_ptr {
+        if value.op.same_as(&self.access_ptr) {
             if value.args.len() != 5 {
                 return Err(value_error("tvm_access_ptr requires five arguments"));
             }
@@ -1172,13 +1171,11 @@ fn constant_allocation_bits(buffer: &BufferVar) -> Result<Option<u64>> {
 }
 
 fn buffer_data_var(value: &Expr) -> Option<Var> {
-    if let Ok(variable) = value.clone().try_cast::<Var>() {
-        return Some(variable);
+    if value.as_node::<VarObj>().is_some() {
+        return value.clone().try_cast().ok();
     }
-    let call = value.clone().try_cast::<Call>().ok()?;
-    if ObjectIdentity::of(&call.op) != operator_identity("tirx.buffer_data").ok()?
-        || call.args.len() != 1
-    {
+    let call = value.as_node::<CallObj>()?;
+    if !call.op.same_as(&get_operator("tirx.buffer_data").ok()?) || call.args.len() != 1 {
         return None;
     }
     call.args.get(0).ok()?.try_cast().ok()

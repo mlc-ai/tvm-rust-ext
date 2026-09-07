@@ -27,7 +27,7 @@ use tvm_ffi::{
 mod scope_tests;
 
 use super::utils::{
-    binary_op, cast_prim_expr, finish_constraint_contexts, get_operator, int_value,
+    binary_op, cast_prim_expr, finish_constraint_contexts, fixed_lanes, get_operator, int_value,
     mutate_expr_default, option_same_as, value_error, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
@@ -80,7 +80,7 @@ fn lower_intrin_prim_func_with_config(
         .try_into()?;
     let mut injecter = IntrinInjecter::new(&target, enable_fast_math)?;
     let body = injecter.with_scope(|injecter| {
-        tvm_ffi::structural_mutate(function.body.clone(), injecter)?.try_into()
+        tvm_ffi::structural_mutate(function.body().clone(), injecter)?.try_into()
     })?;
     Ok(with_prim_func_body(function, body))
 }
@@ -263,7 +263,7 @@ impl IntrinInjecter {
         let scalar_dtype = with_lanes(&dtype, 1)?;
         let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1)?)?;
         if dtype.dtype.lanes != 1 {
-            let lanes = i64::from(dtype.dtype.lanes);
+            let lanes = fixed_lanes(&dtype)?;
             offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes)?)?;
             scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes)?)?;
             offset = Ramp::new(

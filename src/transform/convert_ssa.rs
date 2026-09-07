@@ -310,13 +310,13 @@ fn convert_function(converter: &mut SsaConverter, function: PrimFunc) -> Result<
             }
         }
         let attrs = mutate_function_attrs(converter, &function.attrs)?;
-        let body: Stmt = structural_mutate(function.body.clone(), &mut *converter)?.try_into()?;
+        let body: Stmt = structural_mutate(function.body().clone(), &mut *converter)?.try_into()?;
         let params_changed = converted_params.len() != function.params.len()
             || converted_params
                 .iter()
                 .zip(function.params.iter())
                 .any(|(converted, original)| !converted.same_as(&original));
-        if !params_changed && attrs.same_as(&function.attrs) && body.same_as(&function.body) {
+        if !params_changed && attrs.same_as(&function.attrs) && body.same_as(function.body()) {
             return Ok(function);
         }
         PrimFunc::with_metadata(

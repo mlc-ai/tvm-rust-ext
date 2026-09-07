@@ -145,7 +145,7 @@ fn stmt_simplify_with_options(
         }
     }
 
-    let body = structural_mutate(function.body.clone(), &mut simplifier).and_then(Stmt::try_from);
+    let body = structural_mutate(function.body().clone(), &mut simplifier).and_then(Stmt::try_from);
     let body = simplifier.finish_root_scope(body)?;
     Ok(with_prim_func_body(function, body))
 }
@@ -180,11 +180,10 @@ impl StmtSimplifier {
     }
 
     fn record_binding(&mut self, variable: Var, value: PrimExpr) {
-        let identity = tvm_ffi::ObjectIdentity::of(&variable);
         let mut bindings = self
             .non_inlined_bindings
             .iter()
-            .filter(|(existing, _)| tvm_ffi::ObjectIdentity::of(existing) != identity)
+            .filter(|(existing, _)| !existing.same_as(&variable))
             .collect::<Vec<_>>();
         bindings.push((variable, value.into()));
         self.non_inlined_bindings = Map::from_iter(bindings);

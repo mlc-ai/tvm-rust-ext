@@ -56,10 +56,10 @@ pub fn narrow_data_type_prim_func(function: PrimFunc, target_bits: u8) -> Result
             visit_default,
         ),
     );
-    structural_visit(&function.body, &mut collector)?;
+    structural_visit(function.body(), &mut collector)?;
     let selected_types = collector.into_state().selected_types()?;
     let mut normalizer = IndexDataTypeNormalizer::from_selected_types(target, selected_types)?;
-    let body: Stmt = structural_mutate(function.body.clone(), &mut normalizer)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut normalizer)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 

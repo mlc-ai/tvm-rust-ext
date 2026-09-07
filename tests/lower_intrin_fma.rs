@@ -107,9 +107,9 @@ fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() -> Result<()> {
             if floating {
                 if decline {
                     // In particular, do not swap Broadcast(Cast) after the rule declines.
-                    assert!(actual.body.same_as(&function.body));
+                    assert!(actual.body().same_as(function.body()));
                 } else {
-                    let evaluation = actual.body.as_node::<EvaluateObj>().unwrap();
+                    let evaluation = actual.body().as_node::<EvaluateObj>().unwrap();
                     let fused = evaluation.value.as_node::<CallObj>().unwrap();
                     assert!(fused.op.same_as(&fma));
                 }

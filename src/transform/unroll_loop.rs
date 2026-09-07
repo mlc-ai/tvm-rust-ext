@@ -118,7 +118,7 @@ pub fn unroll_loop_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 }
 
 fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Result<PrimFunc> {
-    let original_body = function.body.clone();
+    let original_body = function.body().clone();
     let mut unroller = LoopUnroller {
         analyzer: Analyzer::new()?,
         options,
@@ -128,7 +128,7 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
         variables_touching_local: HashSet::new(),
         changed: false,
     };
-    let body: Stmt = structural_mutate(function.body.clone(), &mut unroller)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut unroller)?.try_into()?;
     if !unroller.changed && body.same_as(&original_body) {
         return Ok(function);
     }

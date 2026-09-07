@@ -23,8 +23,9 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    binary_op, get_operator, int_value, is_pointer_type, is_string_imm, mutate_expr_default,
-    mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_body,
+    binary_op, clone_downcast, const_handle, fixed_lanes, get_operator, int_value, is_pointer_type,
+    is_string_imm, mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default,
+    option_same_as, storage_bytes, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{Cast, StringImm};
@@ -68,7 +69,7 @@ pub fn lower_tvm_builtin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
         .map(|value| IntImm::new("int32", i64::from(value)).map(Into::into))
         .transpose()?;
     let mut lowerer = BuiltinLower::new(device_type)?;
-    let body = lowerer.visit_body_and_realize_alloca(function.body.clone())?;
+    let body = lowerer.visit_body_and_realize_alloca(function.body().clone())?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -295,23 +296,24 @@ impl BuiltinLower {
     }
 
     fn mutate_statement_inner(&mut self, value: Stmt, mutator: &mut Mutator) -> Result<Stmt> {
-        if let Ok(binding) = value.clone().try_cast::<Bind>() {
-            if let Ok(call) = binding.value.clone().try_cast::<Call>() {
+        if let Some(binding) = clone_downcast::<Bind>(&value)? {
+            if let Some(call) = binding.value.as_node::<CallObj>() {
                 if call.op.same_as(&self.operators.nd_mem_alloc_with_scope) {
+                    let call = binding.value.clone().try_cast()?;
                     return self.make_nd_memory_allocation(binding, call, mutator);
                 }
             }
         }
-        if let Ok(allocation) = value.clone().try_cast::<AllocBuffer>() {
+        if let Some(allocation) = clone_downcast::<AllocBuffer>(&value)? {
             return self.mutate_allocation(allocation);
         }
-        if let Ok(attribute) = value.clone().try_cast::<AttrStmt>() {
+        if let Some(attribute) = clone_downcast::<AttrStmt>(&value)? {
             return self.mutate_attribute(attribute, mutator);
         }
-        if let Ok(loop_node) = value.clone().try_cast::<For>() {
+        if let Some(loop_node) = clone_downcast::<For>(&value)? {
             return self.mutate_loop(loop_node, mutator);
         }
-        if let Ok(conditional) = value.clone().try_cast::<IfThenElse>() {
+        if let Some(conditional) = clone_downcast::<IfThenElse>(&value)? {
             return self.mutate_conditional(conditional, mutator);
         }
         mutate_stmt_default(self, mutator, value)
@@ -612,13 +614,7 @@ impl BuiltinLower {
             &stack,
             index,
             DLTENSOR_STRIDES,
-            if strides
-                .clone()
-                .try_cast::<PrimExpr>()
-                .ok()
-                .and_then(|value| int_value(&value))
-                == Some(0)
-            {
+            if int_value(&strides) == Some(0) {
                 const_handle(0)?
             } else {
                 strides
@@ -643,7 +639,7 @@ impl BuiltinLower {
                 &stack,
                 index,
                 DLTENSOR_TYPE_LANES,
-                IntImm::new("uint16", i64::from(dtype.dtype.lanes))?,
+                IntImm::new("uint16", fixed_lanes(&dtype)?)?,
             )?,
         ]);
         let element_offset = arguments.get(5)?.try_cast::<PrimExpr>()?;
@@ -1086,13 +1082,6 @@ fn reinterpret(pointer_type: PointerType, value: Expr) -> Result<Expr> {
     Ok(Call::new(pointer_type, get_operator("tirx.reinterpret")?, vec![value]).into())
 }
 
-fn const_handle(value: i64) -> Result<Expr> {
-    reinterpret(
-        PointerType::new(PrimType::new("void")?, "")?,
-        IntImm::new("int64", value)?.into(),
-    )
-}
-
 fn api_type(dtype: &PrimType) -> Result<PrimType> {
     if dtype.dtype.lanes != 1 {
         return Err(value_error(
@@ -1111,15 +1100,6 @@ fn api_type(dtype: &PrimType) -> Result<PrimType> {
     } else {
         Err(value_error("unsupported packed API scalar type"))
     }
-}
-
-fn storage_bytes(dtype: &PrimType) -> Result<i64> {
-    if is_scalable_vector(dtype) {
-        return Err(value_error(
-            "scalable vector has no compile-time storage size",
-        ));
-    }
-    Ok((i64::from(dtype.dtype.bits) * i64::from(dtype.dtype.lanes) + 7) / 8)
 }
 
 fn is_scalable_vector(dtype: &PrimType) -> bool {
@@ -1144,14 +1124,6 @@ fn is_array_handle(value: &Expr, struct_get_operator: &Expr) -> Result<bool> {
         .get(2)?
         .try_cast::<IntImm>()
         .is_ok_and(|field| field.value == DLTENSOR_ADDR))
-}
-
-fn option_same_as<T: ObjectRefCore>(lhs: &Option<T>, rhs: &Option<T>) -> bool {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => lhs.same_as(rhs),
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 fn function_target(function: &PrimFunc) -> Result<Option<Target>> {

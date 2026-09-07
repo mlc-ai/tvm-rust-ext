@@ -46,8 +46,8 @@ fn rust_verify_ssa_matches_cpp_definition_rules() -> Result<()> {
     .new_var("buffer");
     let allocation: Stmt = AllocBuffer::new(&buffer)?.into();
     let empty: Stmt = Evaluate::from_i64(0)?.into();
-    let inner_left = Let::new(other.clone(), int_expression(1), other.clone())?;
-    let inner_right = Let::new(z.clone(), int_expression(1), z.clone())?;
+    let inner_left = Let::new(other.clone(), int_expression(1), other)?;
+    let inner_right = Let::new(z.clone(), int_expression(1), z)?;
     let cases = [
         (
             "free use",
@@ -212,7 +212,7 @@ fn rust_verify_memory_matches_cpp_target_scope_and_argument_rules() -> Result<()
         (
             "buffer is not first parameter",
             vec![first.clone(), buffer.as_var().clone()],
-            load.clone(),
+            load,
             false,
         ),
         ("thread extent", default_params.clone(), bound.clone(), true),
@@ -266,10 +266,10 @@ fn rust_verify_memory_matches_cpp_target_scope_and_argument_rules() -> Result<()
                 int_expression(0),
                 int_expression(8),
                 ForKind::kThreadBinding,
-                store.clone(),
+                store,
                 Some(IterVar::with_metadata(
                     None,
-                    thread.clone(),
+                    thread,
                     IterVarType::kThreadIndex,
                     "threadIdx.x",
                     None,
@@ -330,7 +330,7 @@ fn rust_verify_memory_matches_cpp_target_scope_and_argument_rules() -> Result<()
         ),
         (
             "masked store",
-            default_params.clone(),
+            default_params,
             Evaluate::new(Call::new(
                 PrimType::void(),
                 Op::get("tirx.masked_store")?,
