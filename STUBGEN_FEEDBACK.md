@@ -222,20 +222,23 @@ newtypes, field overrides, nullability, and handwritten constructors via
 `custom-new`. These are existing features, not work to reimplement here.
 
 The upstream `examples/rust_stubgen` demonstrates the current command and
-directive format. For a configured TIRx binding directory, the command shape is:
+directive format. This repository runs it in place: `src/ir.rs`,
+`src/ir/prim.rs`, and `src/tirx.rs` each declare a `prefix` (`ir`, `ir.prim`,
+`tirx`) and carry the generated object blocks between marker lines, with the
+reviewed semantic constructors in hand-written modules beside them (see
+"Generated bindings" in README.md). The command is:
 
 ```text
-tvm-ffi-stubgen src/generated --dlls /path/to/libtvm_compiler.so --target rust
+tvm-ffi-stubgen src --dlls /path/to/libtvm_compiler.so --target rust
 ```
 
-This repository has not migrated to that generated directory yet. The remaining
-work is to select the TIRx types, supply the directives and semantic constructors
-this prototype needs, and compare the generated API with the acceptance tests.
-The stronger layout/finality/blocker manifest described above is a target
-contract, not an implemented `--native-layout` CLI option. Check any gaps against
-the existing layout classifier before proposing new metadata. Neither byte
-coverage nor a generated allocator establishes constructor semantics, registry
-identity, or thread safety by itself.
+The acceptance tests pass unchanged against that output. The stronger
+layout/finality/blocker manifest described above is a target contract, not an
+implemented `--native-layout` CLI option. Check any gaps against the existing
+layout classifier before proposing new metadata. Neither byte coverage nor a
+generated allocator establishes constructor semantics, registry identity, or
+thread safety by itself; the types the generator cannot express yet
+(`tirx.PrimFunc`, below) are `skip`ped and stay hand-written.
 
 ## Constructor classification
 
@@ -343,6 +346,11 @@ Stubgen must distinguish a required public value from storage that native code
 can move out. Matching field offsets alone is insufficient. Do not use a
 non-null handle as a movable field and try to repair it with a drop-time null
 check, or force COW by retaining the input: neither is a general lifecycle fix.
+No directive expresses this today: `nullable` would make the field public and
+the complete-field allocator accept `None`, and a `field` override to a
+hand-written cell would change the allocator's signature. `tirx.PrimFunc` is
+therefore `skip`ped in `src/tirx.rs` and the binding above stays hand-written;
+the `TensorIntrin.desc`/`impl` fields name it through `field` overrides.
 
 ## Metadata gaps
 

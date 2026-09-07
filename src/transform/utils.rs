@@ -497,7 +497,7 @@ pub(super) fn visit_stmt_expr_default<State>(
         return Ok(None);
     }
     if let Some(projection) = value.as_node::<TupleGetItemObj>() {
-        return visitor.visit(&projection.tuple);
+        return visitor.visit(&projection.tuple_value);
     }
     if let Some(call) = value.as_node::<CallObj>() {
         if call.op.as_node::<OpaqueExprObj>().is_some() {
@@ -561,7 +561,7 @@ pub(super) fn visit_stmt_expr_default<State>(
         return visitor.visit(&not.a);
     }
     if let Some(ramp) = value.as_node::<RampObj>() {
-        if let Some(interrupt) = visitor.visit(&ramp.base)? {
+        if let Some(interrupt) = visitor.visit(&ramp.base_)? {
             return Ok(Some(interrupt));
         }
         return visitor.visit(&ramp.stride);
@@ -844,8 +844,10 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         return Ok(tuple.copy_with(fields).into());
     }
     if let Some(projection) = clone_downcast::<TupleGetItem>(&value)? {
-        let tuple: Expr = mutator.mutate(dispatch, &projection.tuple)?.try_into()?;
-        if tuple.same_as(&projection.tuple) {
+        let tuple: Expr = mutator
+            .mutate(dispatch, &projection.tuple_value)?
+            .try_into()?;
+        if tuple.same_as(&projection.tuple_value) {
             return Ok(value);
         }
         return Ok(projection.copy_with(tuple)?.into());
@@ -894,10 +896,10 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         return Ok(value);
     }
     if let Some(ramp) = clone_downcast::<Ramp>(&value)? {
-        let base: PrimExpr = mutator.mutate(dispatch, &ramp.base)?.try_into()?;
+        let base: PrimExpr = mutator.mutate(dispatch, &ramp.base_)?.try_into()?;
         let stride: PrimExpr = mutator.mutate(dispatch, &ramp.stride)?.try_into()?;
         let lanes: PrimExpr = mutator.mutate(dispatch, &ramp.lanes)?.try_into()?;
-        if base.same_as(&ramp.base) && stride.same_as(&ramp.stride) && lanes.same_as(&ramp.lanes) {
+        if base.same_as(&ramp.base_) && stride.same_as(&ramp.stride) && lanes.same_as(&ramp.lanes) {
             return Ok(value);
         }
         return Ok(Ramp::new(base, stride, lanes)?.into());

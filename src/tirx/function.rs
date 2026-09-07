@@ -17,37 +17,11 @@
  * under the License.
  */
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{Error, ObjectArc, ObjectRefCore, Result, String, VALUE_ERROR};
+//! Tensor intrinsics: hand-written semantics for the generated `tirx.TensorIntrin` binding.
 
-use super::{BufferTypeObj, PrimFunc};
+use super::*;
 use crate::ir::PointerTypeObj;
-
-/// ABI-complete Rust representation of a tensor intrinsic.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.TensorIntrin"]
-#[type_final]
-pub struct TensorIntrinObj {
-    base: tvm_ffi::Object,
-    pub desc: PrimFunc,
-    pub implementation: PrimFunc,
-}
-
-/// Reference-counted handle to a tensor intrinsic.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct TensorIntrin {
-    data: ObjectArc<TensorIntrinObj>,
-}
-
-impl std::ops::Deref for TensorIntrin {
-    type Target = TensorIntrinObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
+use tvm_ffi::{Error, ObjectRefCore, Result, String, VALUE_ERROR};
 
 impl TensorIntrin {
     /// Construct a tensor intrinsic after applying TVM's parameter checks.
@@ -66,17 +40,6 @@ impl TensorIntrin {
             ensure_handle_parameter(&implementation_parameter, "implementation")?;
         }
         Ok(Self::from_complete_fields(desc, implementation))
-    }
-
-    /// Construct a tensor intrinsic from every physical field.
-    pub fn from_complete_fields(desc: PrimFunc, implementation: PrimFunc) -> Self {
-        Self {
-            data: ObjectArc::new(TensorIntrinObj {
-                base: tvm_ffi::Object::new(),
-                desc,
-                implementation,
-            }),
-        }
     }
 
     /// Register this intrinsic in TVM's process-wide tensor-intrinsic registry.

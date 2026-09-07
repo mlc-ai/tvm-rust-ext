@@ -35,10 +35,16 @@
 #[doc(hidden)]
 pub mod analysis;
 pub mod exports;
+// The `ir` and `tirx` object layers are emitted by `tvm-ffi-stubgen --target rust`;
+// the allocators of wide nodes take one parameter per physical field and
+// fieldless nodes get a parameterless `new`, so these two lints are silenced
+// here rather than in the generated blocks.
+#[allow(clippy::too_many_arguments, clippy::new_without_default)]
 pub mod ir;
 pub mod libinfo;
 pub mod target;
 pub mod te;
+#[allow(clippy::too_many_arguments, clippy::new_without_default)]
 pub mod tirx;
 pub mod transform;
 

@@ -284,7 +284,7 @@ fn find_coefficient_store(
             if int_value(&ramp.stride)? != 1 {
                 return Err(value_error("vector warp store requires unit stride"));
             }
-            index = ramp.base.clone();
+            index = ramp.base_.clone();
         }
         update_coefficient_from_index(visitor.state_mut(), &index)?;
     }
@@ -525,7 +525,7 @@ impl WarpAccessRewriter {
             if int_value(&ramp.stride)? != 1 {
                 return Err(value_error("vector warp access requires unit stride"));
             }
-            let (local, group) = self.split_index_by_group(&ramp.base)?;
+            let (local, group) = self.split_index_by_group(&ramp.base_)?;
             let local = Ramp::new(
                 local,
                 IntImm::from_dtype(ramp.stride.dtype(), 1)?,

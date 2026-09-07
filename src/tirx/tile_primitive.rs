@@ -17,38 +17,44 @@
  * under the License.
  */
 
-use std::cell::UnsafeCell;
+//! Tile primitives and dispatch: hand-written semantics for the generated `tirx.ExecScope`,
+//! `tirx.ScopeIdDef*`, `tirx.LambdaExpr`, `tirx.DispatchContext`, and `tirx.TilePrimitiveCall`
+//! bindings in `tirx.rs`.
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::object::ObjectRef as AnyObjectRef;
-use tvm_ffi::{
-    Any, Array, Error, Map, ObjectArc, Optional, Result, String as FfiString, VALUE_ERROR,
-};
-
-use super::{BufferVar, PrimVar, Stmt, StmtObj};
+use super::*;
+use super::{BufferVar, PrimVar};
 use crate::ir::{Op, PrimExpr, Range, Span, Var};
 use crate::target::Target;
+use std::cell::UnsafeCell;
+use tvm_ffi::object::ObjectRef as AnyObjectRef;
+use tvm_ffi::{Any, Array, Error, Map, Result, String as FfiString, VALUE_ERROR};
 
+/// Map slot that native methods replace even through a shared context handle.
+///
+/// The generated `DispatchContext` layout stores `callbacks` and
+/// `shared_state` in this cell (see the `field` directives in
+/// `src/tirx.rs`).  Rust never lends out a reference to the
+/// stored map; it only hands out owned snapshots, so a native update cannot
+/// invalidate an outstanding Rust borrow.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ScopeKind(i32);
+pub struct NativeMutableMap(UnsafeCell<Map<FfiString, AnyObjectRef>>);
+
+impl NativeMutableMap {
+    /// Wrap the initial map value.
+    pub fn new(map: Map<FfiString, AnyObjectRef>) -> Self {
+        Self(UnsafeCell::new(map))
+    }
+
+    /// Snapshot the stored map. Later native updates leave this map unchanged.
+    pub fn snapshot(&self) -> Map<FfiString, AnyObjectRef> {
+        // SAFETY: The owning context cannot be shared across threads, and
+        // Map::clone only increments the reference count, without calling user
+        // code. The native writer uses Map's copy-on-write after this clone.
+        unsafe { (&*self.0.get()).clone() }
+    }
+}
 
 impl ScopeKind {
-    pub const CLUSTER: Self = Self(2);
-    pub const CTA: Self = Self(3);
-    pub const WARPGROUP: Self = Self(4);
-    pub const WARP: Self = Self(5);
-    pub const THREAD: Self = Self(6);
-
-    /// Preserve a native value not yet known by this Rust binding.
-    pub const fn from_raw(value: i32) -> Self {
-        Self(value)
-    }
-
-    pub const fn as_raw(self) -> i32 {
-        self.0
-    }
-
     pub fn from_name(name: &str) -> Result<Self> {
         match name {
             "cluster" => Ok(Self::CLUSTER),
@@ -64,54 +70,23 @@ impl ScopeKind {
 
     /// Return the native name of a scope understood by this TVM build.
     pub fn name(self) -> Result<&'static str> {
-        match self.0 {
+        match self.as_raw() {
             2 => Ok("cluster"),
             3 => Ok("cta"),
             4 => Ok("warpgroup"),
             5 => Ok("warp"),
             6 => Ok("thread"),
-            _ => Err(value_error(&format!("unknown ScopeKind value {}", self.0))),
+            _ => Err(value_error(&format!(
+                "unknown ScopeKind value {}",
+                self.as_raw()
+            ))),
         }
     }
 }
 
-impl TryFrom<i64> for ScopeKind {
-    type Error = Error;
-
-    fn try_from(value: i64) -> Result<Self> {
-        i32::try_from(value)
-            .map(Self)
-            .map_err(|_| value_error("ScopeKind does not fit its native i32 representation"))
-    }
-}
-
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ScopeBinding(i32);
-
 impl ScopeBinding {
-    pub const KERNEL_CLUSTER: Self = Self(0);
-    pub const KERNEL_CTA: Self = Self(1);
-    pub const CLUSTER_CTA: Self = Self(2);
-    pub const CTA_WARPGROUP: Self = Self(3);
-    pub const CTA_WARP: Self = Self(4);
-    pub const WARPGROUP_WARP: Self = Self(5);
-    pub const WARP_THREAD: Self = Self(6);
-    pub const CTA_THREAD: Self = Self(7);
-    pub const WARPGROUP_THREAD: Self = Self(8);
-    pub const CLUSTER_CTA_PAIR: Self = Self(9);
-
-    /// Preserve a native value not yet known by this Rust binding.
-    pub const fn from_raw(value: i32) -> Self {
-        Self(value)
-    }
-
-    pub const fn as_raw(self) -> i32 {
-        self.0
-    }
-
     pub(crate) fn name_pair(self) -> Result<(&'static str, &'static str)> {
-        match self.0 {
+        match self.as_raw() {
             0 => Ok(("kernel", "cluster")),
             1 => Ok(("kernel", "cta")),
             2 => Ok(("cluster", "cta")),
@@ -124,42 +99,9 @@ impl ScopeBinding {
             9 => Ok(("cluster", "cta_pair")),
             _ => Err(value_error(&format!(
                 "unknown ScopeBinding value {}",
-                self.0
+                self.as_raw()
             ))),
         }
-    }
-}
-
-impl TryFrom<i64> for ScopeBinding {
-    type Error = Error;
-
-    fn try_from(value: i64) -> Result<Self> {
-        i32::try_from(value)
-            .map(Self)
-            .map_err(|_| value_error("ScopeBinding does not fit its native i32 representation"))
-    }
-}
-
-/// ABI-complete Rust representation of a native execution scope.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.ExecScope"]
-pub struct ExecScopeObj {
-    base: tvm_ffi::Object,
-    pub kind: ScopeKind,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ExecScope {
-    data: ObjectArc<ExecScopeObj>,
-}
-
-impl std::ops::Deref for ExecScope {
-    type Target = ExecScopeObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
     }
 }
 
@@ -173,45 +115,8 @@ impl ExecScope {
         ScopeKind::from_name(name).map(Self::from_complete_fields)
     }
 
-    /// Construct an execution scope from its complete physical state.
-    pub fn from_complete_fields(kind: ScopeKind) -> Self {
-        Self {
-            data: ObjectArc::new(ExecScopeObj {
-                base: tvm_ffi::Object::new(),
-                kind,
-            }),
-        }
-    }
-
     pub fn name(&self) -> Result<&'static str> {
         self.kind.name()
-    }
-}
-
-/// ABI-complete Rust representation of a scope-id definition.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.ScopeIdDef"]
-#[type_final]
-pub struct ScopeIdDefObj {
-    base: tvm_ffi::Object,
-    pub def_ids: Array<PrimVar>,
-    pub extents: Option<Array<PrimExpr>>,
-    pub scope: ScopeBinding,
-    pub preferred_extents: Option<Array<PrimExpr>>,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ScopeIdDef {
-    data: ObjectArc<ScopeIdDefObj>,
-}
-
-impl std::ops::Deref for ScopeIdDef {
-    type Target = ScopeIdDefObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
     }
 }
 
@@ -254,24 +159,6 @@ impl ScopeIdDef {
         ))
     }
 
-    /// Construct a scope-id definition from its complete physical state after validation.
-    pub fn from_complete_fields(
-        def_ids: Array<PrimVar>,
-        extents: Option<Array<PrimExpr>>,
-        scope: ScopeBinding,
-        preferred_extents: Option<Array<PrimExpr>>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(ScopeIdDefObj {
-                base: tvm_ffi::Object::new(),
-                def_ids,
-                extents,
-                scope,
-                preferred_extents,
-            }),
-        }
-    }
-
     pub fn is_deferred(&self) -> bool {
         self.extents.is_none()
     }
@@ -292,74 +179,9 @@ impl ScopeIdDef {
     }
 }
 
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.ScopeIdDefStmt"]
-#[type_final]
-pub struct ScopeIdDefStmtObj {
-    base: StmtObj,
-    pub def: ScopeIdDef,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ScopeIdDefStmt {
-    data: ObjectArc<ScopeIdDefStmtObj>,
-}
-
-impl std::ops::Deref for ScopeIdDefStmt {
-    type Target = ScopeIdDefStmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for ScopeIdDefStmtObj {
-    type Target = StmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl ScopeIdDefStmt {
     pub fn new(def: ScopeIdDef, span: Option<&Span>) -> Self {
         Self::from_complete_fields(span.cloned(), def)
-    }
-
-    /// Construct a scope-id statement from its complete physical state.
-    pub fn from_complete_fields(span: Option<Span>, def: ScopeIdDef) -> Self {
-        Self {
-            data: ObjectArc::new(ScopeIdDefStmtObj {
-                base: StmtObj::new(span),
-                def,
-            }),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.LambdaExpr"]
-#[type_final]
-pub struct LambdaExprObj {
-    base: tvm_ffi::Object,
-    pub vars: Array<Var>,
-    pub pred: PrimExpr,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct LambdaExpr {
-    data: ObjectArc<LambdaExprObj>,
-}
-
-impl std::ops::Deref for LambdaExpr {
-    type Target = LambdaExprObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
     }
 }
 
@@ -368,55 +190,10 @@ impl LambdaExpr {
         Self::from_complete_fields(Array::new(vars), pred)
     }
 
-    /// Construct a lambda expression from its complete physical state.
-    pub fn from_complete_fields(vars: Array<Var>, pred: PrimExpr) -> Self {
-        Self {
-            data: ObjectArc::new(LambdaExprObj {
-                base: tvm_ffi::Object::new(),
-                vars,
-                pred,
-            }),
-        }
-    }
-
     pub fn apply(&self, indices: Vec<PrimExpr>) -> Result<PrimExpr> {
         tvm_ffi::cached_global_func!("tirx.LambdaExprApply")
             .call_tuple((self, Array::new(indices)))?
             .try_into()
-    }
-}
-
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.DispatchContext"]
-#[type_final]
-pub struct DispatchContextObj {
-    base: tvm_ffi::Object,
-    pub target: Target,
-    pub exec_scope: ExecScope,
-    pub launch_params: Map<FfiString, super::IterVar>,
-    pub var_range_map: Map<Var, Range>,
-    pub alloc_only: bool,
-    // Native methods replace these maps even through a shared context handle.
-    // Keep their ABI layout, but never lend out a reference to either slot.
-    callbacks: UnsafeCell<Map<FfiString, AnyObjectRef>>,
-    shared_state: UnsafeCell<Map<FfiString, AnyObjectRef>>,
-    pub inter: Map<FfiString, Array<PrimExpr>>,
-    pub intra: Map<FfiString, Array<PrimExpr>>,
-    pub scope_kind: FfiString,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct DispatchContext {
-    data: ObjectArc<DispatchContextObj>,
-}
-
-impl std::ops::Deref for DispatchContext {
-    type Target = DispatchContextObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
     }
 }
 
@@ -455,57 +232,22 @@ impl DispatchContext {
             launch_params,
             var_range_map,
             alloc_only,
-            callbacks,
-            shared_state,
+            NativeMutableMap::new(callbacks),
+            NativeMutableMap::new(shared_state),
             inter,
             intra,
             scope_kind,
         )
     }
 
-    /// Construct a dispatch context from its complete physical state.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_complete_fields(
-        target: Target,
-        exec_scope: ExecScope,
-        launch_params: Map<FfiString, super::IterVar>,
-        var_range_map: Map<Var, Range>,
-        alloc_only: bool,
-        callbacks: Map<FfiString, AnyObjectRef>,
-        shared_state: Map<FfiString, AnyObjectRef>,
-        inter: Map<FfiString, Array<PrimExpr>>,
-        intra: Map<FfiString, Array<PrimExpr>>,
-        scope_kind: FfiString,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(DispatchContextObj {
-                base: tvm_ffi::Object::new(),
-                target,
-                exec_scope,
-                launch_params,
-                var_range_map,
-                alloc_only,
-                callbacks: UnsafeCell::new(callbacks),
-                shared_state: UnsafeCell::new(shared_state),
-                inter,
-                intra,
-                scope_kind,
-            }),
-        }
-    }
-
     /// Snapshot the callbacks. Later native updates leave this map unchanged.
     pub fn callbacks(&self) -> Map<FfiString, AnyObjectRef> {
-        // SAFETY: This context cannot be shared across threads, and Map::clone
-        // only increments the reference count, without calling user code.
-        // The native writer uses Map's copy-on-write after this clone.
-        unsafe { (&*self.callbacks.get()).clone() }
+        self.callbacks.snapshot()
     }
 
     /// Snapshot the shared state. Later native updates leave this map unchanged.
     pub fn shared_state(&self) -> Map<FfiString, AnyObjectRef> {
-        // SAFETY: As in callbacks(), the borrow ends before any native mutation.
-        unsafe { (&*self.shared_state.get()).clone() }
+        self.shared_state.snapshot()
     }
 
     pub fn add_alloc_buffer(&self, buffer: BufferVar) -> Result<()> {
@@ -548,42 +290,6 @@ impl DispatchContext {
     }
 }
 
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.TilePrimitiveCall"]
-#[type_final]
-pub struct TilePrimitiveCallObj {
-    base: StmtObj,
-    pub op: Op,
-    pub args: Array<Any>,
-    pub workspace: Map<FfiString, BufferVar>,
-    pub config: Map<FfiString, Any>,
-    pub dispatch: Optional<FfiString>,
-    pub scope: ExecScope,
-}
-
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct TilePrimitiveCall {
-    data: ObjectArc<TilePrimitiveCallObj>,
-}
-
-impl std::ops::Deref for TilePrimitiveCall {
-    type Target = TilePrimitiveCallObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl std::ops::Deref for TilePrimitiveCallObj {
-    type Target = StmtObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl TilePrimitiveCall {
     fn from_fields(
         op: Op,
@@ -611,30 +317,6 @@ impl TilePrimitiveCall {
             dispatch.into(),
             scope,
         ))
-    }
-
-    /// Construct a tile-primitive call from its complete physical state after validation.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        op: Op,
-        args: Array<Any>,
-        workspace: Map<FfiString, BufferVar>,
-        config: Map<FfiString, Any>,
-        dispatch: Optional<FfiString>,
-        scope: ExecScope,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(TilePrimitiveCallObj {
-                base: StmtObj::new(span),
-                op,
-                args,
-                workspace,
-                config,
-                dispatch,
-                scope,
-            }),
-        }
     }
 
     pub fn new(

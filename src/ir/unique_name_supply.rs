@@ -17,39 +17,14 @@
  * under the License.
  */
 
-use std::{marker::PhantomData, rc::Rc};
+//! Native-operation wrappers for the generated, opaque `ir.UniqueNameSupply` handle.
+//!
+//! The naming state is owned by C++ and mutated through the registered
+//! methods, so keep every alias of one supply on a single thread.
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{ObjectArc, Result, String};
+use tvm_ffi::{Result, String};
 
-/// Opaque native name supply with private, mutable C++ storage.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ir.UniqueNameSupply"]
-#[type_final]
-pub struct UniqueNameSupplyObj {
-    base: tvm_ffi::Object,
-    _not_send_sync: PhantomData<Rc<()>>,
-}
-
-/// Shared handle to TVM's name normalization and collision state.
-///
-/// Keep all aliases on one thread. This typed handle is neither `Send` nor
-/// `Sync`, but casting through tvm-ffi's generic `ObjectRef` can erase those
-/// restrictions without making the native naming state thread-safe.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct UniqueNameSupply {
-    data: ObjectArc<UniqueNameSupplyObj>,
-}
-
-impl std::ops::Deref for UniqueNameSupply {
-    type Target = UniqueNameSupplyObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
+use super::UniqueNameSupply;
 
 impl UniqueNameSupply {
     /// Create an empty name supply with an optional naming prefix.

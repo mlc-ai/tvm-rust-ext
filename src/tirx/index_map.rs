@@ -17,39 +17,13 @@
  * under the License.
  */
 
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{Any, Array, ObjectArc, Result, Tensor};
+//! Index maps: hand-written semantics for the generated `tirx.IndexMap` binding.
 
 use super::PrimVar;
+use super::*;
 use crate::analysis::Analyzer;
 use crate::ir::{Expr, PrimExpr, Range};
-
-/// ABI-complete Rust representation of an index transformation.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "tirx.IndexMap"]
-#[type_final]
-pub struct IndexMapObj {
-    base: tvm_ffi::Object,
-    pub initial_indices: Array<PrimVar>,
-    pub final_indices: Array<PrimExpr>,
-    pub inverse_index_map: Option<IndexMap>,
-}
-
-/// Reference-counted handle to an index transformation.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct IndexMap {
-    data: ObjectArc<IndexMapObj>,
-}
-
-impl std::ops::Deref for IndexMap {
-    type Target = IndexMapObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
+use tvm_ffi::{Any, Array, Result, Tensor};
 
 impl IndexMap {
     /// Construct an index map directly in Rust.
@@ -63,22 +37,6 @@ impl IndexMap {
             Array::new(final_indices),
             inverse_index_map,
         )
-    }
-
-    /// Construct an index map from every physical field.
-    pub fn from_complete_fields(
-        initial_indices: Array<PrimVar>,
-        final_indices: Array<PrimExpr>,
-        inverse_index_map: Option<IndexMap>,
-    ) -> Self {
-        Self {
-            data: ObjectArc::new(IndexMapObj {
-                base: tvm_ffi::Object::new(),
-                initial_indices,
-                final_indices,
-                inverse_index_map,
-            }),
-        }
     }
 
     /// Apply this mapping to concrete indices.
