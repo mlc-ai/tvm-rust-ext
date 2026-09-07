@@ -116,7 +116,7 @@ pub fn remove_no_op_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> Result<PrimFunc> {
     let mut remover = NoOpRemover::new(options)?;
-    let body = structural_mutate(function.body.clone(), &mut remover)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut remover)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 

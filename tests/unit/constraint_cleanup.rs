@@ -53,7 +53,7 @@ fn remove_no_op_restores_constraints_after_recursive_error() -> Result<()> {
     );
     assert!(!remover.analyzer.can_prove(&condition)?);
     // The same analyzer must still be usable for a fresh, unrelated scope.
-    let different: PrimExpr = EQ::new(x.clone(), literal(20)?)?.into();
+    let different: PrimExpr = EQ::new(x, literal(20)?)?.into();
     remover.analyzer.with_constraint(&different, || {
         assert!(remover.analyzer.can_prove(&different)?);
         Ok(())

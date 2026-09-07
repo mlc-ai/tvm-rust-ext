@@ -45,7 +45,7 @@ pub fn remap_thread_axis_prim_func(
         variable_map: HashMap::new(),
         buffer_remaps: BufferRemaps::default(),
     };
-    let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 

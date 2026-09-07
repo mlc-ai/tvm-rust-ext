@@ -25,8 +25,8 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    get_operator, global_name_supply, int_value, is_buffer_type, is_pointer_type,
-    mutate_stmt_default, mutate_stmt_expr_default, value_error, with_prim_func_attr,
+    binary_op, get_operator, global_name_supply, int_value, is_buffer_type, is_pointer_type,
+    mutate_stmt_default, mutate_stmt_expr_default, storage_bytes, value_error, with_prim_func_attr,
     with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
@@ -82,7 +82,7 @@ pub fn split_host_device_module(module: IRModule) -> Result<IRModule> {
             names: &names,
             device_functions: &mut device_functions,
         };
-        let body: Stmt = structural_mutate(function.body.clone(), &mut splitter)?.try_into()?;
+        let body: Stmt = structural_mutate(function.body().clone(), &mut splitter)?.try_into()?;
         functions.push((global, BaseFunc::from(with_prim_func_body(function, body))));
     }
     functions.extend(device_functions);
@@ -114,7 +114,7 @@ fn annotate_device_regions(function: PrimFunc) -> Result<PrimFunc> {
     let mut annotator = DeviceRegionAnnotator {
         device_target: target.without_host()?,
     };
-    let body: Stmt = structural_mutate(function.body.clone(), &mut annotator)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut annotator)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -386,7 +386,7 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
         let target = function_target(&function)?;
         rewriter.current_host_target = target.host()?;
         rewriter.current_target = Some(target.without_host()?);
-        let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+        let body: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
         rewritten.push((global, BaseFunc::from(with_prim_func_body(function, body))));
         rewriter.current_target = None;
         rewriter.current_host_target = None;
@@ -414,7 +414,7 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
                 .get(&identity)
                 .ok_or_else(|| value_error("missing device kernel information"))?;
             let body = rewrite_kernel_returns(
-                function.body.clone(),
+                function.body().clone(),
                 info.target.kind_name()?.as_str() != "cuda",
             )?;
             function = PrimFunc::from_complete_fields(
@@ -452,7 +452,7 @@ fn collect_called_globals(module: &IRModule) -> Result<HashSet<ObjectIdentity>> 
             continue;
         };
         structural_walk(
-            &function.body,
+            function.body(),
             |call: Call| {
                 if call.op.as_node::<GlobalVarObj>().is_some() {
                     called.insert(ObjectIdentity::of(&call.op));
@@ -497,7 +497,7 @@ fn collect_kernel_info(global: &GlobalVar, function: &PrimFunc) -> Result<Kernel
             .unwrap_or(0)
             == 1,
     };
-    structural_walk(&function.body, &mut collector, WalkOrder::PreOrder)?;
+    structural_walk(function.body(), &mut collector, WalkOrder::PreOrder)?;
     if collector.dynamic_shared_bytes.is_none() {
         collector.dynamic_shared_bytes = collector.inferred_shared_bytes;
     }
@@ -634,10 +634,10 @@ impl KernelInfoCollector {
         }
         let mut size: PrimExpr = IntImm::new("int32", 1)?.into();
         for extent in ty.shape.iter() {
-            size = crate::ir::prim::Mul::new(size, extent)?.into();
+            size = binary_op("tirx._OpMul", size, extent)?;
         }
-        let bytes = (i64::from(ty.dtype.dtype.bits) * i64::from(ty.dtype.dtype.lanes) + 7) / 8;
-        size = crate::ir::prim::Mul::new(size, IntImm::new("int64", bytes)?)?.into();
+        let bytes = IntImm::new("int64", storage_bytes(&ty.dtype)?)?;
+        size = binary_op("tirx._OpMul", size, bytes.into())?;
         if !self.bindings.is_empty() {
             size = substitute_prim(&size, &self.bindings)?;
         }

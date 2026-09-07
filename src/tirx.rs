@@ -1047,7 +1047,21 @@ pub struct PrimFuncObj {
     base: BaseFuncObj,
     pub params: Array<Var>,
     pub ret_type: crate::ir::Type,
-    pub body: Stmt,
+    // Native passes can move this field out and throw before replacing it.
+    // Keep the moved-from null state valid for Rust's field destructor.
+    body: Option<Stmt>,
+}
+
+impl PrimFuncObj {
+    /// Borrow the body of an initialized function without cloning its handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if native code has left the function without a body.
+    #[inline]
+    pub fn body(&self) -> &Stmt {
+        self.body.as_ref().expect("PrimFunc has no body")
+    }
 }
 
 /// Reference-counted handle to a TIR primitive function.
@@ -1264,7 +1278,7 @@ impl PrimFunc {
                 base: BaseFuncObj::new(span, ty, attrs),
                 params,
                 ret_type,
-                body,
+                body: Some(body),
             }),
         }
     }

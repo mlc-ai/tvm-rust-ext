@@ -26,9 +26,10 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, get_operator, is_opaque_expr, is_pointer_type, mutate_buffer_region_with_buffer,
-    mutate_expr_default, mutate_stmt_default, mutate_stmt_expr_default, visit_buffer_definition,
-    visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
+    array_same_as, binary_op, cast_prim_expr, get_operator, is_opaque_expr, is_pointer_type,
+    mutate_buffer_region_with_buffer, mutate_expr_default, mutate_stmt_default,
+    mutate_stmt_expr_default, visit_buffer_definition, visit_stmt_expr_default,
+    with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::{
@@ -36,7 +37,8 @@ use crate::ir::prim::{
     LT, NE,
 };
 use crate::ir::{
-    Call, CallObj, Expr, FloatImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var,
+    Call, CallObj, Expr, FloatImm, PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj,
+    TensorLoad, Type, Var,
 };
 use crate::target::Target;
 use crate::te::CommReducer;
@@ -125,7 +127,7 @@ enum UnsupportedFloat {
 }
 
 impl UnsupportedFloat {
-    fn matches(self, ty: &PrimType) -> bool {
+    fn matches(self, ty: &PrimTypeObj) -> bool {
         let code = ty.dtype.code;
         match self {
             Self::BFloat16 => code == DLDataTypeCode::kDLBfloat as u8 && ty.dtype.bits == 16,
@@ -171,7 +173,7 @@ fn compute_legalize_prim_func(
             plan_default,
         ),
     );
-    structural_visit(&function.body, &mut planner)?;
+    structural_visit(function.body(), &mut planner)?;
     let mut plan = planner.into_state();
     plan.finish();
     let mut legalizer = ComputeLegalizer::new(
@@ -180,7 +182,7 @@ fn compute_legalize_prim_func(
         plan.buffer_remaps,
         plan.variable_remaps,
     )?;
-    let body: Stmt = structural_mutate(function.body.clone(), &mut legalizer)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut legalizer)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -454,12 +456,12 @@ impl ComputeLegalizer {
         let inner = self.promote(inner)?;
         let target: PrimType = value.ty.clone().try_cast()?;
         if self.unsupported.matches(&target) {
-            return semantic_cast(self.promote_type_for(&target)?, inner);
+            return cast_prim_expr(inner, self.promote_type_for(&target)?);
         }
         if inner.same_as(&value.value) {
             return Ok(value.into());
         }
-        semantic_cast(target, inner)
+        cast_prim_expr(inner, target)
     }
 
     fn mutate_select(&mut self, value: Select, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -817,7 +819,7 @@ impl DTypeConverter {
 
         if mantissa_delta < 0 {
             let shift = i64::from(-mantissa_delta);
-            let least_kept = binary_global(
+            let least_kept = binary_op(
                 "tirx.bitwise_and",
                 shift_global("tirx.right_shift", source_bits.clone(), shift)?,
                 typed_constant(&source_uint, 1)?,
@@ -833,13 +835,13 @@ impl DTypeConverter {
             let mut result = if mantissa_delta >= 0 {
                 shift_global(
                     "tirx.left_shift",
-                    semantic_cast(target_uint.clone(), source_bits)?,
+                    cast_prim_expr(source_bits, target_uint.clone())?,
                     i64::from(mantissa_delta),
                 )?
             } else {
-                semantic_cast(
-                    target_uint.clone(),
+                cast_prim_expr(
                     shift_global("tirx.right_shift", source_bits, i64::from(-mantissa_delta))?,
+                    target_uint.clone(),
                 )?
             };
             if bias_delta > 0 {
@@ -863,20 +865,20 @@ impl DTypeConverter {
         let mantissa = if mantissa_delta >= 0 {
             shift_global(
                 "tirx.left_shift",
-                semantic_cast(target_uint.clone(), source_bits.clone())?,
+                cast_prim_expr(source_bits.clone(), target_uint.clone())?,
                 i64::from(mantissa_delta),
             )?
         } else {
-            semantic_cast(
-                target_uint.clone(),
+            cast_prim_expr(
                 shift_global(
                     "tirx.right_shift",
                     source_bits.clone(),
                     i64::from(-mantissa_delta),
                 )?,
+                target_uint.clone(),
             )?
         };
-        let mantissa = binary_global(
+        let mantissa = binary_op(
             "tirx.bitwise_and",
             mantissa,
             typed_constant(&target_uint, (1_i64 << target_config.mantissa) - 1)?,
@@ -888,13 +890,13 @@ impl DTypeConverter {
         )?;
         let sign = shift_global(
             "tirx.left_shift",
-            semantic_cast(
-                target_uint.clone(),
+            cast_prim_expr(
                 shift_global(
                     "tirx.right_shift",
                     source_bits,
                     i64::from(source_config.mantissa + source_config.exponent),
                 )?,
+                target_uint.clone(),
             )?,
             i64::from(target_config.mantissa + target_config.exponent),
         )?;
@@ -911,12 +913,12 @@ impl DTypeConverter {
             };
             let exponent = shift_global(
                 "tirx.left_shift",
-                semantic_cast(target_uint, exponent)?,
+                cast_prim_expr(exponent, target_uint)?,
                 i64::from(target_config.mantissa),
             )?;
-            binary_global(
+            binary_op(
                 "tirx.bitwise_or",
-                binary_global("tirx.bitwise_or", mantissa, exponent)?,
+                binary_op("tirx.bitwise_or", mantissa, exponent)?,
                 sign,
             )?
         } else {
@@ -930,12 +932,12 @@ impl DTypeConverter {
             )?;
             let exponent = shift_global(
                 "tirx.left_shift",
-                semantic_cast(target_uint.clone(), exponent.into())?,
+                cast_prim_expr(exponent.into(), target_uint.clone())?,
                 i64::from(target_config.mantissa),
             )?;
-            let populated = binary_global(
+            let populated = binary_op(
                 "tirx.bitwise_or",
-                binary_global("tirx.bitwise_or", mantissa, exponent)?,
+                binary_op("tirx.bitwise_or", mantissa, exponent)?,
                 sign,
             )?;
             if_then_else(
@@ -1030,24 +1032,12 @@ fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {
 fn typed_constant(ty: &PrimType, value: i64) -> Result<PrimExpr> {
     let scalar_type = with_lanes(ty, 1)?;
     let scalar: PrimExpr = crate::ir::IntImm::from_dtype(scalar_type.dtype, value)?.into();
-    semantic_cast(ty.clone(), scalar)
-}
-
-fn semantic_cast(target: PrimType, value: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx._cast")
-        .call_tuple((target, value, Option::<crate::ir::Span>::None))?
-        .try_into()
+    cast_prim_expr(scalar, ty.clone())
 }
 
 fn reinterpret_value(target: PrimType, value: PrimExpr) -> Result<PrimExpr> {
     tvm_ffi::cached_global_func!("tirx.reinterpret")
         .call_tuple((target, value, Option::<crate::ir::Span>::None))?
-        .try_into()
-}
-
-fn binary_global(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
         .try_into()
 }
 
@@ -1112,7 +1102,7 @@ fn storage_legalize_prim_func(
         .iter()
         .map(|parameter| legalizer.remap_variable_definition(parameter))
         .collect::<Result<Vec<_>>>()?;
-    let body: Stmt = structural_mutate(function.body.clone(), &mut legalizer)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut legalizer)?.try_into()?;
     function.copy_with(params, body)
 }
 
@@ -1137,7 +1127,7 @@ impl StorageLegalizer {
         })
     }
 
-    fn storage_type(&self, ty: &PrimType) -> Result<PrimType> {
+    fn storage_type(&self, ty: &PrimTypeObj) -> Result<PrimType> {
         PrimType::from_dtype(DLDataType {
             code: DLDataTypeCode::kDLUInt as u8,
             bits: ty.dtype.bits,
@@ -1146,18 +1136,18 @@ impl StorageLegalizer {
     }
 
     fn remap_variable_definition(&mut self, variable: Var) -> Result<Var> {
-        let Ok(pointer) = variable.ty.clone().try_cast::<PointerType>() else {
+        let Some(pointer) = variable.ty.as_node::<PointerTypeObj>() else {
             return Ok(variable);
         };
-        let Ok(element) = pointer.element_type().clone().try_cast::<PrimType>() else {
+        let Some(element) = pointer.element_type.as_node::<PrimTypeObj>() else {
             return Ok(variable);
         };
-        if !self.unsupported.matches(&element) {
+        if !self.unsupported.matches(element) {
             return Ok(variable);
         }
         let mapped = Var::with_type(
             variable.name.as_str(),
-            PointerType::new(self.storage_type(&element)?, pointer.storage_scope())?,
+            PointerType::new(self.storage_type(element)?, pointer.storage_scope.as_str())?,
         );
         self.variable_remaps
             .insert(ObjectIdentity::of(&variable), mapped.clone());

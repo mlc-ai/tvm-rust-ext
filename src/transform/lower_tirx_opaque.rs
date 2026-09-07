@@ -39,7 +39,7 @@ const VIRTUAL_THREAD: &str = "virtual_thread";
 /// `tirx::TIRxOpaqueLower`.
 pub fn lower_tirx_opaque_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let mut lowerer = TIRxOpaqueLower::default();
-    let body = structural_mutate(function.body.clone(), &mut lowerer)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut lowerer)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 

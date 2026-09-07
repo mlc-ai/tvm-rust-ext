@@ -63,6 +63,11 @@ one thread; closing this type-erasure gap requires a separate tvm-ffi fix.
 Rust reads them through `callbacks()` and `shared_state()` snapshots so a
 native update cannot invalidate an outstanding Rust field borrow.
 
+`PrimFunc::body()` borrows the required body without cloning. Its private storage
+is `Option<Stmt>` because a native pass can move the body out and fail before
+writing it back. This lets Rust destroy the moved-from function safely;
+constructors still require a non-null `Stmt`.
+
 Constructor signatures also expose where work can actually fail. Lossless
 complete-field allocation takes exact stored field types by value, moves them
 without hidden clone/conversion work, and returns the object directly. Parsing,
@@ -134,7 +139,8 @@ passes using structural equality.
 
 ### Scope and remaining gaps
 
-Coverage is compared with TVM `15b607d6bf`, the native build used for the tests.
+Coverage is compared with TVM `7e06fc6c1420d0188eb9d889bd74e2e1fb76e448`,
+built with tvm-ffi `897ece64d6ad0857f803e68221375021867e81a5`.
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
 All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 `SBlockRealize` have bindings. The shared scalar/vector expressions, buffer
@@ -158,6 +164,11 @@ this does not mean every native method or convenience constructor is exposed.
   branch constraints, and accumulates assertions across sequence siblings.
   Constraints are removed when their enclosing scope finishes, including on
   recursive errors. Derived constraint facts are shared with `RemoveNoOp`.
+- Default mutation of binary expressions, `Cast`, `Not`, and `Select` uses
+  TVM's registered structural hooks. The shared Rust helpers retain the
+  `StmtExprVisitor`/`StmtExprMutator` rules where they differ from structural
+  traversal: definition handling, buffer remaps, and vector result-type
+  recomputation still need explicit recursion.
 - Supporting APIs are not exhaustive either: operator argument metadata
   (`ArgumentInfo`), `EnvFunc`, and general pass instrumentation have no typed
   wrappers yet. These are not missing TIRx statement kinds.
@@ -213,11 +224,13 @@ Rust implementations, and native semantic blockers retain their identity,
 resource ownership, or virtual ABI behind opaque wrappers. The acceptance and
 pass suites together exercise both object origins and all four structural APIs.
 
-This repository is not yet the one-command generator itself.  Reaching that
-state still requires `RustGenerator` in `tvm-ffi-stubgen`, extraction of native
-layout attributes into generated Rust, enum metadata, and a maintained set of
-reviewed Rust semantic-constructor templates. Reusable `RValueRef<T>`
-support is already implemented and tested.
+This repository remains a handwritten reference, not generated TVM bindings.
+The pinned tvm-ffi already provides `tvm-ffi-stubgen --target rust`, complete
+and opaque wrappers, layout checks, and directives for enums and custom
+constructors. The remaining work is to configure it for this TIRx surface,
+retain the reviewed semantic constructors, and run the same acceptance tests
+against the generated output. See [STUBGEN_FEEDBACK.md](STUBGEN_FEEDBACK.md)
+for the boundary between existing generator support and the target contract.
 
 ## Building and testing
 
@@ -233,14 +246,12 @@ as packages:
   executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
-Both pip packages must be built from the same tvm-ffi commit, at or after the
-`tvm-ffi` rev pinned in `Cargo.toml`, so that the Rust bindings, `libtvm_ffi`,
-and `libtvm_compiler` agree on the object ABI.  The TVM build must also include
-[apache/tvm#20249](https://github.com/apache/tvm/pull/20249) and
-[apache/tvm#20256](https://github.com/apache/tvm/pull/20256) (commit
-`c836e8c942` or a descendant).  Those changes define the `ir.prim` type keys
-and the typed `tirx.BufferRegion` layout used by these bindings; matching only
-the tvm-ffi revision is not sufficient.  Any Python environment works (venv,
+Use the exact TVM revision listed above and build both pip packages with the
+tvm-ffi commit pinned in `Cargo.toml` and `requirements.txt`. The TVM revision
+also determines the IR layouts, structural hooks, and definition-region field
+flags; matching only the tvm-ffi revision is not sufficient. Newer revisions
+must be checked with the binding-contract and pass-parity tests before updating
+these pins. Any Python environment works (venv,
 uv, conda, system site-packages); the only requirements are that
 `tvm-ffi-config` and `python`/`python3` of that environment are on `PATH` (or
 `TVM_PYTHON` names the interpreter).  With such an environment active:

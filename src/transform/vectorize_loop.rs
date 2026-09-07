@@ -25,14 +25,14 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    array_same_as, get_operator, int_value, mutate_stmt_expr_default, operator_identity,
-    option_same_as, value_error, with_prim_func_body,
+    array_same_as, binary_op, get_operator, int_value, mutate_stmt_expr_default, option_same_as,
+    value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
 use crate::ir::prim::{
-    Add, And, Broadcast, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not, Or, Ramp,
-    Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
+    Add, And, Broadcast, BroadcastObj, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not,
+    Or, Ramp, RampObj, Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
 };
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{Bind, BufferStore, For, ForKind, IfThenElse, PrimFunc, PrimVar, Stmt, While};
@@ -42,10 +42,10 @@ use crate::tirx::{Bind, BufferStore, For, ForKind, IfThenElse, PrimFunc, PrimVar
 pub fn vectorize_loop_prim_func(function: PrimFunc, enable_vectorize: bool) -> Result<PrimFunc> {
     let body = if enable_vectorize {
         let mut vectorizer = LoopVectorizer;
-        structural_mutate(function.body.clone(), &mut vectorizer)?.try_into()?
+        structural_mutate(function.body().clone(), &mut vectorizer)?.try_into()?
     } else {
         let mut skipper = VectorizeSkipper;
-        structural_mutate(function.body.clone(), &mut skipper)?.try_into()?
+        structural_mutate(function.body().clone(), &mut skipper)?.try_into()?
     };
     Ok(with_prim_func_body(function, body))
 }
@@ -125,9 +125,9 @@ struct Vectorizer {
     ramp: PrimExpr,
     need_scalarize: bool,
     let_bindings: HashMap<ObjectIdentity, PrimExpr>,
-    if_then_else: ObjectIdentity,
-    reinterpret: ObjectIdentity,
-    call_llvm_pure_intrin: ObjectIdentity,
+    if_then_else: Expr,
+    reinterpret: Expr,
+    call_llvm_pure_intrin: Expr,
 }
 
 impl Vectorizer {
@@ -143,9 +143,9 @@ impl Vectorizer {
             ramp,
             need_scalarize: false,
             let_bindings: HashMap::new(),
-            if_then_else: operator_identity("ir.prim.if_then_else")?,
-            reinterpret: operator_identity("tirx.reinterpret")?,
-            call_llvm_pure_intrin: operator_identity("tirx.call_llvm_pure_intrin")?,
+            if_then_else: get_operator("ir.prim.if_then_else")?,
+            reinterpret: get_operator("tirx.reinterpret")?,
+            call_llvm_pure_intrin: get_operator("tirx.call_llvm_pure_intrin")?,
         })
     }
 
@@ -200,7 +200,7 @@ impl Vectorizer {
         let rhs = self.mutate_prim(mutator, rhs)?;
         let lanes = lane_count(&lhs).max(lane_count(&rhs));
         let scalable = is_scalable(&lhs) || is_scalable(&rhs);
-        semantic_binary(
+        binary_op(
             operation,
             broadcast_to(lhs, lanes, scalable)?,
             broadcast_to(rhs, lanes, scalable)?,
@@ -219,22 +219,22 @@ impl Vectorizer {
         let lanes = lane_count(&lhs).max(lane_count(&rhs));
         if lanes != 1 {
             if is_scalar(&lhs) {
-                if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
-                    let base = semantic_binary(operation, lhs, ramp.base.clone())?;
+                if let Some(ramp) = rhs.as_node::<RampObj>() {
+                    let base = binary_op(operation, lhs, ramp.base.clone())?;
                     let zero = IntImm::from_dtype(ramp.stride.dtype(), 0)?;
-                    let stride = semantic_binary(operation, zero.into(), ramp.stride.clone())?;
+                    let stride = binary_op(operation, zero.into(), ramp.stride.clone())?;
                     return Ok(Ramp::new(base, stride, ramp.lanes.clone())?.into());
                 }
             }
             if is_scalar(&rhs) {
-                if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
-                    let base = semantic_binary(operation, ramp.base.clone(), rhs)?;
+                if let Some(ramp) = lhs.as_node::<RampObj>() {
+                    let base = binary_op(operation, ramp.base.clone(), rhs)?;
                     return Ok(Ramp::new(base, ramp.stride.clone(), ramp.lanes.clone())?.into());
                 }
             }
         }
         let scalable = is_scalable(&lhs) || is_scalable(&rhs);
-        semantic_binary(
+        binary_op(
             operation,
             broadcast_to(lhs, lanes, scalable)?,
             broadcast_to(rhs, lanes, scalable)?,
@@ -320,28 +320,28 @@ impl Vectorizer {
         let lhs = self.mutate_prim(mutator, &value.a)?;
         let rhs = self.mutate_prim(mutator, &value.b)?;
         if !is_vector(&lhs) && !is_vector(&rhs) {
-            return semantic_binary("tirx._OpMul", lhs, rhs);
+            return binary_op("tirx._OpMul", lhs, rhs);
         }
         if is_scalable(&lhs) != is_scalable(&rhs) && is_vector(&lhs) && is_vector(&rhs) {
             return Err(value_error(
                 "fixed-length and scalable vectors cannot be mixed in multiplication",
             ));
         }
-        if let Ok(ramp) = lhs.clone().try_cast::<Ramp>() {
+        if let Some(ramp) = lhs.as_node::<RampObj>() {
             if is_scalar(&rhs) && self.is_positive(&rhs)? {
                 return Ok(Ramp::new(
-                    semantic_binary("tirx._OpMul", ramp.base.clone(), rhs.clone())?,
-                    semantic_binary("tirx._OpMul", ramp.stride.clone(), rhs)?,
+                    binary_op("tirx._OpMul", ramp.base.clone(), rhs.clone())?,
+                    binary_op("tirx._OpMul", ramp.stride.clone(), rhs)?,
                     ramp.lanes.clone(),
                 )?
                 .into());
             }
         }
-        if let Ok(ramp) = rhs.clone().try_cast::<Ramp>() {
+        if let Some(ramp) = rhs.as_node::<RampObj>() {
             if is_scalar(&lhs) && self.is_positive(&lhs)? {
                 return Ok(Ramp::new(
-                    semantic_binary("tirx._OpMul", ramp.base.clone(), lhs.clone())?,
-                    semantic_binary("tirx._OpMul", ramp.stride.clone(), lhs)?,
+                    binary_op("tirx._OpMul", ramp.base.clone(), lhs.clone())?,
+                    binary_op("tirx._OpMul", ramp.stride.clone(), lhs)?,
                     ramp.lanes.clone(),
                 )?
                 .into());
@@ -349,7 +349,7 @@ impl Vectorizer {
         }
         let lanes = lane_count(&lhs).max(lane_count(&rhs));
         let scalable = is_scalable(&lhs) || is_scalable(&rhs);
-        semantic_binary(
+        binary_op(
             "tirx._OpMul",
             broadcast_to(lhs, lanes, scalable)?,
             broadcast_to(rhs, lanes, scalable)?,
@@ -430,14 +430,14 @@ impl Vectorizer {
             ));
         }
         if is_vector(&base) && is_scalar(&stride) {
-            if let Ok(base_ramp) = base.clone().try_cast::<Ramp>() {
+            if let Some(base_ramp) = base.as_node::<RampObj>() {
                 let new_lanes = int_value(&value.lanes).ok_or_else(|| {
                     value_error("vectorizing a fixed-width Ramp requires constant lanes")
                 })?;
                 let base_lanes = int_value(&base_ramp.lanes).ok_or_else(|| {
                     value_error("vectorizing over a Ramp requires constant lanes")
                 })?;
-                let expected = semantic_binary(
+                let expected = binary_op(
                     "tirx._OpMul",
                     stride.clone(),
                     IntImm::from_dtype(stride.dtype(), base_lanes)?.into(),
@@ -535,8 +535,7 @@ impl Vectorizer {
         let Ok(return_type) = value.ty.clone().try_cast::<PrimType>() else {
             return self.mutate_non_vectorizable_call(mutator, value);
         };
-        let operator = ObjectIdentity::of(&value.op);
-        if operator == self.if_then_else && value.args.len() == 3 {
+        if value.op.same_as(&self.if_then_else) && value.args.len() == 3 {
             let condition = self.mutate_prim(mutator, &PrimExpr::try_from(value.args.get(0)?)?)?;
             if is_vector(&condition) {
                 self.need_scalarize = true;
@@ -561,7 +560,7 @@ impl Vectorizer {
             )
             .into());
         }
-        if operator == self.reinterpret && value.args.len() == 1 {
+        if value.op.same_as(&self.reinterpret) && value.args.len() == 1 {
             let input = PrimExpr::try_from(value.args.get(0)?)?;
             let mapped = self.mutate_prim(mutator, &input)?;
             if mapped.same_as(&input) {
@@ -594,7 +593,7 @@ impl Vectorizer {
             return self.mutate_non_vectorizable_call(mutator, value);
         }
 
-        let (arguments, lanes) = if operator == self.call_llvm_pure_intrin {
+        let (arguments, lanes) = if value.op.same_as(&self.call_llvm_pure_intrin) {
             let first = value.args.get(0)?;
             let (mut rest, lanes) = self.mutate_call_args(mutator, value.args.iter().skip(1))?;
             rest.insert(0, first);
@@ -845,7 +844,7 @@ impl Vectorizer {
     fn is_positive(&self, value: &PrimExpr) -> Result<bool> {
         let zero = IntImm::from_dtype(value.dtype(), 0)?;
         self.analyzer
-            .can_prove(&semantic_binary("tirx._OpGT", value.clone(), zero.into())?)
+            .can_prove(&binary_op("tirx._OpGT", value.clone(), zero.into())?)
     }
 }
 
@@ -907,7 +906,7 @@ fn broadcast_to(value: PrimExpr, lanes: u16, scalable: bool) -> Result<PrimExpr>
     if lane_count(&value) == lanes && is_scalable(&value) == scalable {
         return Ok(value);
     }
-    if let Ok(broadcast) = value.clone().try_cast::<Broadcast>() {
+    if let Some(broadcast) = value.as_node::<BroadcastObj>() {
         if is_scalable(&broadcast.value) != scalable && is_scalable(&value) != scalable {
             return Err(value_error(
                 "cannot broadcast between scalable and fixed-length vectors",
@@ -938,15 +937,9 @@ fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
         Vec::new(),
     );
     let vscale: Expr = vscale.into();
-    semantic_binary(
+    binary_op(
         "tirx._OpMul",
         PrimExpr::try_from(vscale)?,
         IntImm::new("int32", i64::from(lanes))?.into(),
     )
-}
-
-fn semantic_binary(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> {
-    tvm_ffi::Function::get_global(name)?
-        .call_tuple((lhs, rhs, Option::<crate::ir::Span>::None))?
-        .try_into()
 }

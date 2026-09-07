@@ -26,15 +26,15 @@ use tvm_ffi::{
 };
 
 use crate::ir::prim::{
-    Add, AddObj, And, AndObj, Broadcast, BroadcastObj, Cast, CastObj, Div, DivObj, EQObj, FloorDiv,
-    FloorDivObj, FloorMod, FloorModObj, GEObj, GTObj, LEObj, LTObj, Let, LetObj, Max, MaxObj, Min,
-    MinObj, Mod, ModObj, Mul, MulObj, NEObj, Not, NotObj, Or, OrObj, Ramp, RampObj, Select,
-    SelectObj, Shuffle, ShuffleObj, StringImm, StringImmObj, Sub, SubObj, EQ, GE, GT, LE, LT, NE,
+    AddObj, AndObj, Broadcast, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj,
+    GEObj, GTObj, LEObj, LTObj, Let, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj,
+    Ramp, RampObj, SelectObj, Shuffle, ShuffleObj, StringImm, StringImmObj, SubObj,
 };
 use crate::ir::{
-    Call, CallObj, DictAttrs, Expr, FloatImmObj, GlobalVarObj, IntImmObj, Op, OpObj, OpaqueExprObj,
-    PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, TensorLoadObj,
-    Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, UniqueNameSupply, Var, VarObj,
+    Call, CallObj, DictAttrs, Expr, FloatImmObj, GlobalVarObj, IntImm, IntImmObj, Op, OpObj,
+    OpaqueExprObj, PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad,
+    TensorLoadObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, UniqueNameSupply, Var,
+    VarObj,
 };
 use crate::tirx::{
     AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj,
@@ -53,8 +53,13 @@ pub(super) fn get_operator(name: &str) -> Result<Expr> {
     Op::get(name).map(Into::into)
 }
 
-pub(super) fn operator_identity(name: &str) -> Result<ObjectIdentity> {
-    Ok(ObjectIdentity::of(&get_operator(name)?))
+pub(super) fn const_handle(value: i64) -> Result<Expr> {
+    Ok(Call::new(
+        PointerType::new(PrimType::void(), "")?,
+        get_operator("tirx.reinterpret")?,
+        vec![IntImm::new("uint64", value)?.into()],
+    )
+    .into())
 }
 
 pub(super) fn global_name_supply(module: &crate::ir::IRModule) -> Result<UniqueNameSupply> {
@@ -67,6 +72,17 @@ pub(super) fn global_name_supply(module: &crate::ir::IRModule) -> Result<UniqueN
 
 pub(super) fn value_error(message: &str) -> tvm_ffi::Error {
     tvm_ffi::Error::new(tvm_ffi::VALUE_ERROR, message, "")
+}
+
+/// Decode a fixed lane count; negative encodings describe scalable vectors.
+pub(super) fn fixed_lanes(ty: &PrimType) -> Result<i64> {
+    i16::try_from(ty.dtype.lanes)
+        .map(i64::from)
+        .map_err(|_| value_error("scalable vector has no fixed lane count"))
+}
+
+pub(super) fn storage_bytes(ty: &PrimType) -> Result<i64> {
+    Ok((i64::from(ty.dtype.bits) * fixed_lanes(ty)? + 7) / 8)
 }
 
 /// Exit nested analyzer constraints inside-out, preserving the original error.
@@ -159,7 +175,7 @@ pub(super) fn with_prim_func_attr(
         attrs,
         function.params.clone(),
         function.ret_type.clone(),
-        function.body.clone(),
+        function.body().clone(),
     )
 }
 
@@ -177,7 +193,7 @@ pub(super) fn without_prim_func_attr(function: PrimFunc, key: &str) -> PrimFunc 
         attrs,
         function.params.clone(),
         function.ret_type.clone(),
-        function.body.clone(),
+        function.body().clone(),
     )
 }
 
@@ -200,7 +216,7 @@ pub(super) fn binary_op(name: &str, lhs: PrimExpr, rhs: PrimExpr) -> Result<Prim
 /// the dynamic type does not match. Default mutators test several node types
 /// in sequence, so keep failed probes borrowed and create one owning handle
 /// only for the matching branch.
-fn clone_downcast<B>(value: &impl ObjectRefCast) -> Result<Option<B>>
+pub(super) fn clone_downcast<B>(value: &impl ObjectRefCast) -> Result<Option<B>>
 where
     B: ObjectRefCore + AnyCompatible,
 {
@@ -868,18 +884,6 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
             .copy_with(let_expr.var.clone(), bound_value, body)
             .into());
     }
-    if let Some(select) = clone_downcast::<Select>(&value)? {
-        let condition: PrimExpr = mutator.mutate(dispatch, &select.condition)?.try_into()?;
-        let true_value: PrimExpr = mutator.mutate(dispatch, &select.true_value)?.try_into()?;
-        let false_value: PrimExpr = mutator.mutate(dispatch, &select.false_value)?.try_into()?;
-        if condition.same_as(&select.condition)
-            && true_value.same_as(&select.true_value)
-            && false_value.same_as(&select.false_value)
-        {
-            return Ok(value);
-        }
-        return Ok(select.copy_with(condition, true_value, false_value).into());
-    }
     if value.as_node::<OpaqueExprObj>().is_some()
         || value.as_node::<GlobalVarObj>().is_some()
         || value.as_node::<OpObj>().is_some()
@@ -888,49 +892,6 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         || value.as_node::<StringImmObj>().is_some()
     {
         return Ok(value);
-    }
-    macro_rules! mutate_binary {
-        ($node:ty) => {
-            if let Some(binary) = clone_downcast::<$node>(&value)? {
-                let a: PrimExpr = mutator.mutate(dispatch, &binary.a)?.try_into()?;
-                let b: PrimExpr = mutator.mutate(dispatch, &binary.b)?.try_into()?;
-                if a.same_as(&binary.a) && b.same_as(&binary.b) {
-                    return Ok(value);
-                }
-                return Ok(binary.copy_with(a, b).into());
-            }
-        };
-    }
-    mutate_binary!(Add);
-    mutate_binary!(Sub);
-    mutate_binary!(Mul);
-    mutate_binary!(Div);
-    mutate_binary!(Mod);
-    mutate_binary!(FloorDiv);
-    mutate_binary!(FloorMod);
-    mutate_binary!(Min);
-    mutate_binary!(Max);
-    mutate_binary!(EQ);
-    mutate_binary!(NE);
-    mutate_binary!(LT);
-    mutate_binary!(LE);
-    mutate_binary!(GT);
-    mutate_binary!(GE);
-    mutate_binary!(And);
-    mutate_binary!(Or);
-    if let Some(cast) = clone_downcast::<Cast>(&value)? {
-        let operand: PrimExpr = mutator.mutate(dispatch, &cast.value)?.try_into()?;
-        if operand.same_as(&cast.value) {
-            return Ok(value);
-        }
-        return Ok(cast.copy_with(cast.ty.clone().try_cast()?, operand).into());
-    }
-    if let Some(not) = clone_downcast::<Not>(&value)? {
-        let operand: PrimExpr = mutator.mutate(dispatch, &not.a)?.try_into()?;
-        if operand.same_as(&not.a) {
-            return Ok(value);
-        }
-        return Ok(not.copy_with(operand).into());
     }
     if let Some(ramp) = clone_downcast::<Ramp>(&value)? {
         let base: PrimExpr = mutator.mutate(dispatch, &ramp.base)?.try_into()?;

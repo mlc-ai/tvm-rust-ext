@@ -67,7 +67,7 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
     // The first traversal discovers every variable that appears in an index
     // context.  Discarding its output matches IndexDataTypeNormalizer's C++
     // pre-pass and makes remapping independent of definition/use order.
-    structural_mutate(function.body.clone(), &mut narrower)?;
+    structural_mutate(function.body().clone(), &mut narrower)?;
     narrower.buffer_remaps.clear();
     narrower.iter_var_remap.clear();
 
@@ -89,10 +89,10 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
     }
     narrower.enabled = old_enabled;
 
-    let body: Stmt = structural_mutate(function.body.clone(), &mut narrower)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut narrower)?.try_into()?;
     let mut result = with_prim_func_body(function, body);
     if !array_same_as(&Array::new(params.clone()), &result.params) {
-        result = result.copy_with(params, result.body.clone())?;
+        result = result.copy_with(params, result.body().clone())?;
     }
     Ok(result)
 }

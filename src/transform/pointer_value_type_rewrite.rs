@@ -27,13 +27,14 @@ use tvm_ffi::{
 
 use super::utils::{
     array_same_as, binary_op, get_operator, int_value, is_opaque_expr, mutate_expr_default,
-    mutate_stmt_default, operator_identity, value_error, visit_stmt_expr_default,
+    mutate_stmt_default, value_error, visit_stmt_expr_default,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
 use crate::ir::prim::{Let, Ramp, Shuffle};
 use crate::ir::{
-    Call, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
+    Call, CallObj, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
+    VarObj,
 };
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt,
@@ -109,11 +110,11 @@ pub(super) fn pointer_value_type_rewrite_with_options(
             check_default,
         ),
     );
-    structural_visit(&function.body, &mut callbacks)?;
+    structural_visit(function.body(), &mut callbacks)?;
     let checker = callbacks.into_state();
 
     let mut rewriter = VectorTypeRewriter::new(checker.infos, aliases, analyzer, options)?;
-    let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     let substitutions = rewriter.variable_substitutions();
     let mut substituter = PointerVarSubstituter::new(substitutions.clone());
     let body: Stmt = structural_mutate(body, &mut substituter)?.try_into()?;
@@ -178,11 +179,11 @@ struct AccessChecker {
     aliases: HashMap<ObjectIdentity, Var>,
     analyzer: Analyzer,
     options: RewriteOptions,
-    masked_load: ObjectIdentity,
-    masked_store: ObjectIdentity,
-    access_ptr: ObjectIdentity,
-    address_of: ObjectIdentity,
-    buffer_data: ObjectIdentity,
+    masked_load: Expr,
+    masked_store: Expr,
+    access_ptr: Expr,
+    address_of: Expr,
+    buffer_data: Expr,
 }
 
 impl AccessChecker {
@@ -192,11 +193,11 @@ impl AccessChecker {
             aliases: HashMap::new(),
             analyzer: Analyzer::new()?,
             options,
-            masked_load: operator_identity("tirx.masked_load")?,
-            masked_store: operator_identity("tirx.masked_store")?,
-            access_ptr: operator_identity("tirx.tvm_access_ptr")?,
-            address_of: operator_identity("tirx.address_of")?,
-            buffer_data: operator_identity("tirx.buffer_data")?,
+            masked_load: get_operator("tirx.masked_load")?,
+            masked_store: get_operator("tirx.masked_store")?,
+            access_ptr: get_operator("tirx.tvm_access_ptr")?,
+            address_of: get_operator("tirx.address_of")?,
+            buffer_data: get_operator("tirx.buffer_data")?,
         })
     }
 
@@ -411,18 +412,8 @@ fn check_store(value: BufferStore, visitor: &mut VisitContext<'_, AccessChecker>
 }
 
 fn check_call(value: Call, visitor: &mut VisitContext<'_, AccessChecker>) -> Result<()> {
-    let operator = ObjectIdentity::of(&value.op);
-    let (masked_load, masked_store, access_ptr, address_of) = {
-        let state = visitor.state();
-        (
-            state.masked_load.clone(),
-            state.masked_store.clone(),
-            state.access_ptr.clone(),
-            state.address_of.clone(),
-        )
-    };
-    if operator == masked_load || operator == masked_store {
-        let is_load = operator == masked_load;
+    let is_load = value.op.same_as(&visitor.state().masked_load);
+    if is_load || value.op.same_as(&visitor.state().masked_store) {
         let buffer = BufferVar::try_from(value.args.get(0)?)?;
         let dtype = if is_load {
             value.ty.clone().try_cast::<PrimType>()?
@@ -442,7 +433,7 @@ fn check_call(value: Call, visitor: &mut VisitContext<'_, AccessChecker>) -> Res
         visitor
             .state_mut()
             .record_access(dtype, buffer.as_var(), &indices, is_load)?;
-    } else if operator == access_ptr && value.args.len() >= 3 {
+    } else if value.op.same_as(&visitor.state().access_ptr) && value.args.len() >= 3 {
         let dtype = value.args.get(0)?.try_cast::<PrimExpr>()?.type_annotation();
         if let Some(buffer) =
             get_buffer_data_var(&value.args.get(1)?, &visitor.state().buffer_data)?
@@ -452,7 +443,7 @@ fn check_call(value: Call, visitor: &mut VisitContext<'_, AccessChecker>) -> Res
                 .state_mut()
                 .record_access(dtype, &buffer, &Array::new(vec![index]), false)?;
         }
-    } else if operator == address_of && !value.args.is_empty() {
+    } else if value.op.same_as(&visitor.state().address_of) && !value.args.is_empty() {
         if let Ok(load) = value.args.get(0)?.try_cast::<TensorLoad>() {
             let buffer = BufferVar::try_from(&load.source)?;
             visitor.state_mut().record_access(
@@ -596,10 +587,10 @@ struct VectorTypeRewriter {
     buffer_cache: HashMap<ObjectIdentity, BufferVar>,
     aliases: HashMap<ObjectIdentity, Var>,
     analyzer: Analyzer,
-    masked_load: ObjectIdentity,
-    masked_store: ObjectIdentity,
-    access_ptr: ObjectIdentity,
-    buffer_data: ObjectIdentity,
+    masked_load: Expr,
+    masked_store: Expr,
+    access_ptr: Expr,
+    buffer_data: Expr,
 }
 
 impl VectorTypeRewriter {
@@ -676,10 +667,10 @@ impl VectorTypeRewriter {
             buffer_cache: HashMap::new(),
             aliases,
             analyzer,
-            masked_load: operator_identity("tirx.masked_load")?,
-            masked_store: operator_identity("tirx.masked_store")?,
-            access_ptr: operator_identity("tirx.tvm_access_ptr")?,
-            buffer_data: operator_identity("tirx.buffer_data")?,
+            masked_load: get_operator("tirx.masked_load")?,
+            masked_store: get_operator("tirx.masked_store")?,
+            access_ptr: get_operator("tirx.tvm_access_ptr")?,
+            buffer_data: get_operator("tirx.buffer_data")?,
         })
     }
 
@@ -802,7 +793,7 @@ impl VectorTypeRewriter {
     }
 
     fn rewrite_masked_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let is_load = ObjectIdentity::of(&value.op) == self.masked_load;
+        let is_load = value.op.same_as(&self.masked_load);
         let buffer = BufferVar::try_from(value.args.get(0)?)?;
         if is_load {
             let indices = value
@@ -866,14 +857,14 @@ impl VectorTypeRewriter {
 
 struct PointerVarSubstituter {
     variables: HashMap<ObjectIdentity, Var>,
-    buffer_data: ObjectIdentity,
+    buffer_data: Expr,
 }
 
 impl PointerVarSubstituter {
     fn new(variables: HashMap<ObjectIdentity, Var>) -> Self {
         Self {
             variables,
-            buffer_data: operator_identity("tirx.buffer_data")
+            buffer_data: get_operator("tirx.buffer_data")
                 .expect("tirx.buffer_data must be registered"),
         }
     }
@@ -932,7 +923,7 @@ impl PointerVarSubstituter {
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
         let mapped = mutate_expr_default(self, mutator, value.into())?;
         let call = mapped.clone().try_cast::<Call>()?;
-        if ObjectIdentity::of(&call.op) == self.buffer_data && call.args.len() == 1 {
+        if call.op.same_as(&self.buffer_data) && call.args.len() == 1 {
             if let Ok(variable) = call.args.get(0)?.try_cast::<Var>() {
                 if let Ok(buffer) = BufferVar::try_from(variable) {
                     return buffer.data();
@@ -1031,12 +1022,12 @@ fn type_annotation(dtype: &PrimType) -> Result<Expr> {
     .into())
 }
 
-fn get_buffer_data_var(value: &Expr, buffer_data: &ObjectIdentity) -> Result<Option<Var>> {
-    if let Ok(variable) = value.clone().try_cast::<Var>() {
-        return Ok(Some(variable));
+fn get_buffer_data_var(value: &Expr, buffer_data: &Expr) -> Result<Option<Var>> {
+    if value.as_node::<VarObj>().is_some() {
+        return value.clone().try_cast().map(Some);
     }
-    if let Ok(call) = value.clone().try_cast::<Call>() {
-        if ObjectIdentity::of(&call.op) == *buffer_data && call.args.len() == 1 {
+    if let Some(call) = value.as_node::<CallObj>() {
+        if call.op.same_as(buffer_data) && call.args.len() == 1 {
             return Ok(call.args.get(0)?.try_cast::<Var>().ok());
         }
     }
@@ -1084,18 +1075,17 @@ impl VectorTypeRewriter {
     }
 
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let operator = ObjectIdentity::of(&value.op);
-        if operator == self.masked_load || operator == self.masked_store {
+        if value.op.same_as(&self.masked_load) || value.op.same_as(&self.masked_store) {
             return self.rewrite_masked_call(value, mutator);
         }
-        if operator == self.buffer_data && value.args.len() == 1 {
+        if value.op.same_as(&self.buffer_data) && value.args.len() == 1 {
             if let Ok(variable) = value.args.get(0)?.try_cast::<Var>() {
                 if let Ok(buffer) = BufferVar::try_from(variable) {
                     return self.remap_buffer(buffer)?.data();
                 }
             }
         }
-        if operator != self.access_ptr {
+        if !value.op.same_as(&self.access_ptr) {
             return mutate_expr_default(self, mutator, value.into());
         }
 

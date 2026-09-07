@@ -69,7 +69,7 @@ pub fn verify_ssa_prim_func(function: &PrimFunc) -> Result<bool> {
         }
     }
     callbacks.state_mut().match_scope = false;
-    Ok(structural_visit(&function.body, &mut callbacks)?.is_none())
+    Ok(structural_visit(function.body(), &mut callbacks)?.is_none())
 }
 
 /// Build the read-only `tirx.VerifySSA` module pass.

@@ -20,6 +20,90 @@
 use super::*;
 
 #[test]
+fn native_pass_can_move_a_rust_function_body_and_fail() -> Result<()> {
+    load_tvm_compiler();
+
+    fn warp_function(dtype: &str, attrs: DictAttrs) -> Result<PrimFunc> {
+        let buffer =
+            BufferType::new("warp", dtype, vec![int_expression(64)])?.new_var("warp_buffer");
+        let thread = Var::new("thread_idx", "int32")?;
+        let axis = IterVar::with_metadata(
+            None,
+            thread.clone(),
+            IterVarType::kThreadIndex,
+            "threadIdx.x",
+            None,
+        )?;
+        let value = Var::new("value", dtype)?;
+        let index = Mul::new(thread, IntImm::new("int32", 2)?)?;
+        let store = BufferStore::new(buffer.clone(), value.clone(), vec![index.into()])?;
+        let scope = AttrStmt::new(axis, "thread_extent", IntImm::new("int32", 32)?, store)?;
+        let body = Stmt::sequence(vec![AllocBuffer::new(buffer)?.into(), scope.into()])?;
+        PrimFunc::with_metadata(vec![value], body, Type::missing(), attrs, None)
+    }
+
+    let native = cpp_pass("tirx.transform.LowerWarpMemory");
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([(
+        "target".into(),
+        tvm::target::Target::new("cuda")?.into(),
+    )]));
+    for dtype in ["int32", "int32x4"] {
+        for in_pipeline in [false, true] {
+            let function = if in_pipeline {
+                PrimFunc::with_metadata(
+                    Vec::new(),
+                    Evaluate::from_i64(0)?,
+                    Type::missing(),
+                    attrs.clone(),
+                    None,
+                )?
+            } else {
+                warp_function(dtype, attrs.clone())?
+            };
+            // Do not retain an owning identity key: that would force native COW.
+            let pointer = object_pointer(&function);
+            assert_eq!(
+                tvm::tvm_ffi::ObjectArc::strong_count(PrimFunc::data(&function)),
+                1,
+            );
+            let module = IRModule::from_expr(function)?;
+            let result = if in_pipeline {
+                let create = transform::create_prim_func_pass(
+                    "testing.CreateWarpFunction",
+                    0,
+                    Vec::new(),
+                    false,
+                    move |input| warp_function(dtype, input.attrs.clone()),
+                )?;
+                let pipeline = transform::sequential(vec![create, native.clone()], "testing.Warp")?;
+                // Retaining the initial module must not hide an error while
+                // destroying a fresh Rust allocation created inside Sequential.
+                let result = pipeline.run(module.clone());
+                drop(module);
+                result
+            } else {
+                native.run(module)
+            };
+            if dtype == "int32" {
+                let output = result?;
+                let function: PrimFunc = output.functions.iter().next().unwrap().1.try_cast()?;
+                assert!(function.body().as_node::<tvm::tirx::SeqStmtObj>().is_some());
+                if !in_pipeline {
+                    assert_eq!(object_pointer(&function), pointer);
+                }
+            } else {
+                // LowerWarpMemory moves body before rejecting this vector store.
+                let error = result.err().expect("native pass should reject the store");
+                assert!(error
+                    .to_string()
+                    .contains("can only handle continuous store"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn rust_lower_warp_memory_matches_cpp_for_flat_buffer_access() {
     load_tvm_compiler();
     let buffer_type = BufferType::new("warp", "int32", vec![int_expression(64)]).unwrap();
@@ -169,34 +253,73 @@ fn rust_lower_tvm_builtin_matches_cpp_for_packed_call_stack() {
 }
 
 #[test]
-fn rust_lower_tvm_builtin_matches_cpp_for_shape_stack() {
+fn rust_lower_tvm_builtin_matches_cpp_for_shape_and_array_stack() -> Result<()> {
     load_tvm_compiler();
-    let operator = |name: &str| -> Expr { tvm::ir::Op::get(name).unwrap().into() };
+    let operator = |name: &str| tvm::ir::Op::get(name);
     let shape = Call::new(
-        PointerType::new(PrimType::new("int64").unwrap(), "global").unwrap(),
-        operator("tirx.tvm_stack_make_shape"),
+        PointerType::new(PrimType::new("int64")?, "global")?,
+        operator("tirx.tvm_stack_make_shape")?,
         vec![int_expression(4), int_expression(8)],
     );
-    let body = Evaluate::new(Call::new(
-        PrimType::new("int32").unwrap(),
-        operator("tirx.tvm_call_packed"),
-        vec![StringImm::new("testing.consume_shape").into(), shape.into()],
-    ))
-    .unwrap();
     let attrs = DictAttrs::from_dictionary(Map::from_iter([(
-        tvm::tvm_ffi::String::from("target"),
-        Any::from(tvm::target::Target::new("llvm").unwrap()),
+        "target".into(),
+        Any::from(tvm::target::Target::new("llvm")?),
     )]));
-    let function = PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs, None).unwrap();
-    let module = IRModule::from_expr(function.clone()).unwrap();
-
-    let rust_result =
-        IRModule::from_expr(transform::lower_tvm_builtin_prim_func(function).unwrap()).unwrap();
-    let cpp_result = cpp_pass("tirx.transform.LowerTVMBuiltin")
-        .run(module)
-        .unwrap();
-
-    assert_structural_equal(&rust_result, &cpp_result);
+    let native = cpp_pass("tirx.transform.LowerTVMBuiltin");
+    for (dtype, offset, supported) in [
+        (None, 0, true),
+        (Some("float32"), 0, true),
+        (Some("float32x4"), 3, true),
+        (Some("float32xvscalex4"), 0, false),
+    ] {
+        let mut parameters = Vec::new();
+        let argument: Expr = if let Some(dtype) = dtype {
+            let pointer = PointerType::new(PrimType::void(), "global")?;
+            let data = Var::with_type("data", pointer.clone());
+            let marker = Var::new("marker", dtype)?;
+            let array = Call::new(
+                pointer,
+                operator("tirx.tvm_stack_make_array")?,
+                vec![
+                    data.clone().into(),
+                    shape.clone().into(),
+                    int_expression(0),
+                    int_expression(2),
+                    marker.clone().into(),
+                    int_expression(offset),
+                ],
+            );
+            parameters.extend([data, marker]);
+            array.into()
+        } else {
+            shape.clone().into()
+        };
+        let body = Evaluate::new(Call::new(
+            PrimType::new("int32")?,
+            operator("tirx.tvm_call_packed")?,
+            vec![StringImm::new("testing.consume").into(), argument],
+        ))?;
+        let body = AttrStmt::new(0_i64, "device_id", int_expression(0), body)?;
+        let function =
+            PrimFunc::with_metadata(parameters, body, Type::missing(), attrs.clone(), None)?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone());
+        let actual = transform::lower_tvm_builtin()?.run(module);
+        assert_eq!(
+            expected.is_ok(),
+            supported,
+            "C++: {dtype:?}, offset={offset}"
+        );
+        assert_eq!(
+            actual.is_ok(),
+            supported,
+            "Rust: {dtype:?}, offset={offset}"
+        );
+        if supported {
+            assert_structural_equal(&actual?, &expected?);
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -869,7 +992,7 @@ fn rust_make_packed_api_matches_cpp_for_scalar_arguments_and_return() {
         vec![value.clone()],
         Return::new(Add::new(value, int_expression(1)).unwrap()),
         PrimType::new("int32").unwrap(),
-        attrs,
+        attrs.clone(),
         None,
     )
     .unwrap();
@@ -881,6 +1004,46 @@ fn rust_make_packed_api_matches_cpp_for_scalar_arguments_and_return() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+
+    let native = cpp_pass("tirx.transform.MakePackedAPI");
+    for (dtype, bound, supported) in [
+        ("int32", true, true),
+        ("bool", true, true),
+        ("int32", false, false),
+        ("int32x4", true, false),
+        ("float32x4", true, false),
+        ("boolx4", true, false),
+        ("int32xvscalex4", true, false),
+    ] {
+        let value = Var::new("value", dtype).unwrap();
+        let params = if bound {
+            vec![value.clone()]
+        } else {
+            Vec::new()
+        };
+        let function = PrimFunc::with_metadata(
+            params,
+            Evaluate::new(value).unwrap(),
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )
+        .unwrap();
+        let module = IRModule::from_expr(function).unwrap();
+        let expected = native.run(module.clone());
+        let actual = transform::make_packed_api_module(module);
+        assert_eq!(expected.is_ok(), supported, "C++: {dtype}, bound={bound}");
+        assert_eq!(actual.is_ok(), supported, "Rust: {dtype}, bound={bound}");
+        if supported {
+            assert_structural_equal(&actual.unwrap(), &expected.unwrap());
+        } else if !bound {
+            assert!(actual
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not passed in as API arguments"));
+        }
+    }
 }
 
 #[test]
@@ -918,7 +1081,7 @@ fn rust_make_packed_api_matches_cpp_for_buffer_argument() {
         vec![buffer.as_var().clone()],
         Return::new(load),
         PrimType::new("float32").unwrap(),
-        attrs,
+        attrs.clone(),
         None,
     )
     .unwrap();
@@ -930,6 +1093,62 @@ fn rust_make_packed_api_matches_cpp_for_buffer_argument() {
         .unwrap();
 
     assert_structural_equal(&rust_result, &cpp_result);
+    for (dtype, symbolic_shape, aligned_offset, supported) in [
+        ("float32x4", false, false, true),
+        ("float32xvscalex4", false, false, false),
+        ("int32", false, true, true),
+        ("uint1", false, false, true),
+        ("uint1", true, true, true),
+        ("int4x4", false, false, true),
+        ("uint4x4", false, false, true),
+        ("int1x4", false, false, true),
+        ("uint1x4", false, false, true),
+        ("int4", false, false, true),
+        ("int4", true, false, false),
+        ("uint4", true, false, false),
+        ("int1", true, false, false),
+    ] {
+        let shape = if symbolic_shape {
+            Var::new("n", "int64").unwrap().into()
+        } else {
+            typed_int_expression("int64", 16)
+        };
+        let offset = if aligned_offset {
+            Var::new("offset", "int64").unwrap().into()
+        } else {
+            typed_int_expression("int64", 0)
+        };
+        let buffer = BufferType::with_metadata(
+            "global",
+            PrimType::new(dtype).unwrap(),
+            vec![shape],
+            Vec::new(),
+            offset,
+            64,
+            if aligned_offset { 4 } else { 1 },
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap()
+        .new_var("buffer");
+        let function = PrimFunc::with_metadata(
+            vec![buffer.as_var().clone()],
+            Evaluate::from_i64(0).unwrap(),
+            Type::missing(),
+            attrs.clone(),
+            None,
+        )
+        .unwrap();
+        let module = IRModule::from_expr(function).unwrap();
+        let native = cpp_pass("tirx.transform.MakePackedAPI").run(module.clone());
+        let rust = transform::make_packed_api_module(module);
+        assert_eq!(native.is_ok(), supported, "C++: {dtype}");
+        assert_eq!(rust.is_ok(), supported, "Rust: {dtype}");
+        if supported {
+            assert_structural_equal(&rust.unwrap(), &native.unwrap());
+        }
+    }
 }
 
 #[test]
@@ -978,6 +1197,66 @@ fn rust_split_host_device_matches_cpp_for_cuda_thread_extent() {
             .iter()
             .any(|(global, _)| global.name_hint.as_str() == "main_with_dots_kernel"));
     }
+}
+
+#[test]
+fn rust_split_host_device_matches_cpp_for_dynamic_shared_memory() -> Result<()> {
+    load_tvm_compiler();
+    let host = tvm::target::Target::new("llvm")?;
+    let target = tvm::target::Target::new(r#"{"kind":"cuda","arch":"sm_80"}"#)?.with_host(&host)?;
+    let attrs = DictAttrs::from_dictionary(Map::from_iter([("target".into(), target.into())]));
+    let native = cpp_pass("tirx.transform.SplitHostDevice");
+    for (index_type, dtype, extent, declared_bytes, supported) in [
+        ("int32", "float32", 16, None, true),
+        ("int64", "float32", 16, None, true),
+        ("int32", "float32", 0, None, false),
+        ("int32", "float32", 0, Some(128), true),
+        ("int32", "float32xvscalex4", 16, None, false),
+    ] {
+        let buffer = BufferType::new(
+            "shared.dyn",
+            dtype,
+            vec![IntImm::new(index_type, extent)?.into()],
+        )?
+        .new_var("shared");
+        let mut body: Stmt = AllocBuffer::new(buffer)?.into();
+        if let Some(bytes) = declared_bytes {
+            body = AttrStmt::new(
+                0_i64,
+                "tirx.dyn_smem_bytes",
+                IntImm::new("int64", bytes)?,
+                body,
+            )?
+            .into();
+        }
+        let thread = IterVar::with_metadata(
+            None,
+            Var::new("threadIdx.x", "int32")?,
+            IterVarType::kThreadIndex,
+            "threadIdx.x",
+            None,
+        )?;
+        let body = AttrStmt::new(thread, "thread_extent", int_expression(32), body)?;
+        let function =
+            PrimFunc::with_metadata(Vec::new(), body, Type::missing(), attrs.clone(), None)?;
+        let module = IRModule::from_expr(function)?;
+        let expected = native.run(module.clone());
+        let actual = transform::split_host_device_module(module);
+        assert_eq!(
+            expected.is_ok(),
+            supported,
+            "C++: {index_type}, {dtype}, {extent}"
+        );
+        assert_eq!(
+            actual.is_ok(),
+            supported,
+            "Rust: {index_type}, {dtype}, {extent}"
+        );
+        if supported {
+            assert_structural_equal(&actual?, &expected?);
+        }
+    }
+    Ok(())
 }
 
 #[test]

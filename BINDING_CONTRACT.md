@@ -37,8 +37,8 @@ semantics. For an ordinary data node, generated Rust should therefore:
 4. initialize the same defaults and validate the same invariants as C++; and
 5. expose immutable data fields through the reference wrapper's `Deref`, so
    reading borrows and callers explicitly `clone()` only when they need an
-   owning handle. Native-mutable fields require private interior-mutable
-   storage and accessors that return owned snapshots.
+   owning handle. Fields native code can mutate through shared handles require
+   private interior-mutable storage and accessors that return owned snapshots.
 
 This lets Rust construct `AddObj { a, b, ... }` without a packed global call
 while C++ reflection, structural traversal, reference counting, and destruction
@@ -115,7 +115,7 @@ A binding is accepted only when every applicable check passes:
 | Cross-language ABI | a C++ registered field getter can read a Rust allocation |
 | Native behavior boundary | reuse an existing registered FFI operation when one exists; do not add a constructor-only FFI protocol |
 | Cross-language semantics | C++ structural equality accepts Rust- and C++-created equivalents |
-| Ownership | Rust and C++ may clone/drop the handle without leaks, double drops, or dangling fields |
+| Ownership | Rust and C++ may clone/drop the handle and destroy moved-from fields on native errors without leaks, double drops, or dangling fields |
 | Walk/map behavior | exact callback selection, order, definition regions, identity remapping, and COW behavior |
 | Pass parity | structural equality with the named C++ pass on representative IR |
 
@@ -160,12 +160,16 @@ a separately reviewed C++ ABI migration removes that blocker.
 
 ## Important ABI details
 
-- Rust `Option<ObjectRef>` represents a nullable C++ object handle; a field
-  known to require a defined handle uses the non-optional wrapper.
+- Rust `Option<ObjectRef>` represents a nullable C++ object handle. A field may
+  require a defined value at construction yet become null during native mutation:
+  `PrimFunc.body` uses private `Option<Stmt>` storage and a borrowing `body()`
+  accessor so native error cleanup can destroy its moved-from state. The public
+  complete-field constructor still requires `Stmt`, not an incomplete function.
 - Do not infer a field's optionality from the referenced C++ `ObjectRef`
   class's `_type_is_nullable` flag alone. Stubgen must combine the declared
-  field type with constructor behavior. An explicit `ffi::Optional<T>` uses
-  `Option<T>` for object-pointer types and `tvm_ffi::Optional<T>` for non-object
+  field type with constructor and move/destruction behavior. An explicit
+  `ffi::Optional<T>` uses `Option<T>` for object-pointer types and
+  `tvm_ffi::Optional<T>` for non-object
   types such as strings and scalars. A plain handle normally stays non-optional.
   A derived constructor may prove an exception: `SequentialSpan` intentionally leaves
   its inherited `SpanNode::source_name` undefined, so the physical Rust base

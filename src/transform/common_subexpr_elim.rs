@@ -43,13 +43,13 @@ use crate::tirx::{
 /// Eliminate repeated pure arithmetic expressions using the same two-phase
 /// plan and rewrite algorithm as TVM's `tirx::CommonSubexprElim`.
 pub fn common_subexpr_elim_prim_func(function: PrimFunc) -> Result<PrimFunc> {
-    let plan = CsePlanner::plan(&function.body)?;
+    let plan = CsePlanner::plan(function.body())?;
     if plan.insert_before.is_empty() {
         return Ok(function);
     }
 
     let mut rewriter = CseRewriter::new(plan);
-    let body = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 

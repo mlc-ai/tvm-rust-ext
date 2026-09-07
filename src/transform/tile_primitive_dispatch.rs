@@ -35,7 +35,7 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
 use crate::ir::prim::{And, AndObj, EQObj, FloorModObj, GEObj, GTObj, LEObj, LTObj, ModObj, NE};
-use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, Var};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, Var, VarObj};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, For, IfThenElse,
@@ -56,7 +56,7 @@ const POSITIVE_INFINITY: i64 = i64::MAX / 4;
 pub fn tile_primitive_dispatch_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let target = function_target(&function)?;
     let mut dispatcher = TileDispatcher::new(target)?;
-    let body = structural_mutate(function.body.clone(), &mut dispatcher)?.try_into()?;
+    let body = structural_mutate(function.body().clone(), &mut dispatcher)?.try_into()?;
     ensure_no_tile_calls(&body)?;
     Ok(with_prim_func_body(function, body))
 }
@@ -473,7 +473,7 @@ impl TileDispatcher {
             }
         }
         self.shared_state = context.shared_state();
-        Ok(implementation.body.clone())
+        Ok(implementation.body().clone())
     }
 
     fn append_buffer_statements(
@@ -502,11 +502,11 @@ impl TileDispatcher {
     }
 
     fn resolve_scope_target(&self, expression: &PrimExpr) -> Option<ScopeTarget> {
-        let variable = expression.clone().try_cast::<Var>().ok()?;
+        expression.as_node::<VarObj>()?;
         for level in self.scope_levels.iter().rev() {
             for definition in level {
                 for (dimension, candidate) in definition.def_ids.iter().enumerate() {
-                    if candidate.as_var().same_as(&variable) {
+                    if candidate.same_as(expression) {
                         return Some(ScopeTarget {
                             binding: definition.scope,
                             dimension,
@@ -750,19 +750,19 @@ impl TileDispatcher {
 
     fn modulo_target(&self, expression: &PrimExpr) -> Result<Option<(ScopeTarget, i64)>> {
         let operands = if let Some(modulo) = expression.as_node::<ModObj>() {
-            Some((modulo.a.clone(), modulo.b.clone()))
+            Some((&modulo.a, &modulo.b))
         } else {
             expression
                 .as_node::<FloorModObj>()
-                .map(|modulo| (modulo.a.clone(), modulo.b.clone()))
+                .map(|modulo| (&modulo.a, &modulo.b))
         };
         let Some((value, modulus)) = operands else {
             return Ok(None);
         };
-        let Some(target) = self.resolve_scope_target(&value) else {
+        let Some(target) = self.resolve_scope_target(value) else {
             return Ok(None);
         };
-        let Some(modulus) = integer_value(&self.analyzer.simplify(&modulus)?) else {
+        let Some(modulus) = integer_value(&self.analyzer.simplify(modulus)?) else {
             return Ok(None);
         };
         Ok((modulus > 0).then_some((target, modulus)))
@@ -1158,12 +1158,12 @@ fn remap_buffer(statement: Stmt, source: &BufferVar, target: &BufferVar) -> Resu
     if source.same_as(target) {
         return Ok(statement);
     }
-    let source_identity = ObjectIdentity::of(source.as_var());
+    let source = source.clone();
     let target = target.clone();
     structural_map(
         statement,
         move |value: BufferVar| {
-            if ObjectIdentity::of(value.as_var()) == source_identity {
+            if value.same_as(&source) {
                 target.clone()
             } else {
                 value

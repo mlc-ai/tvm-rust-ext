@@ -61,10 +61,10 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
             let previous =
                 std::mem::replace(&mut inliner.current_target, function_target(&function)?);
             let body =
-                structural_mutate(function.body.clone(), &mut inliner).and_then(Stmt::try_from);
+                structural_mutate(function.body().clone(), &mut inliner).and_then(Stmt::try_from);
             inliner.current_target = previous;
             let body = body?;
-            let updated = if body.same_as(&function.body) {
+            let updated = if body.same_as(function.body()) {
                 function
             } else {
                 with_prim_func_body(function, body)
@@ -120,7 +120,7 @@ fn collect_recursive_functions(functions: &FunctionTable) -> Result<HashSet<Obje
     for (caller_identity, (_, function)) in functions {
         let mut collector =
             VisitCallbacks::new(CallGraphState::default(), (visit_call, visit_default));
-        structural_visit(&function.body, &mut collector)?;
+        structural_visit(function.body(), &mut collector)?;
         call_graph.insert(caller_identity.clone(), collector.into_state().callees);
     }
 
@@ -245,7 +245,7 @@ impl PrimFuncInliner {
                         let specialized: PrimFunc = tvm_ffi::cached_global_func!("tirx.Specialize")
                             .call_tuple((callee, parameters))?
                             .try_into()?;
-                        return mutator.mutate(self, &specialized.body)?.try_into();
+                        return mutator.mutate(self, specialized.body())?.try_into();
                     }
                 }
             }

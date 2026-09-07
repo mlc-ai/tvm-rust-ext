@@ -107,7 +107,7 @@ fn prim_func_with_global_symbol(value: i64, symbol: Option<&str>) -> PrimFunc {
 
 fn prim_func_body_integer(function: &PrimFunc) -> i64 {
     function
-        .body
+        .body()
         .as_node::<EvaluateObj>()
         .expect("test function must contain an Evaluate")
         .value

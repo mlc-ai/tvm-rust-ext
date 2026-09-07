@@ -25,7 +25,7 @@ use tvm_ffi::{
 
 use crate::ir::{
     Call, CallObj, Expr, ExprObj, FloatImm, FloatImmObj, IntImm, IntImmObj, Op, PrimExpr, PrimType,
-    Span, Var,
+    PrimTypeObj, Span, Var,
 };
 
 /// ABI-complete Rust representation of TVM's `AddNode`.
@@ -1215,6 +1215,15 @@ fn fixed_vector_lanes(value: &PrimExpr) -> Result<usize> {
     })
 }
 
+// Select compares fixed lane counts or vscale factors, as its C++ constructor does.
+fn lanes_or_vscale_factor(dtype: DLDataType) -> Result<i32> {
+    let lanes = i32::from(dtype.lanes as i16);
+    if lanes == -1 {
+        return Err(Error::new(TYPE_ERROR, "Invalid vector lane encoding", ""));
+    }
+    Ok(lanes.abs())
+}
+
 fn vector_type_and_lanes(dtype: DLDataType, lanes: PrimExpr) -> Result<(PrimType, PrimExpr)> {
     if let Some(literal) = lanes.as_node::<IntImmObj>() {
         let count = literal.value as i32;
@@ -1329,7 +1338,9 @@ impl Select {
             ));
         }
         let result_type = matching_binary_type(&true_value, &false_value)?;
-        if condition_type.dtype.lanes != 1 && condition_type.dtype.lanes != result_type.dtype.lanes
+        if lanes_or_vscale_factor(condition_type.dtype)?
+            != lanes_or_vscale_factor(result_type.dtype)?
+            && condition_type.dtype.lanes != 1
         {
             return Err(Error::new(
                 TYPE_ERROR,
@@ -1439,13 +1450,14 @@ impl Let {
     {
         let value = value.into();
         let body = body.into();
-        var.ty.clone().try_cast::<PrimType>()?;
+        let variable_dtype = var
+            .ty
+            .as_node::<PrimTypeObj>()
+            .ok_or_else(|| Error::new(TYPE_ERROR, "Let variable must have a primitive type", ""))?
+            .dtype;
         let value = PrimExpr::try_from(value)?;
         let body = PrimExpr::try_from(body)?;
-        let same_type: bool = tvm_ffi::cached_global_func!("ffi.StructuralEqual")
-            .call_tuple((&var.ty, &value.ty, false, false))?
-            .try_into()?;
-        if !same_type {
+        if variable_dtype != value.dtype() {
             return Err(Error::new(
                 TYPE_ERROR,
                 "Let value type must match the bound variable type",

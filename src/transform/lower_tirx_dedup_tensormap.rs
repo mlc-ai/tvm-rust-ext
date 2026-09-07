@@ -25,12 +25,13 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    get_operator, int_value, mutate_stmt_expr_default, visit_stmt_expr_default, with_prim_func_body,
+    get_operator, is_evaluate_zero, mutate_stmt_expr_default, option_same_as,
+    visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
 use crate::ir::prim::StringImm;
 use crate::ir::{CallObj, Expr, PrimExpr, Var};
-use crate::tirx::{Bind, Evaluate, EvaluateObj, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
+use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
 
 const ENCODE_TILED_FUNCTION: &str = "runtime.cuTensorMapEncodeTiled";
 
@@ -47,13 +48,13 @@ pub fn lower_tirx_dedup_cu_tensor_maps_prim_func(function: PrimFunc) -> Result<P
             analyze_default,
         ),
     );
-    structural_visit(&function.body, &mut analyzer)?;
+    structural_visit(function.body(), &mut analyzer)?;
     let analysis = analyzer.into_state();
     if analysis.variable_remaps.is_empty() {
         return Ok(function);
     }
     let mut rewriter = DedupRewriter::new(analysis.operators, analysis.variable_remaps);
-    let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     Ok(with_prim_func_body(function, body))
 }
 
@@ -70,15 +71,15 @@ pub fn lower_tirx_dedup_cu_tensor_maps() -> Result<Pass> {
 
 #[derive(Clone)]
 struct TensorMapOperators {
-    stack_alloca: ObjectIdentity,
-    call_packed: ObjectIdentity,
+    stack_alloca: Expr,
+    call_packed: Expr,
 }
 
 impl TensorMapOperators {
     fn new() -> Result<Self> {
         Ok(Self {
-            stack_alloca: ObjectIdentity::of(&get_operator("tirx.tvm_stack_alloca")?),
-            call_packed: ObjectIdentity::of(&get_operator("tirx.tvm_call_packed")?),
+            stack_alloca: get_operator("tirx.tvm_stack_alloca")?,
+            call_packed: get_operator("tirx.tvm_call_packed")?,
         })
     }
 }
@@ -219,7 +220,7 @@ impl DedupRewriter {
         let mut statements = Vec::with_capacity(value.seq.len());
         for statement in value.seq.iter() {
             let mapped: Stmt = mutator.mutate(self, &statement)?.try_into()?;
-            if is_no_op(&mapped) {
+            if is_evaluate_zero(&mapped) {
                 changed = true;
                 continue;
             }
@@ -325,7 +326,7 @@ fn extract_encode_key(
     call: &CallObj,
     operators: &TensorMapOperators,
 ) -> Option<(Var, Array<Expr>)> {
-    if ObjectIdentity::of(&call.op) != operators.call_packed || call.args.len() < 2 {
+    if !call.op.same_as(&operators.call_packed) || call.args.len() < 2 {
         return None;
     }
     let function = call.args.get(0).ok()?.try_cast::<StringImm>().ok()?;
@@ -341,7 +342,7 @@ fn is_tensor_map_alloca(binding: &Bind, operators: &TensorMapOperators) -> bool 
     let Some(call) = binding.value.as_node::<CallObj>() else {
         return false;
     };
-    if ObjectIdentity::of(&call.op) != operators.stack_alloca || call.args.len() != 2 {
+    if !call.op.same_as(&operators.stack_alloca) || call.args.len() != 2 {
         return false;
     }
     call.args
@@ -351,25 +352,8 @@ fn is_tensor_map_alloca(binding: &Bind, operators: &TensorMapOperators) -> bool 
         .is_some_and(|value| value.value.as_str() == "tensormap")
 }
 
-fn is_no_op(statement: &Stmt) -> bool {
-    statement
-        .as_node::<EvaluateObj>()
-        .is_some_and(|evaluate| int_value(&evaluate.value) == Some(0))
-}
-
 fn structurally_equal(lhs: &Array<Expr>, rhs: &Array<Expr>) -> Result<bool> {
     tvm_ffi::cached_global_func!("ffi.StructuralEqual")
         .call_tuple((lhs, rhs, false, false))?
         .try_into()
-}
-
-fn option_same_as<T>(lhs: &Option<T>, rhs: &Option<T>) -> bool
-where
-    T: ObjectRefCore,
-{
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => lhs.same_as(rhs),
-        (None, None) => true,
-        _ => false,
-    }
 }

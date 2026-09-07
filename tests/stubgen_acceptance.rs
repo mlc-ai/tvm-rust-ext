@@ -66,7 +66,7 @@ fn direct_and_semantic_constructors_round_trip() {
         .expect("missing reference semantic constructor")
         .call_tuple((
             &function.params,
-            &function.body,
+            function.body(),
             &Type::missing(),
             &function.attrs,
             (),
@@ -83,7 +83,7 @@ fn direct_and_semantic_constructors_round_trip() {
         function.attrs.clone(),
         function.params.clone(),
         function.ret_type.clone(),
-        function.body.clone(),
+        function.body().clone(),
     );
     assert_cpp_structural_equal(&function, &rust_rebuilt);
 
@@ -95,7 +95,7 @@ fn direct_and_semantic_constructors_round_trip() {
         32
     );
 
-    let body = function.body.as_node::<EvaluateObj>().unwrap();
+    let body = function.body().as_node::<EvaluateObj>().unwrap();
     assert!(body.span.is_none());
     let addition = body.value.clone().try_cast::<Add>().unwrap();
     let lhs_count = ObjectArc::strong_count(<PrimExpr as ObjectRefCore>::data(&addition.a));
@@ -239,11 +239,11 @@ fn generated_bindings_support_structural_map() {
     .and_then(PrimFunc::try_from)
     .unwrap();
 
-    let mapped_body = mapped.body.as_node::<EvaluateObj>().unwrap();
+    let mapped_body = mapped.body().as_node::<EvaluateObj>().unwrap();
     let mapped_variable = mapped_body.value.as_node::<VarObj>().unwrap();
     assert_eq!(mapped_variable.name.as_str(), "x");
     assert!(mapped_body.value.same_as(&mapped.params.get(0).unwrap()));
 
-    let original_body = original.body.as_node::<EvaluateObj>().unwrap();
+    let original_body = original.body().as_node::<EvaluateObj>().unwrap();
     assert!(original_body.value.as_node::<AddObj>().is_some());
 }

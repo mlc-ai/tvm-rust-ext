@@ -52,6 +52,8 @@ const DEFAULT: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskHasDefault a
 const IGNORE: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore as i64;
 const DEF_RECURSIVE: i64 =
     TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefRecursive as i64;
+const DEF_NON_RECURSIVE: i64 =
+    TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive as i64;
 
 const SCHEMA_ANY_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"Any"}]}"#;
 const SCHEMA_ANY: &str = r#"{"type":"Any"}"#;
@@ -475,7 +477,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("var", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("value", 0, SCHEMA_EXPR),
             ("body", 0, SCHEMA_EXPR),
         ],
@@ -509,7 +511,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("var", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("value", 0, SCHEMA_EXPR),
         ],
     );
@@ -547,7 +549,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("loop_var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("loop_var", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("min", 0, SCHEMA_EXPR),
             ("extent", 0, SCHEMA_EXPR),
             ("kind", 0, SCHEMA_INT),
@@ -649,7 +651,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("buffer", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("data", 0, SCHEMA_EXPR),
         ],
     );
@@ -657,7 +659,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("buffer", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("annotations", 0, SCHEMA_ANY_MAP),
         ],
     );
@@ -674,7 +676,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("buffer", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("source", 0, SCHEMA_BUFFER_REGION),
         ],
     );
@@ -683,7 +685,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("def_ids", DEF_RECURSIVE, SCHEMA_ARRAY_VAR),
+            ("def_ids", DEF_NON_RECURSIVE, SCHEMA_ARRAY_VAR),
             ("extents", 0, SCHEMA_OPTIONAL_ARRAY_EXPR),
             ("scope", 0, SCHEMA_INT),
             ("preferred_extents", 0, SCHEMA_OPTIONAL_ARRAY_EXPR),
@@ -735,7 +737,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         Some(Tree),
         &[
             ("dom", 0, SCHEMA_RANGE),
-            ("var", DEF_RECURSIVE, SCHEMA_VAR),
+            ("var", DEF_NON_RECURSIVE, SCHEMA_VAR),
             ("iter_type", 0, SCHEMA_INT),
             ("thread_tag", 0, SCHEMA_STRING),
             ("span", DEFAULT | IGNORE, SCHEMA_SPAN),

@@ -25,8 +25,9 @@ use tvm_ffi::{
 };
 
 use super::utils::{
-    cast_prim_expr, get_operator, int_dtype_and_value, int_value, is_buffer_var, is_pointer_type,
-    mutate_stmt_expr_default, value_error, variable_name, with_prim_func_body,
+    binary_op, cast_prim_expr, const_handle, fixed_lanes, get_operator, int_dtype_and_value,
+    int_value, is_buffer_var, is_pointer_type, mutate_stmt_expr_default, storage_bytes,
+    value_error, variable_name, with_prim_func_body,
 };
 use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
@@ -117,7 +118,7 @@ pub fn make_packed_api_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     )?;
     binder.decode_all()?;
 
-    let rewritten = rewrite_returns(function.body.clone(), result.clone())?;
+    let rewritten = rewrite_returns(function.body().clone(), result.clone())?;
     let mut device_setup = Vec::new();
     let mut set_device = None;
     if binder.device_id_is_bound() {
@@ -192,13 +193,28 @@ pub fn make_packed_api_prim_func(function: PrimFunc) -> Result<PrimFunc> {
             ),
         ],
     );
-    PrimFunc::with_metadata(
+    let lowered = PrimFunc::with_metadata(
         vec![self_handle, packed_args, num_args, result],
         body,
         PrimType::new("int32")?,
         attributes,
         function.span.as_ref(),
-    )
+    )?;
+    let undefined: Array<Var> = tvm_ffi::cached_global_func!("tirx.analysis.UndefinedVars")
+        .call_tuple((lowered.body(), &lowered.params))?
+        .try_into()?;
+    if !undefined.is_empty() {
+        return Err(value_error(&format!(
+            "In PrimFunc {} variables ({}) are used, but are not passed in as API arguments",
+            global_symbol.as_str(),
+            undefined
+                .iter()
+                .map(|var| var.name.as_str().to_owned())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+    Ok(lowered)
 }
 
 /// Build TVM's `tirx.MakePackedAPI` module pass in Rust.
@@ -239,8 +255,8 @@ fn rewrite_subroutine_calls(
         packed_symbols,
         cpacked_operator: get_operator("tirx.tvm_call_cpacked")?,
     };
-    let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
-    if body.same_as(&function.body) {
+    let body: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
+    if body.same_as(function.body()) {
         Ok(function)
     } else {
         Ok(with_prim_func_body(function, body))
@@ -534,6 +550,9 @@ impl PackedAbiBinder {
 
         let primitive = parameter.ty.clone().try_cast::<PrimType>()?;
         let dtype = primitive.dtype;
+        if dtype.lanes != 1 {
+            return Err(value_error("Cannot pass vector type through packed API"));
+        }
         let value = if dtype.code == tvm_ffi::DLDataTypeCode::kDLBool as u8 {
             self.emit_type_check(
                 index,
@@ -591,7 +610,8 @@ impl PackedAbiBinder {
         } else {
             return Err(value_error("unsupported packed parameter type"));
         };
-        self.bind_scalar(parameter, value, true)
+        self.bind_scalar(parameter, value, true)?;
+        Ok(())
     }
 
     fn decode_buffer(&mut self, index: usize, parameter: Var) -> Result<()> {
@@ -647,10 +667,7 @@ impl PackedAbiBinder {
                     equal(code, IntImm::new("uint8", i64::from(ty.dtype.dtype.code))?)?,
                     equal(bits, IntImm::new("uint8", i64::from(ty.dtype.dtype.bits))?)?,
                 )?,
-                equal(
-                    lanes,
-                    IntImm::new("uint16", i64::from(ty.dtype.dtype.lanes))?,
-                )?,
+                equal(lanes, IntImm::new("uint16", fixed_lanes(&ty.dtype)?)?)?,
             )?;
             self.emit_assert(
                 dtype_matches,
@@ -732,7 +749,7 @@ impl PackedAbiBinder {
                 DLTENSOR_BYTE_OFFSET,
             )?
             .try_cast()?;
-        let data_bytes = storage_bytes(ty.dtype.dtype);
+        let data_bytes = storage_bytes(&ty.dtype)?;
         if let Some(offset) = int_value(&ty.elem_offset) {
             let expected: PrimExpr =
                 IntImm::new("uint64", offset.saturating_mul(data_bytes))?.into();
@@ -748,13 +765,50 @@ impl PackedAbiBinder {
                 divide(byte_offset, IntImm::new("uint64", data_bytes)?)?,
                 ty.elem_offset.type_annotation(),
             )?;
-            self.bind_expected(
+            let newly_bound = self.bind_expected(
                 &ty.elem_offset,
                 element_offset,
                 true,
                 index,
                 &format!("{}.byte_offset", buffer.name.as_str()),
             )?;
+            if newly_bound && ty.offset_factor > 1 {
+                let offset_type = ty.elem_offset.dtype();
+                let condition = equal(
+                    binary_op(
+                        "tirx._OpMod",
+                        ty.elem_offset.clone(),
+                        IntImm::from_dtype(offset_type, i64::from(ty.offset_factor))?.into(),
+                    )?,
+                    IntImm::from_dtype(offset_type, 0)?,
+                )?;
+                let condition = self.analyzer.simplify(&condition)?;
+                match int_value(&condition) {
+                    Some(0) => {
+                        return Err(value_error("Bind has an unmet offset alignment assertion"))
+                    }
+                    Some(1) => {}
+                    _ => self.initialization.push(
+                        crate::tirx::AssertStmt::with_metadata(
+                            condition,
+                            StringImm::new("ValueError"),
+                            vec![
+                                StringImm::new("Misaligned Tensor data on argument #"),
+                                StringImm::new(&index.to_string()),
+                                self.when_calling_imm.clone(),
+                                self.signature_imm.clone(),
+                                StringImm::new("`,\n  expected data alignment="),
+                                StringImm::new(
+                                    &(i64::from(ty.offset_factor) * data_bytes).to_string(),
+                                ),
+                                StringImm::new(" bytes"),
+                            ],
+                            None,
+                        )?
+                        .into(),
+                    ),
+                }
+            }
         }
 
         let actual_device_type = self.struct_get(
@@ -922,20 +976,21 @@ impl PackedAbiBinder {
         .into())
     }
 
-    fn bind_scalar(&mut self, variable: Var, value: PrimExpr, emit_bind: bool) -> Result<()> {
+    fn bind_scalar(&mut self, variable: Var, value: PrimExpr, emit_bind: bool) -> Result<bool> {
         let identity = ObjectIdentity::of(&variable);
         if let Some(previous) = self.definitions.get(&identity) {
             let condition = equal(previous.clone(), value)?;
             self.assertions.push(
                 crate::tirx::AssertStmt::new(condition, "ValueError", "Mismatched value")?.into(),
             );
+            Ok(false)
         } else {
             self.definitions.insert(identity, value.clone());
             if emit_bind {
                 self.initialization.push(Bind::new(variable, value)?.into());
             }
+            Ok(true)
         }
-        Ok(())
     }
 
     fn bind_expected(
@@ -945,7 +1000,7 @@ impl PackedAbiBinder {
         emit_bind: bool,
         index: usize,
         field: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if let Ok(variable) = expected.clone().try_cast::<Var>() {
             return self.bind_scalar(variable, actual, emit_bind);
         }
@@ -973,7 +1028,7 @@ impl PackedAbiBinder {
             )?
             .into(),
         );
-        Ok(())
+        Ok(false)
     }
 
     fn bind_compact_strides(
@@ -1284,16 +1339,6 @@ fn merge_nest(statements: &[Stmt], mut body: Stmt) -> Result<Stmt> {
     Ok(body)
 }
 
-fn const_handle(value: i64) -> Result<Expr> {
-    let pointer = PointerType::new(PrimType::void(), "")?;
-    Ok(Call::new(
-        pointer,
-        get_operator("tirx.reinterpret")?,
-        vec![IntImm::new("uint64", value)?.into()],
-    )
-    .into())
-}
-
 fn type_index(index: TypeIndex) -> Result<PrimExpr> {
     Ok(IntImm::new("int32", index as i64)?.into())
 }
@@ -1311,7 +1356,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::EQ::new(lhs, rhs)?.into())
+    binary_op("tirx._OpEQ", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn greater_equal<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1319,7 +1364,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::GE::new(lhs, rhs)?.into())
+    binary_op("tirx._OpGE", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn or<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1327,7 +1372,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::Or::new(lhs, rhs)?.into())
+    binary_op("tirx._OpOr", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn and<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1335,7 +1380,11 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::And::new(lhs, rhs)?.into())
+    binary_op(
+        "tirx._OpAnd",
+        lhs.into().try_cast()?,
+        rhs.into().try_cast()?,
+    )
 }
 
 fn multiply<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1343,7 +1392,11 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::Mul::new(lhs, rhs)?.into())
+    binary_op(
+        "tirx._OpMul",
+        lhs.into().try_cast()?,
+        rhs.into().try_cast()?,
+    )
 }
 
 fn divide<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1351,21 +1404,18 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    Ok(crate::ir::prim::Div::new(lhs, rhs)?.into())
-}
-
-fn is_sub_byte_integer(ty: &PrimType) -> bool {
-    matches!(
-        (ty.dtype.code, ty.dtype.bits),
-        (code, 1 | 4)
-            if code == tvm_ffi::DLDataTypeCode::kDLInt as u8
-                || code == tvm_ffi::DLDataTypeCode::kDLUInt as u8
+    binary_op(
+        "tirx._OpDiv",
+        lhs.into().try_cast()?,
+        rhs.into().try_cast()?,
     )
 }
 
-fn storage_bytes(dtype: tvm_ffi::DLDataType) -> i64 {
-    let bits = i64::from(dtype.bits).saturating_mul(i64::from(dtype.lanes));
-    (bits.saturating_add(7)) / 8
+fn is_sub_byte_integer(ty: &PrimType) -> bool {
+    let dtype = ty.dtype;
+    dtype.lanes == 1
+        && ((dtype.code == tvm_ffi::DLDataTypeCode::kDLInt as u8 && matches!(dtype.bits, 1 | 4))
+            || (dtype.code == tvm_ffi::DLDataTypeCode::kDLUInt as u8 && dtype.bits == 4))
 }
 
 fn device_type_name(device_type: i32) -> &'static str {

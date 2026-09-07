@@ -32,7 +32,7 @@ use super::utils::{
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
 use crate::ir::prim::Ramp;
-use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var, VarObj};
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IterVar, PrimFunc,
@@ -57,9 +57,9 @@ pub fn lower_warp_memory_prim_func(function: PrimFunc) -> Result<PrimFunc> {
     let warp_size = i32::try_from(warp_size).map_err(|_| value_error("warp size exceeds i32"))?;
 
     let analyzer = Analyzer::new()?;
-    bind_variable_bounds(&function.body, &analyzer)?;
+    bind_variable_bounds(function.body(), &analyzer)?;
     let mut rewriter = WarpMemoryRewriter::new(warp_size, analyzer);
-    let body: Stmt = structural_mutate(function.body.clone(), &mut rewriter)?.try_into()?;
+    let body: Stmt = structural_mutate(function.body().clone(), &mut rewriter)?.try_into()?;
     let body = update_pointer_storage_scope(body, rewriter.new_storage_scopes)?;
     Ok(with_prim_func_body(function, body))
 }
@@ -191,14 +191,14 @@ fn find_warp_default(
 }
 
 struct WarpCoeffState {
-    buffer: ObjectIdentity,
+    buffer: BufferVar,
     warp_index: PrimVar,
     analyzer: Analyzer,
     coefficient: i64,
-    mma_fill: ObjectIdentity,
-    ptx_ldmatrix: ObjectIdentity,
-    mma_fill_legacy: ObjectIdentity,
-    buffer_data: ObjectIdentity,
+    mma_fill: Expr,
+    ptx_ldmatrix: Expr,
+    mma_fill_legacy: Expr,
+    buffer_data: Expr,
 }
 
 fn find_warp_coefficient(
@@ -209,14 +209,14 @@ fn find_warp_coefficient(
 ) -> Result<i64> {
     let mut callbacks = VisitCallbacks::new(
         WarpCoeffState {
-            buffer: ObjectIdentity::of(buffer.as_var()),
+            buffer: buffer.clone(),
             warp_index,
             analyzer: analyzer.clone(),
             coefficient: 0,
-            mma_fill: ObjectIdentity::of(&get_operator("tirx.mma_fill")?),
-            ptx_ldmatrix: ObjectIdentity::of(&get_operator("tirx.ptx_legacy.ldmatrix")?),
-            mma_fill_legacy: ObjectIdentity::of(&get_operator("tirx.mma_fill_legacy")?),
-            buffer_data: ObjectIdentity::of(&get_operator("tirx.buffer_data")?),
+            mma_fill: get_operator("tirx.mma_fill")?,
+            ptx_ldmatrix: get_operator("tirx.ptx_legacy.ldmatrix")?,
+            mma_fill_legacy: get_operator("tirx.mma_fill_legacy")?,
+            buffer_data: get_operator("tirx.buffer_data")?,
         },
         (
             find_coefficient_call,
@@ -239,29 +239,19 @@ fn find_coefficient_call(
     value: Call,
     visitor: &mut VisitContext<'_, WarpCoeffState>,
 ) -> Result<()> {
-    let operator = ObjectIdentity::of(&value.op);
-    let index = if operator == visitor.state().mma_fill {
-        if value.args.len() > 1
-            && expression_buffer_identity(&value.args.get(1)?, visitor.state())?
-                == Some(visitor.state().buffer.clone())
-        {
+    let index = if value.op.same_as(&visitor.state().mma_fill) {
+        if value.args.len() > 1 && is_warp_buffer(&value.args.get(1)?, visitor.state())? {
             update_coefficient(visitor.state_mut(), int_expr_value(&value.args.get(0)?)?)?;
         }
         None
-    } else if operator == visitor.state().ptx_ldmatrix {
-        if value.args.len() > 4
-            && expression_buffer_identity(&value.args.get(3)?, visitor.state())?
-                == Some(visitor.state().buffer.clone())
-        {
+    } else if value.op.same_as(&visitor.state().ptx_ldmatrix) {
+        if value.args.len() > 4 && is_warp_buffer(&value.args.get(3)?, visitor.state())? {
             Some(value.args.get(4)?.try_cast::<PrimExpr>()?)
         } else {
             None
         }
-    } else if operator == visitor.state().mma_fill_legacy {
-        if value.args.len() > 1
-            && expression_buffer_identity(&value.args.get(1)?, visitor.state())?
-                == Some(visitor.state().buffer.clone())
-        {
+    } else if value.op.same_as(&visitor.state().mma_fill_legacy) {
+        if value.args.len() > 1 && is_warp_buffer(&value.args.get(1)?, visitor.state())? {
             update_coefficient(visitor.state_mut(), int_expr_value(&value.args.get(0)?)?)?;
         }
         None
@@ -279,7 +269,7 @@ fn find_coefficient_store(
     value: BufferStore,
     visitor: &mut VisitContext<'_, WarpCoeffState>,
 ) -> Result<()> {
-    if ObjectIdentity::of(value.buffer.as_var()) == visitor.state().buffer {
+    if value.buffer.same_as(&visitor.state().buffer) {
         if value.indices.len() != 1 {
             return Err(value_error(
                 "warp memory requires a flat one-dimensional buffer access",
@@ -309,22 +299,16 @@ fn find_coefficient_default(
     visit_stmt_expr_default(visitor, value)
 }
 
-fn expression_buffer_identity(
-    value: &Expr,
-    state: &WarpCoeffState,
-) -> Result<Option<ObjectIdentity>> {
-    if value.as_node::<VarObj>().is_some() {
-        return Ok(Some(ObjectIdentity::of(value)));
+fn is_warp_buffer(value: &Expr, state: &WarpCoeffState) -> Result<bool> {
+    if value.same_as(&state.buffer) {
+        return Ok(true);
     }
     if let Some(call) = value.as_node::<CallObj>() {
-        if ObjectIdentity::of(&call.op) == state.buffer_data && call.args.len() == 1 {
-            let variable = call.args.get(0)?;
-            if variable.as_node::<VarObj>().is_some() {
-                return Ok(Some(ObjectIdentity::of(&variable)));
-            }
+        if call.op.same_as(&state.buffer_data) && call.args.len() == 1 {
+            return Ok(call.args.get(0)?.same_as(&state.buffer));
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 fn update_coefficient_from_index(state: &mut WarpCoeffState, index: &PrimExpr) -> Result<()> {
@@ -414,7 +398,7 @@ struct WarpAccessRewriter {
     width: i32,
     warp_coefficient: i64,
     warp_group: i64,
-    special_call_indices: Vec<(ObjectIdentity, Vec<usize>)>,
+    special_call_indices: Vec<(Expr, Vec<usize>)>,
 }
 
 impl WarpAccessRewriter {
@@ -429,27 +413,12 @@ impl WarpAccessRewriter {
             warp_coefficient: 0,
             warp_group: 0,
             special_call_indices: vec![
-                (
-                    ObjectIdentity::of(&get_operator("tirx.mma_store")?),
-                    vec![3],
-                ),
-                (ObjectIdentity::of(&get_operator("tirx.mma_fill")?), vec![1]),
-                (
-                    ObjectIdentity::of(&get_operator("tirx.ptx_legacy.mma")?),
-                    vec![6, 8, 10],
-                ),
-                (
-                    ObjectIdentity::of(&get_operator("tirx.ptx_legacy.ldmatrix")?),
-                    vec![3],
-                ),
-                (
-                    ObjectIdentity::of(&get_operator("tirx.mma_store_legacy")?),
-                    vec![3],
-                ),
-                (
-                    ObjectIdentity::of(&get_operator("tirx.mma_fill_legacy")?),
-                    vec![1],
-                ),
+                (get_operator("tirx.mma_store")?, vec![3]),
+                (get_operator("tirx.mma_fill")?, vec![1]),
+                (get_operator("tirx.ptx_legacy.mma")?, vec![6, 8, 10]),
+                (get_operator("tirx.ptx_legacy.ldmatrix")?, vec![3]),
+                (get_operator("tirx.mma_store_legacy")?, vec![3]),
+                (get_operator("tirx.mma_fill_legacy")?, vec![1]),
             ],
         })
     }
@@ -515,13 +484,10 @@ impl WarpAccessRewriter {
         Stmt::sequence(vec![allocation.copy_with(new_buffer).into(), body])
     }
 
-    fn old_identity(&self) -> ObjectIdentity {
-        ObjectIdentity::of(
-            self.old_buffer
-                .as_ref()
-                .expect("warp access rewriter must be initialized")
-                .as_var(),
-        )
+    fn old_buffer(&self) -> &BufferVar {
+        self.old_buffer
+            .as_ref()
+            .expect("warp access rewriter must be initialized")
     }
 
     fn new_buffer(&self) -> BufferVar {
@@ -537,7 +503,7 @@ impl WarpAccessRewriter {
             if position + 1 >= arguments.len() {
                 continue;
             }
-            if expression_var_identity(&arguments[position]) == Some(self.old_identity()) {
+            if arguments[position].same_as(self.old_buffer()) {
                 let index = arguments[position + 1].clone().try_cast::<PrimExpr>()?;
                 let (local_index, _) = self.split_index_by_group(&index)?;
                 arguments[position] = self.new_buffer().into();
@@ -608,12 +574,11 @@ impl WarpAccessRewriter {
 #[tvm_ffi::dispatch(mutate)]
 impl WarpAccessRewriter {
     fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let identity = ObjectIdentity::of(&value.op);
-        if let Some((_, positions)) = self
+        if let Some(positions) = self
             .special_call_indices
             .iter()
-            .find(|(operator, _)| *operator == identity)
-            .cloned()
+            .find(|(operator, _)| value.op.same_as(operator))
+            .map(|(_, positions)| positions.clone())
         {
             return self.rewrite_special_call(value, &positions);
         }
@@ -621,7 +586,7 @@ impl WarpAccessRewriter {
     }
 
     fn mutate_variable(&mut self, value: Var) -> Result<Var> {
-        if ObjectIdentity::of(&value) == self.old_identity() {
+        if value.same_as(self.old_buffer()) {
             Err(value_error(
                 "warp buffer address cannot be accessed directly",
             ))
@@ -633,7 +598,7 @@ impl WarpAccessRewriter {
     fn mutate_store(&mut self, value: BufferStore, mutator: &mut Mutator) -> Result<BufferStore> {
         let stored: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
         let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if ObjectIdentity::of(value.buffer.as_var()) != self.old_identity() {
+        if !value.buffer.same_as(self.old_buffer()) {
             if stored.same_as(&value.value) && array_same_as(&indices, &value.indices) {
                 return Ok(value);
             }
@@ -648,7 +613,7 @@ impl WarpAccessRewriter {
 
     fn mutate_load(&mut self, value: TensorLoad, mutator: &mut Mutator) -> Result<Expr> {
         let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
-        if expression_var_identity(&value.source) != Some(self.old_identity()) {
+        if !value.source.same_as(self.old_buffer()) {
             if array_same_as(&indices, &value.indices) {
                 return Ok(value.into());
             }
@@ -808,10 +773,7 @@ impl PointerScopeUpdater {
         let indices: Array<PrimExpr> = mutator.mutate(self, &value.indices)?.try_into()?;
         let buffer = BufferVar::try_from(&value.source)?;
         let buffer = self.updated_buffer(&buffer)?;
-        if array_same_as(&indices, &value.indices)
-            && ObjectIdentity::of(buffer.as_var())
-                == expression_var_identity(&value.source).unwrap()
-        {
+        if array_same_as(&indices, &value.indices) && buffer.same_as(&value.source) {
             return Ok(value);
         }
         TensorLoad::from_buffer_with_span(
@@ -837,11 +799,10 @@ impl PointerScopeUpdater {
 }
 
 fn expression_uses_variable(expression: &PrimExpr, variable: &Var) -> Result<bool> {
-    let target = ObjectIdentity::of(variable);
     Ok(structural_walk(
         expression,
         |value: Var| {
-            if ObjectIdentity::of(&value) == target {
+            if value.same_as(variable) {
                 WalkResult::Interrupt
             } else {
                 WalkResult::Advance
@@ -850,12 +811,6 @@ fn expression_uses_variable(expression: &PrimExpr, variable: &Var) -> Result<boo
         WalkOrder::PreOrder,
     )?
     .is_some())
-}
-
-fn expression_var_identity(expression: &Expr) -> Option<ObjectIdentity> {
-    expression
-        .as_node::<VarObj>()
-        .map(|_| ObjectIdentity::of(expression))
 }
 
 fn function_target(function: &PrimFunc) -> Result<Target> {

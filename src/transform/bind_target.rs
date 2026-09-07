@@ -121,7 +121,7 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
                 under_gpu_scope: false,
             };
             let body: Stmt =
-                structural_mutate(primitive.body.clone(), &mut substitutor)?.try_into()?;
+                structural_mutate(primitive.body().clone(), &mut substitutor)?.try_into()?;
             *function = with_prim_func_body(primitive, body).into();
         }
     }
@@ -158,7 +158,7 @@ fn classify_calls(module: &IRModule) -> Result<ClassifiedCalls> {
             continue;
         };
         if function_attr(&function, GLOBAL_SYMBOL)?.is_some() {
-            structural_visit(&function.body, &mut visitor)?;
+            structural_visit(function.body(), &mut visitor)?;
         }
     }
     Ok(visitor.into_state())
