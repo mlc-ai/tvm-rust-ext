@@ -148,6 +148,8 @@ passes using structural equality.
 
 Coverage is compared with TVM `7e06fc6c1420d0188eb9d889bd74e2e1fb76e448`,
 built with tvm-ffi `897ece64d6ad0857f803e68221375021867e81a5`.
+The Rust crate and Python package use apache/tvm-ffi main at
+`b02536e4f3804e2e41dacf2ad2d52da805f46d90` (after the #766 revert).
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
 All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 `SBlockRealize` have bindings. The shared scalar/vector expressions, buffer
@@ -265,8 +267,10 @@ as packages:
   executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
-Use the exact TVM revision listed above and build both pip packages with the
-tvm-ffi commit pinned in `Cargo.toml` and `requirements.txt`. The TVM revision
+Use the exact TVM revision listed above and the tvm-ffi package pinned in
+`Cargo.toml` and `requirements.txt`. Build TVM with the compatible FFI headers
+listed in `requirements.txt`; newer headers rename definition-region constants
+used by this TVM revision. The TVM revision
 also determines the IR layouts, structural hooks, and definition-region field
 flags; matching only the tvm-ffi revision is not sufficient. Newer revisions
 must be checked with the binding-contract and pass-parity tests before updating
@@ -283,7 +287,7 @@ cargo test
 
 The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/ir/prim.rs`,
 and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
-(apache/tvm-ffi `897ece6`, the rev pinned in `Cargo.toml`) from the installed
+(apache/tvm-ffi `b02536e`, the rev pinned in `Cargo.toml`) from the installed
 `libtvm_compiler.so`.  Each file opens with a `prefix` directive
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an

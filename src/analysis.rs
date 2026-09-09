@@ -534,9 +534,7 @@ impl NodeStatistics {
         self.variables += 1;
         match kind {
             DefRegionKind::None => self.variable_uses += 1,
-            DefRegionKind::Recursive | DefRegionKind::NonRecursive => {
-                self.variable_definitions += 1
-            }
+            DefRegionKind::Pattern | DefRegionKind::Simple => self.variable_definitions += 1,
         }
         WalkResult::Advance
     }
@@ -619,7 +617,7 @@ fn visit_loop_body(
 ) -> Result<Option<VisitInterrupt>> {
     visitor.state_mut().loops += 1;
 
-    if let Some(interrupt) = visitor.visit_with(&node.loop_var, DefRegionKind::Recursive)? {
+    if let Some(interrupt) = visitor.visit_with(&node.loop_var, DefRegionKind::Pattern)? {
         return Ok(Some(interrupt));
     }
     if let Some(interrupt) = visitor.visit(&node.min)? {
