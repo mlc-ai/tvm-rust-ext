@@ -74,16 +74,19 @@ pub fn verify_ssa_prim_func(function: &PrimFunc) -> Result<bool> {
 
 /// Build the read-only `tirx.VerifySSA` module pass.
 pub fn verify_ssa() -> Result<Pass> {
-    create_module_pass("tirx.VerifySSA", 0, Vec::new(), false, |module| {
-        for (_, function) in module.functions.iter() {
-            if let Ok(function) = function.try_cast::<PrimFunc>() {
-                if !verify_ssa_prim_func(&function)? {
-                    return Err(Error::new(RUNTIME_ERROR, "IR is not in SSA form", ""));
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass("tirx.VerifySSA", 0, Vec::new(), false, |module| {
+            for (_, function) in module.functions.iter() {
+                if let Ok(function) = function.try_cast::<PrimFunc>() {
+                    if !verify_ssa_prim_func(&function)? {
+                        return Err(Error::new(RUNTIME_ERROR, "IR is not in SSA form", ""));
+                    }
                 }
             }
-        }
-        Ok(module)
-    })
+            Ok(module)
+        })
+    }
 }
 
 #[derive(Default)]

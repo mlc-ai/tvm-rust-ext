@@ -186,26 +186,27 @@ pub fn runtime_library_path() -> Result<PathBuf, LibraryNotFound> {
     find_library(RUNTIME_LIBRARY)
 }
 
-static COMPILER: OnceLock<Module> = OnceLock::new();
+static COMPILER: OnceLock<()> = OnceLock::new();
 static COMPILER_INIT: Mutex<()> = Mutex::new(());
 
-/// Load the TVM compiler library once for the whole process and return it.
+/// Load the TVM compiler library once for the whole process.
 ///
-/// The returned module keeps the library mapped for the lifetime of the
-/// process; its registered global functions are available through
+/// The module is retained for the lifetime of the process without sharing its
+/// non-thread-safe handle; its registered global functions are available through
 /// `tvm_ffi::Function::get_global` afterwards.  Repeated calls are cheap.
-pub fn load_compiler() -> Result<&'static Module, LoadError> {
-    if let Some(module) = COMPILER.get() {
-        return Ok(module);
+pub fn load_compiler() -> Result<(), LoadError> {
+    if COMPILER.get().is_some() {
+        return Ok(());
     }
     let _guard = COMPILER_INIT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(module) = COMPILER.get() {
-        return Ok(module);
+    if COMPILER.get().is_some() {
+        return Ok(());
     }
     let path = compiler_library_path()?;
     let module = Module::load_from_file(path.to_string_lossy())
         .map_err(|source| LoadError::Load { path, source })?;
-    Ok(COMPILER.get_or_init(|| module))
+    COMPILER.get_or_init(|| std::mem::forget(module));
+    Ok(())
 }

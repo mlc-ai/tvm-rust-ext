@@ -135,10 +135,18 @@ pub fn bind_target_module(module: IRModule, target: Target) -> Result<IRModule> 
 }
 
 /// Build TVM's `tirx.BindTarget` module pass in Rust.
-pub fn bind_target(target: Target) -> Result<Pass> {
-    create_module_pass("tirx.BindTarget", 0, Vec::new(), false, move |module| {
-        bind_target_module(module, target.clone())
-    })
+///
+/// # Safety
+///
+/// The pass captures `target`. All calls and final release, including native
+/// copies, must stay on the target's owning thread.
+pub unsafe fn bind_target(target: Target) -> Result<Pass> {
+    // SAFETY: the caller keeps the captured objects and all pass copies on their owning thread.
+    unsafe {
+        create_module_pass("tirx.BindTarget", 0, Vec::new(), false, move |module| {
+            bind_target_module(module, target.clone())
+        })
+    }
 }
 
 #[derive(Default)]

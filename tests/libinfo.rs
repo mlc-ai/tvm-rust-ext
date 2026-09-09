@@ -55,9 +55,13 @@ fn tvm_ffi_library_directory_is_recorded() {
 #[test]
 fn loading_the_compiler_registers_compiler_functions() {
     // Compiler-only services are absent until the library is loaded.
-    let module = libinfo::load_compiler().unwrap();
-    let again = libinfo::load_compiler().unwrap();
-    assert!(std::ptr::eq(module, again));
+    let threads = (0..4)
+        .map(|_| std::thread::spawn(|| libinfo::load_compiler().unwrap()))
+        .collect::<Vec<_>>();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    libinfo::load_compiler().unwrap();
     Function::get_global("ir.OpGetAttr").unwrap();
     Function::get_global("tirx.PrimFunc").unwrap();
 }

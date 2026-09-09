@@ -68,13 +68,16 @@ fn native_pass_can_move_a_rust_function_body_and_fail() -> Result<()> {
             );
             let module = IRModule::from_expr(function)?;
             let result = if in_pipeline {
-                let create = transform::create_prim_func_pass(
-                    "testing.CreateWarpFunction",
-                    0,
-                    Vec::new(),
-                    false,
-                    move |input| warp_function(dtype, input.attrs.clone()),
-                )?;
+                // SAFETY: the callback captures only a static dtype string.
+                let create = unsafe {
+                    transform::create_prim_func_pass(
+                        "testing.CreateWarpFunction",
+                        0,
+                        Vec::new(),
+                        false,
+                        move |input| warp_function(dtype, input.attrs.clone()),
+                    )
+                }?;
                 let pipeline = transform::sequential(vec![create, native.clone()], "testing.Warp")?;
                 // Retaining the initial module must not hide an error while
                 // destroying a fresh Rust allocation created inside Sequential.
@@ -1400,18 +1403,21 @@ fn rust_tile_primitive_dispatch_matches_cpp_for_scope_ids() {
 #[test]
 fn rust_tile_primitive_dispatch_matches_cpp_for_registered_dispatcher() {
     load_tvm_compiler();
-    Function::register_global(
-        "tirx.f_op_dispatcher",
-        Function::from_typed(
-            |_call: TilePrimitiveCall, context: DispatchContext| -> Result<PrimFunc> {
-                let lane = context
-                    .inter
-                    .get(&tvm::tvm_ffi::String::from("laneid"))?
-                    .expect("thread dispatch exposes laneid");
-                PrimFunc::from_body(Evaluate::new(lane.get(1)?)?)
-            },
-        ),
-    )
+    // SAFETY: the registered callback has no captured state.
+    unsafe {
+        Function::register_global(
+            "tirx.f_op_dispatcher",
+            Function::from_typed(
+                |_call: TilePrimitiveCall, context: DispatchContext| -> Result<PrimFunc> {
+                    let lane = context
+                        .inter
+                        .get(&tvm::tvm_ffi::String::from("laneid"))?
+                        .expect("thread dispatch exposes laneid");
+                    PrimFunc::from_body(Evaluate::new(lane.get(1)?)?)
+                },
+            ),
+        )
+    }
     .unwrap();
     let operator = tvm::ir::Op::get("tirx.tile.zero").unwrap();
     let call = TilePrimitiveCall::new(

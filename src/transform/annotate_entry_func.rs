@@ -74,13 +74,16 @@ fn annotate_entry_func_module(module: IRModule) -> Result<IRModule> {
 
 /// Build TVM's `tirx.AnnotateEntryFunc` module pass from the Rust translation.
 pub fn annotate_entry_func() -> Result<Pass> {
-    create_module_pass(
-        "tirx.AnnotateEntryFunc",
-        0,
-        Vec::new(),
-        false,
-        annotate_entry_func_module,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass(
+            "tirx.AnnotateEntryFunc",
+            0,
+            Vec::new(),
+            false,
+            annotate_entry_func_module,
+        )
+    }
 }
 
 fn has_nonzero_attr(function: &BaseFunc, key: &str) -> Result<bool> {

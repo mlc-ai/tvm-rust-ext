@@ -153,7 +153,7 @@ impl std::ops::Deref for PassContext {
 impl PassContext {
     /// Return the language-independent pass-configuration map.
     pub fn config(&self) -> Result<Map<String, Any>> {
-        FieldGetter::new(PassContextObj::type_index(), "config")?.get(&**self)
+        FieldGetter::new(PassContextObj::type_index(), "config")?.get(self)
     }
 }
 
@@ -179,7 +179,12 @@ pub fn sequential(passes: Vec<Pass>, name: &str) -> Result<Pass> {
 }
 
 /// Construct a TVM PrimFunc pass backed by a function-only Rust callback.
-pub fn create_prim_func_pass<F>(
+///
+/// # Safety
+///
+/// The caller must uphold [`create_prim_func_pass_with_module_context`]'s
+/// capture-threading requirements for all native copies of the pass.
+pub unsafe fn create_prim_func_pass<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -189,17 +194,25 @@ pub fn create_prim_func_pass<F>(
 where
     F: Fn(PrimFunc) -> Result<PrimFunc> + 'static,
 {
-    create_prim_func_pass_with_context(
-        name,
-        opt_level,
-        required,
-        traceable,
-        move |function, _context| pass_func(function),
-    )
+    // SAFETY: the caller guarantees the captured callback's threading contract.
+    unsafe {
+        create_prim_func_pass_with_context(
+            name,
+            opt_level,
+            required,
+            traceable,
+            move |function, _context| pass_func(function),
+        )
+    }
 }
 
 /// Construct a TVM PrimFunc pass whose callback reads the active pass context.
-pub fn create_prim_func_pass_with_context<F>(
+///
+/// # Safety
+///
+/// The caller must uphold [`create_prim_func_pass_with_module_context`]'s
+/// capture-threading requirements for all native copies of the pass.
+pub unsafe fn create_prim_func_pass_with_context<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -209,20 +222,30 @@ pub fn create_prim_func_pass_with_context<F>(
 where
     F: Fn(PrimFunc, PassContext) -> Result<PrimFunc> + 'static,
 {
-    create_prim_func_pass_with_module_context(
-        name,
-        opt_level,
-        required,
-        traceable,
-        move |function, _module, context| pass_func(function, context),
-    )
+    // SAFETY: the caller guarantees the captured callback's threading contract.
+    unsafe {
+        create_prim_func_pass_with_module_context(
+            name,
+            opt_level,
+            required,
+            traceable,
+            move |function, _module, context| pass_func(function, context),
+        )
+    }
 }
 
 /// Construct a TVM PrimFunc pass with the complete native callback context.
 ///
 /// This is the direct Rust form of C++ `CreatePrimFuncPass`: the function is
 /// followed by its containing module and the active pass context.
-pub fn create_prim_func_pass_with_module_context<F>(
+///
+/// # Safety
+///
+/// Native code retains the callback. All calls and final release, including
+/// through native copies of the pass, must uphold [`Function::from_packed`]'s
+/// capture-threading requirements. `Send + Sync` captures satisfy them without
+/// restricting the calling thread.
+pub unsafe fn create_prim_func_pass_with_module_context<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -232,11 +255,14 @@ pub fn create_prim_func_pass_with_module_context<F>(
 where
     F: Fn(PrimFunc, IRModule, PassContext) -> Result<PrimFunc> + 'static,
 {
-    let pass_func = Function::from_typed(
-        move |func: RValueRef<PrimFunc>, module: IRModule, context: PassContext| {
-            pass_func(func.into_inner(), module, context)
-        },
-    );
+    // SAFETY: the wrapper captures only pass_func; the caller upholds its contract.
+    let pass_func = unsafe {
+        Function::from_typed(
+            move |func: RValueRef<PrimFunc>, module: IRModule, context: PassContext| {
+                pass_func(func.into_inner(), module, context)
+            },
+        )
+    };
 
     let pass_info = create_pass_info(name, opt_level, required, traceable)?;
 
@@ -249,7 +275,12 @@ where
 ///
 /// A `None` result has the same meaning as a null `PrimFunc` returned by C++:
 /// the native PrimFunc pass removes that function from its module.
-pub(super) fn create_optional_prim_func_pass<F>(
+///
+/// # Safety
+///
+/// The caller must uphold [`create_prim_func_pass_with_module_context`]'s
+/// capture-threading requirements for all native copies of the pass.
+pub(super) unsafe fn create_optional_prim_func_pass<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -259,11 +290,14 @@ pub(super) fn create_optional_prim_func_pass<F>(
 where
     F: Fn(PrimFunc) -> Result<Option<PrimFunc>> + 'static,
 {
-    let pass_func = Function::from_typed(
-        move |func: RValueRef<PrimFunc>, _module: IRModule, _context: PassContext| {
-            pass_func(func.into_inner())
-        },
-    );
+    // SAFETY: the wrapper captures only pass_func; the caller upholds its contract.
+    let pass_func = unsafe {
+        Function::from_typed(
+            move |func: RValueRef<PrimFunc>, _module: IRModule, _context: PassContext| {
+                pass_func(func.into_inner())
+            },
+        )
+    };
     let pass_info = create_pass_info(name, opt_level, required, traceable)?;
 
     tvm_ffi::cached_global_func!("tirx.transform.CreatePrimFuncPass")
@@ -272,7 +306,12 @@ where
 }
 
 /// Construct a TVM module pass backed by a module-only Rust callback.
-pub fn create_module_pass<F>(
+///
+/// # Safety
+///
+/// The caller must uphold [`create_module_pass_with_context`]'s
+/// capture-threading requirements for all native copies of the pass.
+pub unsafe fn create_module_pass<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -282,17 +321,26 @@ pub fn create_module_pass<F>(
 where
     F: Fn(IRModule) -> Result<IRModule> + 'static,
 {
-    create_module_pass_with_context(
-        name,
-        opt_level,
-        required,
-        traceable,
-        move |module, _context| pass_func(module),
-    )
+    // SAFETY: the caller guarantees the captured callback's threading contract.
+    unsafe {
+        create_module_pass_with_context(
+            name,
+            opt_level,
+            required,
+            traceable,
+            move |module, _context| pass_func(module),
+        )
+    }
 }
 
 /// Construct a TVM module pass whose callback reads the active pass context.
-pub fn create_module_pass_with_context<F>(
+///
+/// # Safety
+///
+/// Native code retains the callback. All calls and final release, including
+/// through native copies of the pass, must uphold [`Function::from_packed`]'s
+/// capture-threading requirements.
+pub unsafe fn create_module_pass_with_context<F>(
     name: &str,
     opt_level: i64,
     required: Vec<&str>,
@@ -302,10 +350,12 @@ pub fn create_module_pass_with_context<F>(
 where
     F: Fn(IRModule, PassContext) -> Result<IRModule> + 'static,
 {
-    let pass_func =
+    // SAFETY: the wrapper captures only pass_func; the caller upholds its contract.
+    let pass_func = unsafe {
         Function::from_typed(move |module: RValueRef<IRModule>, context: PassContext| {
             pass_func(module.into_inner(), context)
-        });
+        })
+    };
     let pass_info = create_pass_info(name, opt_level, required, traceable)?;
 
     tvm_ffi::cached_global_func!("transform.MakeModulePass")

@@ -67,7 +67,7 @@ impl std::ops::Deref for StmtSimplifyConfig {
 
 impl StmtSimplifyConfig {
     fn field(&self, name: &str) -> Result<bool> {
-        FieldGetter::new(StmtSimplifyConfigObj::type_index(), name)?.get(&**self)
+        FieldGetter::new(StmtSimplifyConfigObj::type_index(), name)?.get(self)
     }
 }
 
@@ -152,15 +152,18 @@ fn stmt_simplify_with_options(
 
 /// Build TVM's `tirx.StmtSimplify` PrimFunc pass in Rust.
 pub fn stmt_simplify() -> Result<Pass> {
-    create_prim_func_pass_with_context(
-        "tirx.StmtSimplify",
-        0,
-        Vec::new(),
-        false,
-        |function, context| {
-            stmt_simplify_with_options(function, StmtSimplifyOptions::from_context(&context)?)
-        },
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass_with_context(
+            "tirx.StmtSimplify",
+            0,
+            Vec::new(),
+            false,
+            |function, context| {
+                stmt_simplify_with_options(function, StmtSimplifyOptions::from_context(&context)?)
+            },
+        )
+    }
 }
 
 struct StmtSimplifier {

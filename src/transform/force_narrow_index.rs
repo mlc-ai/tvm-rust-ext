@@ -99,14 +99,17 @@ pub fn force_narrow_index_to_int32_prim_func(function: PrimFunc) -> Result<PrimF
 
 /// Build TVM's `tirx.ForceNarrowIndexToInt32` PrimFunc pass in Rust.
 pub fn force_narrow_index_to_int32() -> Result<Pass> {
-    create_prim_func_pass(
-        // Keep the upstream pass-info name, including its historical alias.
-        "tirx.NarrowDataType",
-        0,
-        Vec::new(),
-        false,
-        force_narrow_index_to_int32_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            // Keep the upstream pass-info name, including its historical alias.
+            "tirx.NarrowDataType",
+            0,
+            Vec::new(),
+            false,
+            force_narrow_index_to_int32_prim_func,
+        )
+    }
 }
 
 pub(super) struct IndexDataTypeNormalizer {

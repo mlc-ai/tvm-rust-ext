@@ -97,13 +97,16 @@ pub fn split_host_device_module(module: IRModule) -> Result<IRModule> {
 
 /// Build TVM's `tirx.SplitHostDevice` module pass in Rust.
 pub fn split_host_device() -> Result<Pass> {
-    create_module_pass(
-        "tirx.SplitHostDevice",
-        0,
-        Vec::new(),
-        false,
-        split_host_device_module,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass(
+            "tirx.SplitHostDevice",
+            0,
+            Vec::new(),
+            false,
+            split_host_device_module,
+        )
+    }
 }
 
 fn annotate_device_regions(function: PrimFunc) -> Result<PrimFunc> {
@@ -423,7 +426,7 @@ fn lower_device_kernel_launches(module: IRModule) -> Result<IRModule> {
                 function.attrs.clone(),
                 function.params.clone(),
                 TupleType::empty().into(),
-                body,
+                Some(body),
             );
             function = with_prim_func_attr(function, CALLING_CONV, DEVICE_KERNEL_LAUNCH);
             function = with_prim_func_attr(

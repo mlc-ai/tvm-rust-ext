@@ -672,7 +672,10 @@ fn rust_bind_target_matches_cpp_for_mixed_host_and_device_calls() {
     ]))
     .unwrap();
 
-    let rust_result = transform::bind_target_module(module.clone(), target.clone()).unwrap();
+    // SAFETY: this pass and the captured target stay on this thread, including final release.
+    let rust_bind = unsafe { transform::bind_target(target.clone()) }.unwrap();
+    let rust_result = rust_bind.run(module.clone()).unwrap();
+    drop(rust_bind);
     let cpp_bind: transform::Pass = Function::get_global("tirx.transform.BindTarget")
         .unwrap()
         .call_tuple((target,))

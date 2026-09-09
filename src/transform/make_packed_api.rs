@@ -219,13 +219,16 @@ pub fn make_packed_api_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.MakePackedAPI` module pass in Rust.
 pub fn make_packed_api() -> Result<Pass> {
-    create_module_pass(
-        "tirx.MakePackedAPI",
-        0,
-        Vec::new(),
-        false,
-        make_packed_api_module,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass(
+            "tirx.MakePackedAPI",
+            0,
+            Vec::new(),
+            false,
+            make_packed_api_module,
+        )
+    }
 }
 
 fn requires_packed_api(function: &PrimFunc) -> Result<Option<FfiString>> {

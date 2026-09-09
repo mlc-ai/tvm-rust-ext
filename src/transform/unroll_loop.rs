@@ -68,7 +68,7 @@ impl UnrollLoopConfig {
     where
         T: TryFrom<Any, Error = tvm_ffi::Error>,
     {
-        FieldGetter::new(UnrollLoopConfigObj::type_index(), name)?.get(&**self)
+        FieldGetter::new(UnrollLoopConfigObj::type_index(), name)?.get(self)
     }
 }
 
@@ -138,15 +138,18 @@ fn unroll_loop_with_options(function: PrimFunc, options: UnrollOptions) -> Resul
 
 /// Build TVM's `tirx.UnrollLoop` PrimFunc pass in Rust.
 pub fn unroll_loop() -> Result<Pass> {
-    create_prim_func_pass_with_context(
-        "tirx.UnrollLoop",
-        0,
-        Vec::new(),
-        false,
-        |function, context| {
-            unroll_loop_with_options(function, UnrollOptions::from_context(&context)?)
-        },
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass_with_context(
+            "tirx.UnrollLoop",
+            0,
+            Vec::new(),
+            false,
+            |function, context| {
+                unroll_loop_with_options(function, UnrollOptions::from_context(&context)?)
+            },
+        )
+    }
 }
 
 struct LoopUnroller {

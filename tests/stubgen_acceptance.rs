@@ -83,7 +83,7 @@ fn direct_and_semantic_constructors_round_trip() {
         function.attrs.clone(),
         function.params.clone(),
         function.ret_type.clone(),
-        function.body().clone(),
+        Some(function.body().clone()),
     );
     assert_cpp_structural_equal(&function, &rust_rebuilt);
 
@@ -114,7 +114,7 @@ fn direct_and_semantic_constructors_round_trip() {
     // Exercise the C++ field getter on Rust-owned storage through standard FFI.
     let reflected_lhs: Expr = FieldGetter::new(AddObj::type_index(), "a")
         .unwrap()
-        .get(&*addition)
+        .get(&addition)
         .unwrap();
     assert!(reflected_lhs.same_as(&parameter));
     let cpp_add: Add = Function::get_global("ir.prim.Add")
@@ -212,7 +212,7 @@ fn generated_bindings_support_structural_walk() {
     assert_eq!(integer_literals, vec![0]);
     assert_eq!(
         variable_regions,
-        vec![DefRegionKind::Recursive, DefRegionKind::None]
+        vec![DefRegionKind::Pattern, DefRegionKind::None]
     );
 }
 

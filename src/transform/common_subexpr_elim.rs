@@ -55,13 +55,16 @@ pub fn common_subexpr_elim_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.CommonSubexprElim` PrimFunc pass in Rust.
 pub fn common_subexpr_elim() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.CommonSubexprElim",
-        0,
-        Vec::new(),
-        false,
-        common_subexpr_elim_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.CommonSubexprElim",
+            0,
+            Vec::new(),
+            false,
+            common_subexpr_elim_prim_func,
+        )
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

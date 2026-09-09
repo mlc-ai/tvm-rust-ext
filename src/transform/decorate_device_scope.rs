@@ -39,11 +39,14 @@ pub fn decorate_device_scope_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `s_tir.DecorateDeviceScope` PrimFunc pass in Rust.
 pub fn decorate_device_scope() -> Result<Pass> {
-    create_prim_func_pass(
-        "s_tir.DecorateDeviceScope",
-        0,
-        Vec::new(),
-        false,
-        decorate_device_scope_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "s_tir.DecorateDeviceScope",
+            0,
+            Vec::new(),
+            false,
+            decorate_device_scope_prim_func,
+        )
+    }
 }

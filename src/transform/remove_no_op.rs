@@ -78,7 +78,7 @@ impl RemoveNoOpConfig {
     where
         T: TryFrom<Any, Error = tvm_ffi::Error>,
     {
-        FieldGetter::new(RemoveNoOpConfigObj::type_index(), name)?.get(&**self)
+        FieldGetter::new(RemoveNoOpConfigObj::type_index(), name)?.get(self)
     }
 
     fn max_simplification_steps(&self) -> Result<i64> {
@@ -122,16 +122,19 @@ fn remove_no_op_with_options(function: PrimFunc, options: RemoveNoOpOptions) -> 
 
 /// Build TVM's `tirx.RemoveNoOp` PrimFunc pass in Rust.
 pub fn remove_no_op() -> Result<Pass> {
-    create_prim_func_pass_with_context(
-        "tirx.RemoveNoOp",
-        0,
-        Vec::new(),
-        false,
-        |function, context| {
-            let options = RemoveNoOpOptions::from_context(&context)?;
-            remove_no_op_with_options(function, options)
-        },
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass_with_context(
+            "tirx.RemoveNoOp",
+            0,
+            Vec::new(),
+            false,
+            |function, context| {
+                let options = RemoveNoOpOptions::from_context(&context)?;
+                remove_no_op_with_options(function, options)
+            },
+        )
+    }
 }
 
 struct NoOpRemover {

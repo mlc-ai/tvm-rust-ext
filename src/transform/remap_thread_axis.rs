@@ -50,14 +50,22 @@ pub fn remap_thread_axis_prim_func(
 }
 
 /// Build TVM's `tirx.RemapThreadAxis` PrimFunc pass in Rust.
-pub fn remap_thread_axis(thread_map: Map<FfiString, IterVar>) -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.RemapThreadAxis",
-        0,
-        Vec::new(),
-        false,
-        move |function| remap_thread_axis_prim_func(function, &thread_map),
-    )
+///
+/// # Safety
+///
+/// The pass captures `thread_map` and its objects. All calls and final release,
+/// including native copies, must stay on their owning thread.
+pub unsafe fn remap_thread_axis(thread_map: Map<FfiString, IterVar>) -> Result<Pass> {
+    // SAFETY: the caller keeps the captured objects and all pass copies on their owning thread.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.RemapThreadAxis",
+            0,
+            Vec::new(),
+            false,
+            move |function| remap_thread_axis_prim_func(function, &thread_map),
+        )
+    }
 }
 
 struct ThreadAxisRewriter {

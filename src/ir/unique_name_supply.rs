@@ -22,53 +22,18 @@
 //! The naming state is owned by C++ and mutated through the registered
 //! methods, so keep every alias of one supply on a single thread.
 
-use std::{marker::PhantomData, rc::Rc};
-
-use tvm_ffi::derive::{Object, ObjectRef};
-use tvm_ffi::{ObjectArc, Result, String};
-
-/// Opaque native name supply with private, mutable C++ storage.
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ir.UniqueNameSupply"]
-#[type_final]
-pub struct UniqueNameSupplyObj {
-    base: tvm_ffi::Object,
-    _not_send_sync: PhantomData<Rc<()>>,
-}
-
-/// Shared naming state whose aliases must stay on one thread.
-///
-/// ```compile_fail
-/// use tvm::ir::UniqueNameSupply;
-/// fn require_send<T: Send>() {}
-/// require_send::<UniqueNameSupply>();
-/// ```
-///
-/// ```compile_fail
-/// use tvm::ir::UniqueNameSupply;
-/// fn require_sync<T: Sync>() {}
-/// require_sync::<UniqueNameSupply>();
-/// ```
-///
-/// Generic FFI object handles can erase these restrictions; that conversion
-/// does not make the native naming state thread-safe.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct UniqueNameSupply {
-    data: ObjectArc<UniqueNameSupplyObj>,
-}
-
-impl std::ops::Deref for UniqueNameSupply {
-    type Target = UniqueNameSupplyObj;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
+use super::UniqueNameSupply;
+use tvm_ffi::{Result, String};
 
 impl UniqueNameSupply {
     /// Create an empty name supply with an optional naming prefix.
+    ///
+    /// The generated handle inherits thread confinement from the FFI object base.
+    ///
+    /// ```compile_fail
+    /// fn require_send<T: Send>() {}
+    /// require_send::<tvm::ir::UniqueNameSupply>();
+    /// ```
     pub fn new(prefix: &str) -> Result<Self> {
         tvm_ffi::cached_global_func!("ir.UniqueNameSupply")
             .call_tuple((String::from(prefix),))?

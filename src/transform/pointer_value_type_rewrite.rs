@@ -53,13 +53,16 @@ pub fn pointer_value_type_rewrite_prim_func(function: PrimFunc) -> Result<PrimFu
 
 /// Build TVM's `tirx.PointerValueTypeRewrite` pass in Rust.
 pub fn pointer_value_type_rewrite() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.PointerValueTypeRewrite",
-        0,
-        Vec::new(),
-        false,
-        pointer_value_type_rewrite_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.PointerValueTypeRewrite",
+            0,
+            Vec::new(),
+            false,
+            pointer_value_type_rewrite_prim_func,
+        )
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -52,13 +52,16 @@ pub fn vectorize_loop_prim_func(function: PrimFunc, enable_vectorize: bool) -> R
 
 /// Build TVM's `tirx.VectorizeLoop` PrimFunc pass in Rust.
 pub fn vectorize_loop(enable_vectorize: bool) -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.VectorizeLoop",
-        0,
-        Vec::new(),
-        false,
-        move |function| vectorize_loop_prim_func(function, enable_vectorize),
-    )
+    // SAFETY: the callback captures only the enable_vectorize boolean.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.VectorizeLoop",
+            0,
+            Vec::new(),
+            false,
+            move |function| vectorize_loop_prim_func(function, enable_vectorize),
+        )
+    }
 }
 
 struct LoopVectorizer;

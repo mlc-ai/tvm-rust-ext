@@ -45,13 +45,16 @@ pub fn lower_tirx_opaque_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.LowerTIRxOpaque` PrimFunc pass in Rust.
 pub fn lower_tirx_opaque() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.LowerTIRxOpaque",
-        0,
-        Vec::new(),
-        false,
-        lower_tirx_opaque_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.LowerTIRxOpaque",
+            0,
+            Vec::new(),
+            false,
+            lower_tirx_opaque_prim_func,
+        )
+    }
 }
 
 #[derive(Default)]

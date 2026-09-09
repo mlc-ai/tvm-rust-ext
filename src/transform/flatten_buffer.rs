@@ -113,13 +113,16 @@ pub fn flatten_buffer_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.FlattenBuffer` PrimFunc pass in Rust.
 pub fn flatten_buffer() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.FlattenBuffer",
-        0,
-        Vec::new(),
-        false,
-        flatten_buffer_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.FlattenBuffer",
+            0,
+            Vec::new(),
+            false,
+            flatten_buffer_prim_func,
+        )
+    }
 }
 
 struct BufferFlattener {

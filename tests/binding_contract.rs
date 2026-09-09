@@ -50,10 +50,9 @@ use common::{assert_structural_equal, direct_fields, load_tvm_compiler, runtime_
 
 const DEFAULT: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskHasDefault as i64;
 const IGNORE: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashIgnore as i64;
-const DEF_RECURSIVE: i64 =
-    TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefRecursive as i64;
+const DEF_RECURSIVE: i64 = TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefPattern as i64;
 const DEF_NON_RECURSIVE: i64 =
-    TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive as i64;
+    TVMFFIFieldFlagBitMask::kTVMFFIFieldFlagBitMaskSEqHashDefSimple as i64;
 
 const SCHEMA_ANY_MAP: &str = r#"{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"Any"}]}"#;
 const SCHEMA_ANY: &str = r#"{"type":"Any"}"#;

@@ -74,10 +74,13 @@ fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() -> Result<()> {
     for (priority, decline) in [(1000, false), (1001, true)] {
         let rule_calls = calls.clone();
         // Keep the fused call, or decline it. This works without an LLVM backend.
-        let rule = Function::from_typed(move |call: Call| -> Result<Option<Call>> {
-            rule_calls.fetch_add(1, Ordering::Relaxed);
-            Ok((!decline).then_some(call))
-        });
+        // SAFETY: the registered rule captures only an Arc<AtomicUsize> and a boolean.
+        let rule = unsafe {
+            Function::from_typed(move |call: Call| -> Result<Option<Call>> {
+                rule_calls.fetch_add(1, Ordering::Relaxed);
+                Ok((!decline).then_some(call))
+            })
+        };
         Function::get_global("ir.OpSetAttr")?.call_tuple((&fma, &attribute, rule, priority))?;
         for (params, expression) in &cases {
             let floating = expression.a.dtype().code == DLDataTypeCode::kDLFloat as u8;

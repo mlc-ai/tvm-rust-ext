@@ -151,7 +151,7 @@ pub(super) fn with_prim_func_body(function: PrimFunc, body: Stmt) -> PrimFunc {
         function.attrs.clone(),
         function.params.clone(),
         function.ret_type.clone(),
-        body,
+        Some(body),
     )
 }
 
@@ -175,7 +175,7 @@ pub(super) fn with_prim_func_attr(
         attrs,
         function.params.clone(),
         function.ret_type.clone(),
-        function.body().clone(),
+        Some(function.body().clone()),
     )
 }
 
@@ -193,7 +193,7 @@ pub(super) fn without_prim_func_attr(function: PrimFunc, key: &str) -> PrimFunc 
         attrs,
         function.params.clone(),
         function.ret_type.clone(),
-        function.body().clone(),
+        Some(function.body().clone()),
     )
 }
 

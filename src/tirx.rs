@@ -32,7 +32,7 @@ mod iter_var;
 mod tile_primitive;
 
 pub use buffer::BufferVar;
-pub use stmt::{PrimFunc, PrimFuncObj, PrimVar};
+pub use stmt::PrimVar;
 pub use tile_primitive::NativeMutableMap;
 
 // Every object registered under `tirx` gets its block in this file; `skip` leaves one out.
@@ -43,18 +43,13 @@ pub use tile_primitive::NativeMutableMap;
 // `tirx.PrimFuncPass` derives from `transform.Pass` and carries a `transform.PassInfo`;
 // this crate binds neither, and passes are created through the registered factories.
 // tvm-ffi-stubgen(skip): tirx.PrimFuncPass
-// `tirx.PrimFunc.body` is storage a native pass can move out of and fail to refill; no
-// directive expresses that (see STUBGEN_FEEDBACK.md), so the binding stays hand-written in
-// `mod stmt` and the two `TensorIntrin` fields name it through `field` overrides.
-// tvm-ffi-stubgen(skip): tirx.PrimFunc
-// tvm-ffi-stubgen(field): tirx.TensorIntrin.desc -> PrimFunc
-// tvm-ffi-stubgen(field): tirx.TensorIntrin.impl -> PrimFunc
+// Native passes may leave body empty after moving it out; semantic constructors require it.
+// tvm-ffi-stubgen(nullable): tirx.PrimFunc.body
+// tvm-ffi-stubgen(custom-new): tirx.PrimFunc
 // `tirx.DispatchContext.target` refers to the hand-written `target` binding.
 // tvm-ffi-stubgen(ty-map): target.Target -> crate::target::Target
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
 // tvm-ffi-stubgen(import-object): crate::ir::PrimExpr
-// tvm-ffi-stubgen(nullable): ir.Expr.span
-// tvm-ffi-stubgen(nullable): ir.Type.span
 // tvm-ffi-stubgen(nullable): tirx.Stmt.span
 // tvm-ffi-stubgen(nullable): tirx.IterVar.dom
 // tvm-ffi-stubgen(nullable): tirx.IterVar.span
@@ -63,6 +58,12 @@ pub use tile_primitive::NativeMutableMap;
 // tvm-ffi-stubgen(enum): tirx.ScopeIdDef.scope -> ScopeBinding(i32) { KERNEL_CLUSTER=0, KERNEL_CTA=1, CLUSTER_CTA=2, CTA_WARPGROUP=3, CTA_WARP=4, WARPGROUP_WARP=5, WARP_THREAD=6, CTA_THREAD=7, WARPGROUP_THREAD=8, CLUSTER_CTA_PAIR=9 }
 // tvm-ffi-stubgen(enum): tirx.IterVar.iter_type -> IterVarType(i32) { kDataPar=0, kThreadIndex=1, kCommReduce=2, kOrdered=3, kOpaque=4, kUnrolled=5, kVectorized=6, kParallelized=7, kTensorized=8 }
 // tvm-ffi-stubgen(field): tirx.IterVar.var -> PrimVar
+// tvm-ffi-stubgen(field): tirx.ComposeLayout.per_element -> i32
+// tvm-ffi-stubgen(field): tirx.ComposeLayout.swizzle_len -> i32
+// tvm-ffi-stubgen(field): tirx.ComposeLayout.atom_len -> i32
+// tvm-ffi-stubgen(field): tirx.ComposeLayout.inner_mask -> i32
+// tvm-ffi-stubgen(field): tirx.ComposeLayout.outer_mask -> i32
+// tvm-ffi-stubgen(field): tirx.TileLayout.offset -> Map<Axis, PrimExpr>
 // tvm-ffi-stubgen(field): tirx.For.loop_var -> PrimVar
 // tvm-ffi-stubgen(field): tirx.For.min -> PrimExpr
 // tvm-ffi-stubgen(field): tirx.For.extent -> PrimExpr
@@ -127,6 +128,9 @@ pub use tile_primitive::NativeMutableMap;
 
 // tvm-ffi-stubgen(begin): import-section
 use super::ir::prim::StringImm;
+use super::ir::BaseFunc;
+use super::ir::BaseFuncObj;
+use super::ir::DictAttrs;
 use super::ir::Expr;
 use super::ir::ExprObj;
 use super::ir::Op;
@@ -178,9 +182,9 @@ impl Deref for Axis {
     }
 }
 
-impl AxisObj {
+impl Axis {
     pub fn name(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "name")?.get(self)
+        FieldGetter::new(AxisObj::type_index(), "name")?.get(self)
     }
 }
 // tvm-ffi-stubgen(end)
@@ -780,26 +784,26 @@ impl Deref for IterVarObj {
     }
 }
 
-impl IterVarObj {
+impl IterVar {
     pub fn dom(&self) -> Result<Option<Range>> {
-        FieldGetter::new(Self::type_index(), "dom")?.get(self)
+        FieldGetter::new(IterVarObj::type_index(), "dom")?.get(self)
     }
 
     pub fn var(&self) -> Result<PrimVar> {
-        FieldGetter::new(Self::type_index(), "var")?.get(self)
+        FieldGetter::new(IterVarObj::type_index(), "var")?.get(self)
     }
 
     pub fn iter_type(&self) -> Result<IterVarType> {
-        let raw: i64 = FieldGetter::new(Self::type_index(), "iter_type")?.get(self)?;
+        let raw: i64 = FieldGetter::new(IterVarObj::type_index(), "iter_type")?.get(self)?;
         IterVarType::try_from(raw)
     }
 
     pub fn thread_tag(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "thread_tag")?.get(self)
+        FieldGetter::new(IterVarObj::type_index(), "thread_tag")?.get(self)
     }
 
     pub fn span(&self) -> Result<Option<Span>> {
-        FieldGetter::new(Self::type_index(), "span")?.get(self)
+        FieldGetter::new(IterVarObj::type_index(), "span")?.get(self)
     }
 }
 
@@ -907,33 +911,33 @@ impl Deref for ComposeLayoutObj {
     }
 }
 
-impl ComposeLayoutObj {
-    pub fn per_element(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "per_element")?.get(self)
+impl ComposeLayout {
+    pub fn per_element(&self) -> Result<i32> {
+        FieldGetter::new(ComposeLayoutObj::type_index(), "per_element")?.get(self)
     }
 
-    pub fn swizzle_len(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "swizzle_len")?.get(self)
+    pub fn swizzle_len(&self) -> Result<i32> {
+        FieldGetter::new(ComposeLayoutObj::type_index(), "swizzle_len")?.get(self)
     }
 
-    pub fn atom_len(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "atom_len")?.get(self)
+    pub fn atom_len(&self) -> Result<i32> {
+        FieldGetter::new(ComposeLayoutObj::type_index(), "atom_len")?.get(self)
     }
 
     pub fn swizzle_inner(&self) -> Result<bool> {
-        FieldGetter::new(Self::type_index(), "swizzle_inner")?.get(self)
+        FieldGetter::new(ComposeLayoutObj::type_index(), "swizzle_inner")?.get(self)
     }
 
-    pub fn inner_mask(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "inner_mask")?.get(self)
+    pub fn inner_mask(&self) -> Result<i32> {
+        FieldGetter::new(ComposeLayoutObj::type_index(), "inner_mask")?.get(self)
     }
 
-    pub fn outer_mask(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "outer_mask")?.get(self)
+    pub fn outer_mask(&self) -> Result<i32> {
+        FieldGetter::new(ComposeLayoutObj::type_index(), "outer_mask")?.get(self)
     }
 
     pub fn tile_layout(&self) -> Result<TileLayout> {
-        FieldGetter::new(Self::type_index(), "tile_layout")?.get(self)
+        FieldGetter::new(ComposeLayoutObj::type_index(), "tile_layout")?.get(self)
     }
 }
 
@@ -2213,17 +2217,17 @@ impl Deref for TileLayoutObj {
     }
 }
 
-impl TileLayoutObj {
+impl TileLayout {
     pub fn shard(&self) -> Result<Array<Iter>> {
-        FieldGetter::new(Self::type_index(), "shard")?.get(self)
+        FieldGetter::new(TileLayoutObj::type_index(), "shard")?.get(self)
     }
 
     pub fn replica(&self) -> Result<Array<Iter>> {
-        FieldGetter::new(Self::type_index(), "replica")?.get(self)
+        FieldGetter::new(TileLayoutObj::type_index(), "replica")?.get(self)
     }
 
-    pub fn offset(&self) -> Result<Map<Axis, Expr>> {
-        FieldGetter::new(Self::type_index(), "offset")?.get(self)
+    pub fn offset(&self) -> Result<Map<Axis, PrimExpr>> {
+        FieldGetter::new(TileLayoutObj::type_index(), "offset")?.get(self)
     }
 }
 
@@ -2376,6 +2380,83 @@ impl While {
 tvm_ffi::impl_object_upcast!(While => Stmt);
 // tvm-ffi-stubgen(end)
 
+// tvm-ffi-stubgen(begin): object/tirx.PrimFunc
+/// Complete: reflected fields fill [48, 72) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "tirx.PrimFunc"]
+#[type_final]
+pub struct PrimFuncObj {
+    base: BaseFuncObj,
+    pub params: Array<Var>,
+    pub ret_type: Type,
+    pub body: Option<Stmt>,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<PrimFuncObj>() == 72);
+    assert!(::core::mem::align_of::<PrimFuncObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct PrimFunc {
+    base: ObjectArc<PrimFuncObj>,
+}
+
+impl Deref for PrimFunc {
+    type Target = PrimFuncObj;
+    fn deref(&self) -> &PrimFuncObj {
+        &self.base
+    }
+}
+
+impl Deref for PrimFuncObj {
+    type Target = BaseFuncObj;
+    fn deref(&self) -> &BaseFuncObj {
+        &self.base
+    }
+}
+
+impl PrimFuncObj {
+    pub(crate) fn new(
+        span: Option<Span>,
+        ty: Type,
+        attrs: DictAttrs,
+        params: Array<Var>,
+        ret_type: Type,
+        body: Option<Stmt>,
+    ) -> Self {
+        let base = BaseFuncObj::new(span, ty, attrs);
+        Self {
+            base,
+            params,
+            ret_type,
+            body,
+        }
+    }
+}
+
+impl PrimFunc {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: Type,
+        attrs: DictAttrs,
+        params: Array<Var>,
+        ret_type: Type,
+        body: Option<Stmt>,
+    ) -> Self {
+        let obj = PrimFuncObj::new(span, ty, attrs, params, ret_type, body);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(PrimFunc => Expr, PrimFunc => BaseFunc);
+// tvm-ffi-stubgen(end)
+
 // ---------------------------------------------------------------------------
 // Hand-written semantics for the generated bindings above.  Lines outside the
 // `tvm-ffi-stubgen(begin)`/`(end)` blocks are kept verbatim by the generator,
@@ -2388,8 +2469,8 @@ mod stmt {
     use super::*;
     use crate::ir::prim::{primitive_type, StringImm};
     use crate::ir::{
-        BaseFuncObj, DictAttrs, Expr, IntImm, IntImmObj, PointerTypeObj, PrimExpr, PrimType,
-        PrimTypeObj, Span, TupleType, TupleTypeObj, Type, TypedVar, Var,
+        DictAttrs, Expr, IntImm, IntImmObj, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Span,
+        TupleType, TupleTypeObj, Type, TypedVar, Var,
     };
     use tvm_ffi::{
         Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map, ObjectRefCore, Result,
@@ -2944,28 +3025,6 @@ mod stmt {
         }
     }
 
-    /// ABI-complete Rust representation of TVM's `PrimFuncNode`.
-    ///
-    /// Hand-written (the block is `skip`ped): `body` is storage a native pass can
-    /// move out of and fail to refill, which no generator directive expresses.
-    #[repr(C)]
-    #[derive(tvm_ffi::derive::Object)]
-    #[type_key = "tirx.PrimFunc"]
-    #[type_final]
-    pub struct PrimFuncObj {
-        base: BaseFuncObj,
-        pub params: Array<Var>,
-        pub ret_type: Type,
-        // Native passes can move this field out and throw before replacing it.
-        // Keep the moved-from null state valid for Rust's field destructor.
-        body: Option<Stmt>,
-    }
-
-    const _: () = {
-        assert!(::core::mem::size_of::<PrimFuncObj>() == 72);
-        assert!(::core::mem::align_of::<PrimFuncObj>() == 8);
-    };
-
     impl PrimFuncObj {
         /// Borrow the body of an initialized function without cloning its handle.
         ///
@@ -2975,57 +3034,6 @@ mod stmt {
         #[inline]
         pub fn body(&self) -> &Stmt {
             self.body.as_ref().expect("PrimFunc has no body")
-        }
-    }
-
-    /// Reference-counted handle to a TIR primitive function.
-    #[repr(C)]
-    #[derive(tvm_ffi::derive::ObjectRef, Clone)]
-    pub struct PrimFunc {
-        data: tvm_ffi::ObjectArc<PrimFuncObj>,
-    }
-
-    impl std::ops::Deref for PrimFunc {
-        type Target = PrimFuncObj;
-
-        fn deref(&self) -> &Self::Target {
-            &self.data
-        }
-    }
-
-    impl std::ops::Deref for PrimFuncObj {
-        type Target = BaseFuncObj;
-
-        fn deref(&self) -> &Self::Target {
-            &self.base
-        }
-    }
-
-    tvm_ffi::impl_object_upcast!(PrimFunc => Expr, PrimFunc => crate::ir::BaseFunc);
-
-    impl PrimFunc {
-        /// Construct a PrimFunc allocation entirely in Rust from its complete state.
-        ///
-        /// `ty` is the native function type stored in the inherited `ExprObj::ty`
-        /// field. Supplying it explicitly keeps this raw constructor lossless;
-        /// [`PrimFunc::new`] derives it before allocation. The body is required
-        /// here even though the stored slot can be left empty by native code.
-        pub fn from_complete_fields(
-            span: Option<Span>,
-            ty: Type,
-            attrs: DictAttrs,
-            params: Array<Var>,
-            ret_type: Type,
-            body: Stmt,
-        ) -> Self {
-            Self {
-                data: tvm_ffi::ObjectArc::new(PrimFuncObj {
-                    base: BaseFuncObj::new(span, ty, attrs),
-                    params,
-                    ret_type,
-                    body: Some(body),
-                }),
-            }
         }
     }
 
@@ -3072,7 +3080,7 @@ mod stmt {
                 attrs,
                 params,
                 ret_type,
-                body,
+                Some(body),
             ))
         }
 
@@ -3136,7 +3144,7 @@ mod stmt {
             DictAttrs::empty(),
             params.clone(),
             ret_type.clone(),
-            body.clone(),
+            Some(body.clone()),
         );
         let purity: bool = tvm_ffi::cached_global_func!("s_tir.analysis.is_pure_function")
             .call_tuple((&provisional, false))?

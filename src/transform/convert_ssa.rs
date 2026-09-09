@@ -72,7 +72,8 @@ pub fn convert_ssa_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.ConvertSSA` module pass in Rust.
 pub fn convert_ssa() -> Result<Pass> {
-    create_module_pass("tirx.ConvertSSA", 0, Vec::new(), false, convert_ssa_module)
+    // SAFETY: the callback has no captured state.
+    unsafe { create_module_pass("tirx.ConvertSSA", 0, Vec::new(), false, convert_ssa_module) }
 }
 
 /// Convert repeated definitions in an isolated statement.

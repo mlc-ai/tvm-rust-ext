@@ -87,13 +87,16 @@ pub fn lower_tirx_cleanup_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.LowerTIRxCleanup` PrimFunc pass in Rust.
 pub fn lower_tirx_cleanup() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.LowerTIRxCleanup",
-        0,
-        Vec::new(),
-        false,
-        lower_tirx_cleanup_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.LowerTIRxCleanup",
+            0,
+            Vec::new(),
+            false,
+            lower_tirx_cleanup_prim_func,
+        )
+    }
 }
 
 struct LayoutApplier {

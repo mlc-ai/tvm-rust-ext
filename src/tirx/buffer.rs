@@ -26,8 +26,8 @@ use crate::analysis::Analyzer;
 use crate::ir::prim::primitive_type;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, Span, TensorLoad, Type, TypedVar, Var};
 use tvm_ffi::{
-    Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectCore, ObjectRefCast,
-    ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
+    Any, Array, DLDataType, DLDataTypeExt, Error, Map, ObjectRefCast, ObjectRefCore, Result,
+    String, TYPE_ERROR, VALUE_ERROR,
 };
 
 impl Layout {
@@ -181,11 +181,6 @@ impl Axis {
             .try_into()
     }
 
-    /// Return the registered axis name through native reflection.
-    pub fn name(&self) -> Result<String> {
-        FieldGetter::new(AxisObj::type_index(), "name")?.get(&**self)
-    }
-
     /// Return whether this registry axis is mapped to a hardware thread.
     pub fn is_thread_axis(&self) -> Result<bool> {
         tvm_ffi::cached_global_func!("tirx.AxisIsThreadAxis")
@@ -238,81 +233,9 @@ impl ComposeLayout {
             ))?
             .try_into()
     }
-
-    fn field<T>(&self, name: &str) -> Result<T>
-    where
-        T: TryFrom<Any, Error = Error>,
-    {
-        FieldGetter::new(ComposeLayoutObj::type_index(), name)?.get(&**self)
-    }
-
-    fn integer_field(&self, name: &str) -> Result<i32> {
-        let value: i64 = self.field(name)?;
-        i32::try_from(value).map_err(|_| {
-            Error::new(
-                TYPE_ERROR,
-                &format!("ComposeLayout.{name} does not fit the native int width"),
-                "",
-            )
-        })
-    }
-
-    /// Return the number of values represented by each composed element.
-    pub fn per_element(&self) -> Result<i32> {
-        self.integer_field("per_element")
-    }
-
-    /// Return the number of bits participating in the swizzle.
-    pub fn swizzle_len(&self) -> Result<i32> {
-        self.integer_field("swizzle_len")
-    }
-
-    /// Return the number of low-order bits in one atom.
-    pub fn atom_len(&self) -> Result<i32> {
-        self.integer_field("atom_len")
-    }
-
-    /// Return whether the inner coordinate is swizzled.
-    pub fn swizzle_inner(&self) -> Result<bool> {
-        self.field("swizzle_inner")
-    }
-
-    /// Return the cached mask for the inner swizzle bits.
-    pub fn inner_mask(&self) -> Result<i32> {
-        self.integer_field("inner_mask")
-    }
-
-    /// Return the cached mask for the outer swizzle bits.
-    pub fn outer_mask(&self) -> Result<i32> {
-        self.integer_field("outer_mask")
-    }
-
-    /// Return the tiled layout wrapped by this composition.
-    pub fn tile_layout(&self) -> Result<TileLayout> {
-        self.field("tile_layout")
-    }
 }
 
 impl TileLayout {
-    fn field<T>(&self, name: &str) -> Result<T>
-    where
-        T: TryFrom<Any, Error = Error>,
-    {
-        FieldGetter::new(TileLayoutObj::type_index(), name)?.get(&**self)
-    }
-
-    pub fn shard(&self) -> Result<Array<Iter>> {
-        self.field("shard")
-    }
-
-    pub fn replica(&self) -> Result<Array<Iter>> {
-        self.field("replica")
-    }
-
-    pub fn offset(&self) -> Result<Map<Axis, PrimExpr>> {
-        self.field("offset")
-    }
-
     /// Return the logical size for all axes or one named axis.
     pub fn get_size(&self, axis_name: Option<&str>) -> Result<PrimExpr> {
         Layout::from(self.clone()).get_size(axis_name)

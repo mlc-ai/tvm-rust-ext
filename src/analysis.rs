@@ -18,7 +18,6 @@
  */
 
 use std::collections::HashMap;
-use std::{marker::PhantomData, rc::Rc};
 
 pub use crate::transform::{
     verify_memory_prim_func as verify_memory, verify_ssa_prim_func as verify_ssa,
@@ -50,15 +49,13 @@ use crate::tirx::{
 #[type_final]
 pub struct AnalyzerObj {
     base: tvm_ffi::Object,
-    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 /// Shared handle to one TVM arithmetic-analysis context.
 ///
 /// Clones share mutable native caches. Keep all aliases on one thread.
-/// This typed handle is neither `Send` nor `Sync`, but the current tvm-ffi
-/// `ObjectRef` can erase that restriction. Casting through it does not make
-/// the native analyzer safe to share across threads.
+/// The tvm-ffi object base keeps this handle and its erased `ObjectRef` aliases
+/// neither `Send` nor `Sync`.
 ///
 /// ```compile_fail
 /// fn require_thread_safe<T: Send + Sync>() {}
@@ -534,9 +531,7 @@ impl NodeStatistics {
         self.variables += 1;
         match kind {
             DefRegionKind::None => self.variable_uses += 1,
-            DefRegionKind::Recursive | DefRegionKind::NonRecursive => {
-                self.variable_definitions += 1
-            }
+            DefRegionKind::Pattern | DefRegionKind::Simple => self.variable_definitions += 1,
         }
         WalkResult::Advance
     }
@@ -619,7 +614,7 @@ fn visit_loop_body(
 ) -> Result<Option<VisitInterrupt>> {
     visitor.state_mut().loops += 1;
 
-    if let Some(interrupt) = visitor.visit_with(&node.loop_var, DefRegionKind::Recursive)? {
+    if let Some(interrupt) = visitor.visit_with(&node.loop_var, DefRegionKind::Pattern)? {
         return Ok(Some(interrupt));
     }
     if let Some(interrupt) = visitor.visit(&node.min)? {

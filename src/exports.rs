@@ -131,7 +131,11 @@ tvm_ffi_dll_export_typed_func!(skip_assert_pass, transform::skip_assert);
 tvm_ffi_dll_export_typed_func!(annotate_entry_func_pass, transform::annotate_entry_func);
 // `Filter` accepts an arbitrary Rust closure and therefore intentionally has
 // no shared-library factory export.
-tvm_ffi_dll_export_typed_func!(bind_target_pass, transform::bind_target);
+// Native callers must keep the captured target and all pass copies on their owning thread.
+tvm_ffi_dll_export_typed_func!(bind_target_pass, |target| {
+    // SAFETY: the native caller must uphold the exported entry's threading contract.
+    unsafe { transform::bind_target(target) }
+});
 tvm_ffi_dll_export_typed_func!(bf16_compute_legalize_pass, transform::bf16_compute_legalize);
 tvm_ffi_dll_export_typed_func!(bf16_storage_legalize_pass, transform::bf16_storage_legalize);
 tvm_ffi_dll_export_typed_func!(common_subexpr_elim_pass, transform::common_subexpr_elim);
@@ -168,7 +172,11 @@ tvm_ffi_dll_export_typed_func!(
     pointer_value_type_rewrite_pass,
     transform::pointer_value_type_rewrite
 );
-tvm_ffi_dll_export_typed_func!(remap_thread_axis_pass, transform::remap_thread_axis);
+// Native callers must keep the captured map and all pass copies on their owning thread.
+tvm_ffi_dll_export_typed_func!(remap_thread_axis_pass, |thread_map| {
+    // SAFETY: the native caller must uphold the exported entry's threading contract.
+    unsafe { transform::remap_thread_axis(thread_map) }
+});
 tvm_ffi_dll_export_typed_func!(remove_no_op_pass, transform::remove_no_op);
 tvm_ffi_dll_export_typed_func!(remove_assume_pass, transform::remove_assume);
 tvm_ffi_dll_export_typed_func!(split_host_device_pass, transform::split_host_device);

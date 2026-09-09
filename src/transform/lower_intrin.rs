@@ -50,16 +50,19 @@ pub fn lower_intrin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.LowerIntrin` pass in Rust.
 pub fn lower_intrin() -> Result<Pass> {
-    create_prim_func_pass_with_context(
-        "tirx.LowerIntrin",
-        0,
-        Vec::new(),
-        false,
-        |function, context| {
-            let enable_fast_math = pass_config_bool(&context, "tirx.enable_fast_math")?;
-            lower_intrin_prim_func_with_config(function, enable_fast_math)
-        },
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass_with_context(
+            "tirx.LowerIntrin",
+            0,
+            Vec::new(),
+            false,
+            |function, context| {
+                let enable_fast_math = pass_config_bool(&context, "tirx.enable_fast_math")?;
+                lower_intrin_prim_func_with_config(function, enable_fast_math)
+            },
+        )
+    }
 }
 
 fn lower_intrin_prim_func_with_config(

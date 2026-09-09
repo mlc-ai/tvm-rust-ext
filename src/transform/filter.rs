@@ -26,15 +26,24 @@ use crate::tirx::PrimFunc;
 ///
 /// This is the Rust translation of TVM's C++ `Filter` pass in
 /// `src/tirx/transform/primfunc_utils.cc`.
-pub fn filter<F>(condition: F) -> Result<Pass>
+///
+/// # Safety
+///
+/// All calls and final release of the pass, including native copies, must
+/// respect the predicate's capture-threading requirements; see
+/// [`super::create_prim_func_pass_with_module_context`].
+pub unsafe fn filter<F>(condition: F) -> Result<Pass>
 where
     F: Fn(PrimFunc) -> Result<bool> + 'static,
 {
-    create_optional_prim_func_pass("tirx.Filter", 0, Vec::new(), false, move |function| {
-        if condition(function.clone())? {
-            Ok(Some(function))
-        } else {
-            Ok(None)
-        }
-    })
+    // SAFETY: the caller guarantees the captured predicate's threading contract.
+    unsafe {
+        create_optional_prim_func_pass("tirx.Filter", 0, Vec::new(), false, move |function| {
+            if condition(function.clone())? {
+                Ok(Some(function))
+            } else {
+                Ok(None)
+            }
+        })
+    }
 }

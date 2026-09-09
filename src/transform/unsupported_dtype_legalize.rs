@@ -67,25 +67,31 @@ pub fn fp8_compute_legalize_prim_func(function: PrimFunc, promote_dtype: &str) -
 
 /// Build TVM's `tirx.BF16ComputeLegalize` PrimFunc pass in Rust.
 pub fn bf16_compute_legalize() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.BF16ComputeLegalize",
-        0,
-        Vec::new(),
-        false,
-        bf16_compute_legalize_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.BF16ComputeLegalize",
+            0,
+            Vec::new(),
+            false,
+            bf16_compute_legalize_prim_func,
+        )
+    }
 }
 
 /// Build TVM's `tirx.FP8ComputeLegalize` PrimFunc pass in Rust.
 pub fn fp8_compute_legalize(promote_dtype: &str) -> Result<Pass> {
     let promote_dtype = promote_dtype.to_owned();
-    create_prim_func_pass(
-        "tirx.FP8ComputeLegalize",
-        0,
-        Vec::new(),
-        false,
-        move |function| fp8_compute_legalize_prim_func(function, &promote_dtype),
-    )
+    // SAFETY: the callback captures only an owned Rust String.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.FP8ComputeLegalize",
+            0,
+            Vec::new(),
+            false,
+            move |function| fp8_compute_legalize_prim_func(function, &promote_dtype),
+        )
+    }
 }
 
 /// Replace BF16 storage with equal-width unsigned-integer storage.
@@ -100,24 +106,30 @@ pub fn fp8_storage_legalize_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.BF16StorageLegalize` PrimFunc pass in Rust.
 pub fn bf16_storage_legalize() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.BF16StorageLegalize",
-        0,
-        Vec::new(),
-        false,
-        bf16_storage_legalize_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.BF16StorageLegalize",
+            0,
+            Vec::new(),
+            false,
+            bf16_storage_legalize_prim_func,
+        )
+    }
 }
 
 /// Build TVM's `tirx.FP8StorageLegalize` PrimFunc pass in Rust.
 pub fn fp8_storage_legalize() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.FP8StorageLegalize",
-        0,
-        Vec::new(),
-        false,
-        fp8_storage_legalize_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.FP8StorageLegalize",
+            0,
+            Vec::new(),
+            false,
+            fp8_storage_legalize_prim_func,
+        )
+    }
 }
 
 #[derive(Clone, Copy)]

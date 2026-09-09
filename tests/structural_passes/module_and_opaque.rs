@@ -222,6 +222,9 @@ fn annotate_entry_func_matches_cpp_branch_for_branch() {
 
 #[test]
 fn filter_matches_cpp_and_removes_rejected_prim_funcs() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     load_tvm_compiler();
     let module = module_from_named_prim_funcs(vec![
         ("one", prim_func_with_global_symbol(1, None)),
@@ -229,13 +232,27 @@ fn filter_matches_cpp_and_removes_rejected_prim_funcs() {
         ("three", prim_func_with_global_symbol(3, None)),
     ]);
 
-    let rust_result = transform::filter(|function| Ok(prim_func_body_integer(&function) % 2 == 1))
-        .unwrap()
-        .run(module.clone())
-        .unwrap();
+    let calls = Rc::new(Cell::new(0));
+    let captured = calls.clone();
+    // SAFETY: every copy of this predicate and pass is used and dropped on this thread.
+    let rust_filter = unsafe {
+        transform::filter(move |function| {
+            captured.set(captured.get() + 1);
+            Ok(prim_func_body_integer(&function) % 2 == 1)
+        })
+    }
+    .unwrap();
+    let alias = rust_filter.clone();
+    drop(rust_filter);
+    let rust_result = alias.run(module.clone()).unwrap();
+    assert_eq!(calls.get(), 3);
+    drop(alias);
+    assert_eq!(Rc::strong_count(&calls), 1);
 
-    let cpp_condition =
-        Function::from_typed(|function: PrimFunc| Ok(prim_func_body_integer(&function) % 2 == 1));
+    // SAFETY: the callback has no captured state.
+    let cpp_condition = unsafe {
+        Function::from_typed(|function: PrimFunc| Ok(prim_func_body_integer(&function) % 2 == 1))
+    };
     let cpp_filter: transform::Pass = Function::get_global("tirx.transform.Filter")
         .unwrap()
         .call_tuple((cpp_condition,))
@@ -255,11 +272,14 @@ fn filter_matches_cpp_and_removes_rejected_prim_funcs() {
 
     // Mirror TVM's native regression case: removing every PrimFunc must also
     // clear IRModule's derived global-name index.
-    let rust_empty = transform::filter(|_function| Ok(false))
+    // SAFETY: the predicate has no captured state.
+    let rust_empty = unsafe { transform::filter(|_function| Ok(false)) }
         .unwrap()
         .run(module.clone())
         .unwrap();
-    let cpp_reject_all = Function::from_typed(|_function: PrimFunc| -> Result<bool> { Ok(false) });
+    // SAFETY: the callback has no captured state.
+    let cpp_reject_all =
+        unsafe { Function::from_typed(|_function: PrimFunc| -> Result<bool> { Ok(false) }) };
     let cpp_empty_pass: transform::Pass = Function::get_global("tirx.transform.Filter")
         .unwrap()
         .call_tuple((cpp_reject_all,))
@@ -445,8 +465,18 @@ fn rust_remap_thread_axis_matches_cpp() {
             .into_iter()
             .collect();
 
-    let rust_function = transform::remap_thread_axis_prim_func(function, &thread_map).unwrap();
-    let rust_result = IRModule::from_expr(&rust_function).unwrap();
+    // SAFETY: this pass and the captured axes stay on this thread, including final release.
+    let rust_pass = unsafe { transform::remap_thread_axis(thread_map.clone()) }.unwrap();
+    let rust_result = rust_pass.run(module.clone()).unwrap();
+    drop(rust_pass);
+    let rust_function = rust_result
+        .functions
+        .iter()
+        .next()
+        .unwrap()
+        .1
+        .try_cast::<PrimFunc>()
+        .unwrap();
     let cpp_pass: transform::Pass = Function::get_global("tirx.transform.RemapThreadAxis")
         .unwrap()
         .call_tuple((thread_map,))

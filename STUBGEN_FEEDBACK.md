@@ -205,7 +205,7 @@ generated object.
 ## Integration with the existing stubgen
 
 Use `tvm-ffi-stubgen`, not a second TVM-only generator. At the pinned
-tvm-ffi revision (`897ece64`), the shared pipeline:
+tvm-ffi revision (`40c6c74`), the shared pipeline:
 
 - loads the requested shared libraries from `--dlls`;
 - collects registered type keys and global functions;
@@ -232,17 +232,18 @@ reviewed semantic constructors in hand-written modules beside them (see
 tvm-ffi-stubgen src --dlls /path/to/libtvm_compiler.so --target rust
 ```
 
-The acceptance tests pass unchanged against that output. The stronger
+The acceptance tests exercise that output. The stronger
 layout/finality/blocker manifest described above is a target contract, not an
 implemented `--native-layout` CLI option. Check any gaps against the existing
 layout classifier before proposing new metadata. Neither byte coverage nor a
 generated allocator establishes constructor semantics, registry identity, or
-thread safety by itself; the types the generator cannot express yet
-(`ir.SourceName`, `ir.UniqueNameSupply`, and `tirx.PrimFunc`) are `skip`ped
-and stay hand-written. `SourceName` retains its complete readable fields but
-only exposes the interned lookup, while `UniqueNameSupply` retains its
-`!Send`/`!Sync` marker. Out-of-scope `tirx.SBlock` and `tirx.SBlockRealize`
-are also excluded with `skip`.
+thread safety by itself. `no-alloc: ir.SourceName` preserves complete readable
+fields without exposing a fresh allocator. `UniqueNameSupply` has a non-shareable
+owning handle; the common object header does not establish thread safety.
+`nullable: tirx.PrimFunc.body` and
+`custom-new: tirx.PrimFunc` separate nullable physical storage from the reviewed
+semantic constructor. All three layouts are generated. Out-of-scope
+`tirx.SBlock` and `tirx.SBlockRealize` remain excluded with `skip`.
 
 ## Constructor classification
 
@@ -259,7 +260,7 @@ existing TVM operation:
 | C++ polymorphic hierarchy | `Layout`, `TileLayout`, `ComposeLayout`, `PrimExprConvertible`, `IterVar` | preserve the virtual ABI, emit opaque Rust wrappers, and allocate concrete objects through existing native constructors |
 | Typed ordinary expression | `BufferRegion` | emit its complete `Expr` layout, use the registered `BufferRegionType` singleton, and allocate the region in Rust |
 | Native STL storage | `Source` | keep the node opaque and construct it through the existing `SourceMapAdd` operation |
-| Native mutable service | `Analyzer`, `UniqueNameSupply` | opaque typed handles with `!Send`/`!Sync`, using existing registered operations; generic `ObjectRef` can still erase these restrictions, so end-to-end thread isolation needs a separate tvm-ffi fix |
+| Native mutable service | `Analyzer`, `UniqueNameSupply` | non-shareable opaque typed handles, including erased `ObjectRef` aliases; use existing registered operations |
 | Non-object optional ABI | `TilePrimitiveCall::dispatch` | emit the complete node with `tvm_ffi::Optional<String>`, check the operator category through `ir.OpGetAttr`, and allocate in Rust |
 | Native mutable fields | `DispatchContext::callbacks`, `DispatchContext::shared_state` | complete layout and Rust allocation with private `UnsafeCell` storage; expose owned snapshots and prevent cross-thread sharing |
 | Complex semantic constructor | `PrimFunc`, match buffer | use reviewed handwritten Rust analysis/validation, then allocate complete fields in Rust |
@@ -340,8 +341,8 @@ copy path.
 The holder does not make Rust-allocated fields safe to move from C++. A native
 pass can move `PrimFunc.body` out, then throw before replacing it. Its storage
 must accept that null state even though an initialized function requires a body.
-The handwritten binding uses a private `Option<Stmt>` field and a borrowing
-`body()` accessor; construction stores `Some(body)`, and ordinary Rust field
+The generated binding uses an `Option<Stmt>` field and a handwritten borrowing
+`body()` accessor; semantic construction stores `Some(body)`, and ordinary Rust field
 destruction handles a moved-from `None`. Both successful native mutation and
 error cleanup are tested, including a fresh Rust function created inside a native
 `Sequential` while the original input module is retained.
@@ -350,11 +351,11 @@ Stubgen must distinguish a required public value from storage that native code
 can move out. Matching field offsets alone is insufficient. Do not use a
 non-null handle as a movable field and try to repair it with a drop-time null
 check, or force COW by retaining the input: neither is a general lifecycle fix.
-No directive expresses this today: `nullable` would make the field public and
-the complete-field allocator accept `None`, and a `field` override to a
-hand-written cell would change the allocator's signature. `tirx.PrimFunc` is
-therefore `skip`ped in `src/tirx.rs` and the binding above stays hand-written;
-the `TensorIntrin.desc`/`impl` fields name it through `field` overrides.
+The existing `nullable` directive deliberately makes the physical field public
+and the complete-field allocator accept `None`. `custom-new` leaves validation
+with the reviewed semantic constructors, which require `Stmt`. No specialized
+storage directive or private-field wrapper is needed; `body()` rejects an empty
+slot when a caller needs an initialized function.
 
 ## Metadata gaps
 

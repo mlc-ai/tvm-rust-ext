@@ -31,7 +31,6 @@ pub(crate) use semantic::primitive_type;
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
 // tvm-ffi-stubgen(import-object): crate::ir::PrimExpr
 // tvm-ffi-stubgen(import-object): super::super::ir::PrimType
-// tvm-ffi-stubgen(nullable): ir.Expr.span
 // tvm-ffi-stubgen(field): ir.prim.Add.a -> PrimExpr
 // tvm-ffi-stubgen(field): ir.prim.Add.b -> PrimExpr
 // tvm-ffi-stubgen(field): ir.prim.Sub.a -> PrimExpr

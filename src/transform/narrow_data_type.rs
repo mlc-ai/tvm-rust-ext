@@ -65,13 +65,16 @@ pub fn narrow_data_type_prim_func(function: PrimFunc, target_bits: u8) -> Result
 
 /// Build TVM's `tirx.NarrowDataType` PrimFunc pass in Rust.
 pub fn narrow_data_type(target_bits: u8) -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.NarrowDataType",
-        0,
-        Vec::new(),
-        false,
-        move |function| narrow_data_type_prim_func(function, target_bits),
-    )
+    // SAFETY: the callback captures only the target_bits integer.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.NarrowDataType",
+            0,
+            Vec::new(),
+            false,
+            move |function| narrow_data_type_prim_func(function, target_bits),
+        )
+    }
 }
 
 struct NarrowPlan {

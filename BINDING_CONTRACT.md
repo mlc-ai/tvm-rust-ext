@@ -162,9 +162,10 @@ a separately reviewed C++ ABI migration removes that blocker.
 
 - Rust `Option<ObjectRef>` represents a nullable C++ object handle. A field may
   require a defined value at construction yet become null during native mutation:
-  `PrimFunc.body` uses private `Option<Stmt>` storage and a borrowing `body()`
-  accessor so native error cleanup can destroy its moved-from state. The public
-  complete-field constructor still requires `Stmt`, not an incomplete function.
+  `PrimFunc.body` is generated as `Option<Stmt>` with a borrowing `body()`
+  accessor so native error cleanup can destroy its moved-from state. Semantic
+  constructors require `Stmt`; the low-level complete-field allocator accepts
+  the exact stored type, including `None`.
 - Do not infer a field's optionality from the referenced C++ `ObjectRef`
   class's `_type_is_nullable` flag alone. Stubgen must combine the declared
   field type with constructor and move/destruction behavior. An explicit
@@ -257,11 +258,9 @@ a separately reviewed C++ ABI migration removes that blocker.
 - Opaque does not imply thread-safe. Native mutable services such as `Analyzer`
   and `UniqueNameSupply` must remain `!Send` and `!Sync`; hiding their private
   fields must not accidentally enable Rust's automatic thread-safety traits.
-  Both typed handles retain a `PhantomData<Rc<()>>` marker. `UniqueNameSupply`
-  is `skip`ped and hand-written until the generator can preserve that restriction.
-  tvm-ffi's generic `ObjectRef` can erase those restrictions as well, so
-  cross-thread isolation is not enforced through all FFI conversions. This gap
-  remains unresolved; all aliases of these services must stay on one thread.
+  The shared tvm-ffi object base carries this restriction, including aliases
+  erased to `ObjectRef`. `UniqueNameSupply` can therefore use its generated
+  opaque binding without a per-type marker or a `skip` directive.
 
 ## Stubgen output ownership
 
@@ -318,16 +317,15 @@ every registered type from the reflected size, alignment, finality, and field
 offsets of `libtvm_compiler`, emits the complete layouts and complete-field
 allocators in place (`src/ir.rs`, `src/ir/prim.rs`, `src/tirx.rs`), and keeps
 the handwritten semantic constructors next to the blocks. `SourceName`,
-`UniqueNameSupply`, and `PrimFunc` retain hand-written layouts; the acceptance
-tests pass unchanged against the `tvm-ffi` revision pinned in `Cargo.toml`.
+`UniqueNameSupply`, and `PrimFunc` are also generated: `no-alloc` preserves
+interning, owning handles prevent unproven cross-thread sharing, and `nullable` preserves
+moved-from body storage. Semantic constructors still require a body; direct
+complete-field calls pass `Some(body)` to the generated allocator.
 No generated `new()` invokes `__ffi_init__` or another packed global.
 
 What still needs either generator support or a reviewed handwritten
 implementation: enum members (reflection carries no enum metadata, so the
-`enum` directive spells them), the `!Send`/`!Sync` marker on opaque native
-services, complete fields without a direct allocator (`SourceName`),
-storage native code can move out of (`PrimFunc.body`, so
-`tirx.PrimFunc` is `skip`ped and hand-written), semantic validation/default
-logic (hand-written, marked by `custom-new`), and rustfmt-clean output (the
+`enum` directive spells them), semantic validation/default logic (hand-written,
+marked by `custom-new`), and rustfmt-clean output (the
 formatted files fail `tvm-ffi-stubgen --check`). `te`, `target`, `arith`, and
 the pass infrastructure are not generated yet.

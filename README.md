@@ -57,23 +57,22 @@ language-independent structural protocol.
 `UniqueNameSupply` also stays opaque because its mutable naming state is owned
 by C++. `BindTarget` and `SplitHostDevice` use its existing registered methods
 for normalization and collision handling. Both `Analyzer` and `UniqueNameSupply`
-keep hand-written `!Send`/`!Sync` handles with a `PhantomData<Rc<()>>` marker.
-`UniqueNameSupply` is excluded from generation until stubgen can preserve that
-restriction. This is not an end-to-end thread-safety guarantee: the current
-tvm-ffi generic `ObjectRef` can erase these restrictions and be cast back on
-another thread. Keep every alias on one thread; the type-erasure gap remains open.
+have non-shareable owning handles, including after erasure to `ObjectRef`.
+The common object header alone does not establish thread safety.
+`UniqueNameSupply` is generated as an opaque binding; its existing
+registered operations remain hand-written. No per-type thread marker is needed.
 
 `DispatchContext` also has a complete layout, but its native methods modify
 `callbacks` and `shared_state`. These fields use private `UnsafeCell` storage;
 Rust reads them through `callbacks()` and `shared_state()` snapshots so a
 native update cannot invalidate an outstanding Rust field borrow.
 
-`PrimFunc::body()` borrows the required body without cloning. Its private storage
+`PrimFunc::body()` borrows the required body without cloning. Its generated field
 is `Option<Stmt>` because a native pass can move the body out and fail before
-writing it back. This lets Rust destroy the moved-from function safely;
-constructors still require a non-null `Stmt`. No generator directive expresses
-that storage, so `tirx.PrimFunc` is the one `tirx` data node whose layout is
-still hand-written.
+writing it back. `nullable` describes this storage and `custom-new` preserves
+the reviewed `new`/`with_metadata` constructors, which still require a non-null
+`Stmt`. The low-level `from_complete_fields` allocator accepts `Option<Stmt>`;
+`body()` panics if called on a moved-from or explicitly empty function.
 
 Constructor signatures also expose where work can actually fail. Lossless
 complete-field allocation takes exact stored field types by value, moves them
@@ -146,8 +145,10 @@ passes using structural equality.
 
 ### Scope and remaining gaps
 
-Coverage is compared with TVM `7e06fc6c1420d0188eb9d889bd74e2e1fb76e448`,
-built with tvm-ffi `897ece64d6ad0857f803e68221375021867e81a5`.
+Coverage is compared with TVM `7e06fc6c1420d0188eb9d889bd74e2e1fb76e448`.
+The Rust crate and stubgen use tvm-ffi `410c313c623d93364654016e34c2997a8041c054`.
+The existing native TVM build used tvm-ffi `897ece64d6ad0857f803e68221375021867e81a5`;
+its object layouts are unchanged by this Rust update.
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
 All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 `SBlockRealize` have bindings. The shared scalar/vector expressions, buffer
@@ -265,8 +266,10 @@ as packages:
   executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
-Use the exact TVM revision listed above and build both pip packages with the
-tvm-ffi commit pinned in `Cargo.toml` and `requirements.txt`. The TVM revision
+Use the exact TVM revision listed above and the tvm-ffi package pinned in
+`Cargo.toml` and `requirements.txt`. Build TVM with its compatible vendored FFI
+headers; newer headers rename definition-region constants used by this TVM
+revision. The TVM revision
 also determines the IR layouts, structural hooks, and definition-region field
 flags; matching only the tvm-ffi revision is not sufficient. Newer revisions
 must be checked with the binding-contract and pass-parity tests before updating
@@ -283,19 +286,17 @@ cargo test
 
 The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/ir/prim.rs`,
 and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
-(apache/tvm-ffi `897ece6`, the rev pinned in `Cargo.toml`) from the installed
+(tlopex/tvm-ffi `410c313`, the development rev pinned in `Cargo.toml`) from the installed
 `libtvm_compiler.so`.  Each file opens with a `prefix` directive
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an
 `object/<type_key>` block on the next run, a `skip` line leaves one out
 (`tirx.PrimFuncPass` and the out-of-scope `tirx.SBlock`/`tirx.SBlockRealize`).
-Three bindings also use `skip` to retain rules the generator cannot express:
-`ir.SourceName` keeps its complete fields but no direct allocator,
-`ir.UniqueNameSupply` keeps its thread-safety marker, and `tirx.PrimFunc`
-keeps its nullable moved-from body storage. A `ty-map` line names a referenced
-hand-written binding (`ir.SourceName -> SourceName`,
-`target.Target -> crate::target::Target`); the `TensorIntrin` fields name
-`PrimFunc` through `field` overrides.
+`no-alloc: ir.SourceName` keeps its complete fields without a direct allocator.
+`ir.UniqueNameSupply` is generated as opaque with a non-shareable owning handle.
+`nullable: tirx.PrimFunc.body` preserves moved-from storage, while
+`custom-new: tirx.PrimFunc` keeps semantic construction in Rust. A `ty-map` line
+names a referenced hand-written binding (`target.Target -> crate::target::Target`).
 Every other type key a block refers to must be provided by the same run, so the
 three files are always regenerated together.
 Regenerate with the environment active:
@@ -317,8 +318,8 @@ carries no enum metadata, so the members are spelled in the directive),
 `upcast` adds the `PrimExpr` conversions, `custom-new` keeps the reviewed `new`
 in the hand-written code and names the generated allocator
 `from_complete_fields`, and `import-object` pulls a typed view from another
-file into scope.  Directives are per file, so `nullable: ir.Expr.span` is
-repeated in every file that renders a descendant of `ir.Expr`.  The
+file into scope. `no-alloc`, `nullable`, and `opaque` directives are shared
+across the files in a generation run; Rust name mappings remain per file. The
 `DispatchContext::callbacks`/`shared_state` slots are mapped to the
 hand-written `NativeMutableMap` cell through `field` directives.
 
@@ -328,7 +329,7 @@ nodes defined in a file sit at its tail in a nested module (`mod semantic` in
 `use super::*;`, so its imports cannot collide with the regenerated import
 section; the buffer, function, index-map, iteration-variable, and
 tile-primitive semantics keep their own files under `src/tirx/`, and the
-`UniqueNameSupply` binding and `IntSet` methods stay in `src/ir/unique_name_supply.rs`
+`UniqueNameSupply` methods and `IntSet` methods stay in `src/ir/unique_name_supply.rs`
 and `src/analysis.rs`.  Reflected names win over the earlier handwritten
 spellings: `Ramp.base` is `base_` because `base` is the parent slot of every
 generated struct, and `TupleGetItem.tuple` is `tuple_value`.  The two clippy lints the generated allocators trigger are
@@ -337,9 +338,7 @@ silenced on `pub mod ir;` and `pub mod tirx;` in `src/lib.rs`.
 Generator gaps remain. The output is not rustfmt-clean (struct literals
 and the `use` order differ), so `cargo fmt` follows every regeneration; the
 round trip regenerate-then-format is byte-stable, but `tvm-ffi-stubgen
---check` reports the formatted files as stale. Per-type thread-safety markers,
-complete field views without allocators, and nullable moved-from storage still
-need the hand-written bindings listed above.
+--check` reports the formatted files as stale.
 
 `cargo build` also produces a shared library, `target/<profile>/libtvm.so`
 (`crate-type = ["rlib", "cdylib"]`).  It is an ordinary tvm-ffi module:
@@ -356,6 +355,13 @@ python python/demo.py
 [`python/demo.py`](python/demo.py) opens the library with
 `tvm_ffi.load_module`, builds a `PrimFunc` with TVMScript, runs the exported
 passes on it, and composes an exported pass object with `tvm.transform`.
+
+Rust's generic `create_*_pass` and `filter` constructors are `unsafe`: callers
+must preserve the callback captures' threading requirements through every native
+copy of the pass, including final release. `bind_target` and `remap_thread_axis`
+also require their captured objects and all pass copies to stay on the objects'
+owning thread; this applies to their exported factories too. Concrete factories
+whose callbacks have no captures or only thread-safe captures remain safe.
 
 Overrides: `TVM_LIBRARY_PATH` (directory holding the TVM libraries),
 `TVM_COMPILER_LIBRARY` (explicit compiler library path), `TVM_PYTHON`

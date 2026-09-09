@@ -93,13 +93,16 @@ pub fn inline_private_functions_module(module: IRModule) -> Result<IRModule> {
 
 /// Build TVM's `tirx.InlinePrivateFunctions` module pass in Rust.
 pub fn inline_private_functions() -> Result<Pass> {
-    create_module_pass(
-        "tirx.InlinePrivateFunctions",
-        0,
-        Vec::new(),
-        false,
-        inline_private_functions_module,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass(
+            "tirx.InlinePrivateFunctions",
+            0,
+            Vec::new(),
+            false,
+            inline_private_functions_module,
+        )
+    }
 }
 
 fn collect_prim_funcs(module: &IRModule) -> FunctionTable {

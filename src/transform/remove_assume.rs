@@ -40,13 +40,16 @@ fn remove_assume_nodes(function: PrimFunc) -> Result<PrimFunc> {
 /// Build the callback pass used as the first stage of TVM's
 /// `tirx.RemoveAssume` sequential pass.
 pub fn remove_assume_internal() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.RemoveAssumeInternal",
-        0,
-        Vec::new(),
-        false,
-        remove_assume_nodes,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.RemoveAssumeInternal",
+            0,
+            Vec::new(),
+            false,
+            remove_assume_nodes,
+        )
+    }
 }
 
 /// Build TVM's full `tirx.RemoveAssume` sequence in Rust.

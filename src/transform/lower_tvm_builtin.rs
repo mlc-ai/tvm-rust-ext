@@ -75,13 +75,16 @@ pub fn lower_tvm_builtin_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.LowerTVMBuiltin` pass in Rust.
 pub fn lower_tvm_builtin() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.LowerTVMBuiltin",
-        0,
-        Vec::new(),
-        false,
-        lower_tvm_builtin_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.LowerTVMBuiltin",
+            0,
+            Vec::new(),
+            false,
+            lower_tvm_builtin_prim_func,
+        )
+    }
 }
 
 #[derive(Clone, Copy)]

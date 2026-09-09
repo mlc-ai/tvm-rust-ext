@@ -85,14 +85,13 @@ impl Target {
 
     /// Return whether this target advertises `key` in its canonical key list.
     pub fn has_key(&self, key: &str) -> Result<bool> {
-        let keys: Array<String> =
-            FieldGetter::new(TargetObj::type_index(), "keys")?.get(&**self)?;
+        let keys: Array<String> = FieldGetter::new(TargetObj::type_index(), "keys")?.get(self)?;
         Ok(keys.iter().any(|candidate| candidate.as_str() == key))
     }
 
     /// Return the host target, if one is attached.
     pub fn host(&self) -> Result<Option<Self>> {
-        FieldGetter::new(TargetObj::type_index(), "host")?.get(&**self)
+        FieldGetter::new(TargetObj::type_index(), "host")?.get(self)
     }
 
     /// Return the same target with its host component removed.

@@ -63,13 +63,16 @@ pub fn tile_primitive_dispatch_prim_func(function: PrimFunc) -> Result<PrimFunc>
 
 /// Build TVM's `tirx.TilePrimitiveDispatch` PrimFunc pass in Rust.
 pub fn tile_primitive_dispatch() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.TilePrimitiveDispatch",
-        0,
-        Vec::new(),
-        false,
-        tile_primitive_dispatch_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.TilePrimitiveDispatch",
+            0,
+            Vec::new(),
+            false,
+            tile_primitive_dispatch_prim_func,
+        )
+    }
 }
 
 struct PendingBufferStatements {

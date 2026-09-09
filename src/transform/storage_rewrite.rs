@@ -103,21 +103,24 @@ fn storage_rewrite_with_reuse(function: PrimFunc, enable_reuse: bool) -> Result<
 
 /// Build TVM's `tirx.StorageRewrite` PrimFunc pass in Rust.
 pub fn storage_rewrite() -> Result<Pass> {
-    create_prim_func_pass_with_context(
-        "tirx.StorageRewrite",
-        0,
-        Vec::new(),
-        false,
-        |function, context| {
-            let merge_static_smem = context
-                .config()?
-                .get(&FfiString::from("tirx.merge_static_smem"))?
-                .map(bool::try_from)
-                .transpose()?
-                .unwrap_or(false);
-            storage_rewrite_with_reuse(function, !merge_static_smem)
-        },
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass_with_context(
+            "tirx.StorageRewrite",
+            0,
+            Vec::new(),
+            false,
+            |function, context| {
+                let merge_static_smem = context
+                    .config()?
+                    .get(&FfiString::from("tirx.merge_static_smem"))?
+                    .map(bool::try_from)
+                    .transpose()?
+                    .unwrap_or(false);
+                storage_rewrite_with_reuse(function, !merge_static_smem)
+            },
+        )
+    }
 }
 
 struct AllocationInfo {

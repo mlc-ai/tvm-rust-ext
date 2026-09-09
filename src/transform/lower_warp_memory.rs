@@ -66,13 +66,16 @@ pub fn lower_warp_memory_prim_func(function: PrimFunc) -> Result<PrimFunc> {
 
 /// Build TVM's `tirx.LowerWarpMemory` pass in Rust.
 pub fn lower_warp_memory() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.LowerWarpMemory",
-        0,
-        Vec::new(),
-        false,
-        lower_warp_memory_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.LowerWarpMemory",
+            0,
+            Vec::new(),
+            false,
+            lower_warp_memory_prim_func,
+        )
+    }
 }
 
 struct BoundBinder {

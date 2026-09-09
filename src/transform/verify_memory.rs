@@ -37,22 +37,25 @@ pub fn verify_memory_prim_func(function: &PrimFunc) -> Result<bool> {
 
 /// Build the read-only `tirx.VerifyMemory` module pass.
 pub fn verify_memory() -> Result<Pass> {
-    create_module_pass("tirx.VerifyMemory", 0, Vec::new(), false, |module| {
-        for (_, function) in module.functions.iter() {
-            if let Ok(function) = function.try_cast::<PrimFunc>() {
-                let errors = memory_errors(&function)?;
-                if !errors.is_empty() {
-                    return Err(Error::new(
-                        RUNTIME_ERROR,
-                        &format!("Memory verification failed with the following errors:\n    {}\n  Did you forget to bind?",
-                            errors.join("\n    ")),
-                        "",
-                    ));
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_module_pass("tirx.VerifyMemory", 0, Vec::new(), false, |module| {
+            for (_, function) in module.functions.iter() {
+                if let Ok(function) = function.try_cast::<PrimFunc>() {
+                    let errors = memory_errors(&function)?;
+                    if !errors.is_empty() {
+                        return Err(Error::new(
+                            RUNTIME_ERROR,
+                            &format!("Memory verification failed with the following errors:\n    {}\n  Did you forget to bind?",
+                                errors.join("\n    ")),
+                            "",
+                        ));
+                    }
                 }
             }
-        }
-        Ok(module)
-    })
+            Ok(module)
+        })
+    }
 }
 
 fn memory_errors(function: &PrimFunc) -> Result<Vec<std::string::String>> {

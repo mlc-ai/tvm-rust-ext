@@ -60,13 +60,16 @@ pub fn lower_tirx_dedup_cu_tensor_maps_prim_func(function: PrimFunc) -> Result<P
 
 /// Build TVM's `tirx.LowerTIRxDedupCuTensorMaps` pass in Rust.
 pub fn lower_tirx_dedup_cu_tensor_maps() -> Result<Pass> {
-    create_prim_func_pass(
-        "tirx.LowerTIRxDedupCuTensorMaps",
-        0,
-        Vec::new(),
-        false,
-        lower_tirx_dedup_cu_tensor_maps_prim_func,
-    )
+    // SAFETY: the callback has no captured state.
+    unsafe {
+        create_prim_func_pass(
+            "tirx.LowerTIRxDedupCuTensorMaps",
+            0,
+            Vec::new(),
+            false,
+            lower_tirx_dedup_cu_tensor_maps_prim_func,
+        )
+    }
 }
 
 #[derive(Clone)]

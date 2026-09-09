@@ -33,14 +33,11 @@ pub mod prim;
 mod unique_name_supply;
 
 pub use semantic::{PrimExpr, TypedExpr, TypedVar};
-pub use unique_name_supply::{UniqueNameSupply, UniqueNameSupplyObj};
 
 // Every object registered under `ir` gets its block in this file; `skip` leaves one out.
 // tvm-ffi-stubgen(prefix): ir
-// These bindings retain constructor and thread-safety rules not expressed by the generator.
-// tvm-ffi-stubgen(skip): ir.SourceName
-// tvm-ffi-stubgen(skip): ir.UniqueNameSupply
-// tvm-ffi-stubgen(ty-map): ir.SourceName -> SourceName
+// Source names come from TVM's interning table, never a fresh Rust allocation.
+// tvm-ffi-stubgen(no-alloc): ir.SourceName
 // `ir.VDevice.target` refers to the hand-written `target` binding (its object struct is `TargetObj`).
 // tvm-ffi-stubgen(ty-map): target.Target -> crate::target::Target
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
@@ -825,29 +822,37 @@ impl Deref for OpObj {
     }
 }
 
-impl OpObj {
+impl Op {
     pub fn name(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "name")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "name")?.get(self)
     }
 
     pub fn description(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "description")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "description")?.get(self)
     }
 
     pub fn arguments(&self) -> Result<Array<ArgumentInfo>> {
-        FieldGetter::new(Self::type_index(), "arguments")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "arguments")?.get(self)
     }
 
     pub fn attrs_type_key(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "attrs_type_key")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "attrs_type_key")?.get(self)
     }
 
     pub fn num_inputs(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "num_inputs")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "num_inputs")?.get(self)
     }
 
     pub fn support_level(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "support_level")?.get(self)
+        FieldGetter::new(OpObj::type_index(), "support_level")?.get(self)
+    }
+
+    pub fn span(&self) -> Result<Option<Span>> {
+        FieldGetter::new(OpObj::type_index(), "span")?.get(self)
+    }
+
+    pub fn ty(&self) -> Result<Type> {
+        FieldGetter::new(OpObj::type_index(), "ty")?.get(self)
     }
 }
 
@@ -1008,13 +1013,13 @@ impl Deref for Source {
     }
 }
 
-impl SourceObj {
+impl Source {
     pub fn source_name(&self) -> Result<SourceName> {
-        FieldGetter::new(Self::type_index(), "source_name")?.get(self)
+        FieldGetter::new(SourceObj::type_index(), "source_name")?.get(self)
     }
 
     pub fn source(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "source")?.get(self)
+        FieldGetter::new(SourceObj::type_index(), "source")?.get(self)
     }
 }
 // tvm-ffi-stubgen(end)
@@ -1066,7 +1071,8 @@ impl SourceMap {
 }
 // tvm-ffi-stubgen(end)
 
-/// Complete field view of a native interned source name; construction is registry-only.
+// tvm-ffi-stubgen(begin): object/ir.SourceName
+/// Complete: reflected fields fill [24, 40) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
 #[type_key = "ir.SourceName"]
@@ -1081,12 +1087,6 @@ const _: () = {
     assert!(::core::mem::align_of::<SourceNameObj>() == 8);
 };
 
-/// A source name obtained through [`SourceName::get`], not a fresh allocation.
-///
-/// ```compile_fail
-/// use tvm::ir::SourceName;
-/// let name = SourceName::from_complete_fields("example.cc".into());
-/// ```
 #[repr(C)]
 #[derive(tvm_ffi::derive::ObjectRef, Clone)]
 pub struct SourceName {
@@ -1099,6 +1099,7 @@ impl Deref for SourceName {
         &self.base
     }
 }
+// tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.Span
 /// Complete: reflected fields fill [24, 48) exactly.
@@ -1860,17 +1861,17 @@ impl Deref for VDeviceObj {
     }
 }
 
-impl VDeviceObj {
+impl VDevice {
     pub fn target(&self) -> Result<Target> {
-        FieldGetter::new(Self::type_index(), "target")?.get(self)
+        FieldGetter::new(VDeviceObj::type_index(), "target")?.get(self)
     }
 
     pub fn vdevice_id(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "vdevice_id")?.get(self)
+        FieldGetter::new(VDeviceObj::type_index(), "vdevice_id")?.get(self)
     }
 
     pub fn memory_scope(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "memory_scope")?.get(self)
+        FieldGetter::new(VDeviceObj::type_index(), "memory_scope")?.get(self)
     }
 }
 
@@ -1932,6 +1933,30 @@ impl Var {
 tvm_ffi::impl_object_upcast!(Var => Expr);
 // tvm-ffi-stubgen(end)
 
+// tvm-ffi-stubgen(begin): object/ir.UniqueNameSupply
+/// Opaque: bytes [24, 64) of [24, 64) are not accounted for by reflected fields. Fields are read through the C ABI getters.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.UniqueNameSupply"]
+#[type_final]
+pub struct UniqueNameSupplyObj {
+    base: Object,
+}
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct UniqueNameSupply {
+    base: ObjectArc<UniqueNameSupplyObj>,
+}
+
+impl Deref for UniqueNameSupply {
+    type Target = UniqueNameSupplyObj;
+    fn deref(&self) -> &UniqueNameSupplyObj {
+        &self.base
+    }
+}
+// tvm-ffi-stubgen(end)
+
 // ---------------------------------------------------------------------------
 // Hand-written semantics for the generated bindings above.  Lines outside the
 // `tvm-ffi-stubgen(begin)`/`(end)` blocks are kept verbatim by the generator,
@@ -1943,9 +1968,9 @@ tvm_ffi::impl_object_upcast!(Var => Expr);
 mod semantic {
     use super::*;
     use tvm_ffi::{
-        Any, AnyCompatible, AnyView, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error,
-        FieldGetter, Map, ObjectArc, ObjectCore, ObjectRefCast, ObjectRefCore, Result, String,
-        TVMFFIAny, INDEX_ERROR, TYPE_ERROR, VALUE_ERROR,
+        Any, AnyCompatible, AnyView, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map,
+        ObjectArc, ObjectRefCast, ObjectRefCore, Result, String, TVMFFIAny, INDEX_ERROR,
+        TYPE_ERROR, VALUE_ERROR,
     };
 
     impl Op {
@@ -1954,11 +1979,6 @@ mod semantic {
             tvm_ffi::cached_global_func!("ir.GetOp")
                 .call_tuple((String::from(name),))?
                 .try_into()
-        }
-
-        /// Return the operator's registered name.
-        pub fn name(&self) -> Result<String> {
-            FieldGetter::new(OpObj::type_index(), "name")?.get(&**self)
         }
     }
 
@@ -2373,6 +2393,13 @@ mod semantic {
 
     impl SourceName {
         /// Return the interned native source name for `name`.
+        ///
+        /// Direct allocation is intentionally unavailable:
+        ///
+        /// ```compile_fail
+        /// use tvm::ir::SourceName;
+        /// let name = SourceName::from_complete_fields("example.cc".into());
+        /// ```
         pub fn get(name: &str) -> Result<Self> {
             tvm_ffi::cached_global_func!("ir.SourceName")
                 .call_tuple((String::from(name),))?
@@ -2381,21 +2408,9 @@ mod semantic {
     }
 
     impl Source {
-        fn field<T>(&self, name: &str) -> Result<T>
-        where
-            T: TryFrom<Any, Error = Error>,
-        {
-            FieldGetter::new(SourceObj::type_index(), name)?.get(&**self)
-        }
-
-        /// Return the interned name associated with this native source object.
-        pub fn source_name(&self) -> Result<SourceName> {
-            self.field("source_name")
-        }
-
         /// Return the native source text.
         pub fn text(&self) -> Result<String> {
-            self.field("source")
+            self.source()
         }
     }
 
