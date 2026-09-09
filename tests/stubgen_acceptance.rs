@@ -212,7 +212,7 @@ fn generated_bindings_support_structural_walk() {
     assert_eq!(integer_literals, vec![0]);
     assert_eq!(
         variable_regions,
-        vec![DefRegionKind::Recursive, DefRegionKind::None]
+        vec![DefRegionKind::Pattern, DefRegionKind::None]
     );
 }
 

@@ -205,7 +205,7 @@ generated object.
 ## Integration with the existing stubgen
 
 Use `tvm-ffi-stubgen`, not a second TVM-only generator. At the pinned
-tvm-ffi revision (`897ece64`), the shared pipeline:
+tvm-ffi revision (`b02536e`), the shared pipeline:
 
 - loads the requested shared libraries from `--dlls`;
 - collects registered type keys and global functions;
