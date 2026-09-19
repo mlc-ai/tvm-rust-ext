@@ -27,8 +27,8 @@ use tvm_ffi::{
 use super::utils::{get_operator, mutate_expr_default, mutate_stmt_expr_default};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::{Add, Mul, Sub};
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, TensorLoad, Var};
+use crate::prim::{Add, Mul, Sub};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt, TileLayout,

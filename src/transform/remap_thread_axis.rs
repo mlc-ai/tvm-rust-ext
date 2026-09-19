@@ -26,7 +26,7 @@ use tvm_ffi::{
 
 use super::utils::{option_same_as, with_prim_func_attr, with_prim_func_body, BufferRemaps};
 use super::{create_prim_func_pass, Pass};
-use crate::ir::{PrimExpr, Var};
+use crate::ir::{Expr, PrimExpr, Var};
 use crate::tirx::{AttrStmt, For, IterVar, PrimFunc, Stmt};
 
 const KERNEL_LAUNCH_PARAMS: &str = "tirx.kernel_launch_params";
@@ -154,7 +154,7 @@ fn mutate_regular_attribute(
     mutator: &mut Mutator,
     value: AttrStmt,
 ) -> Result<AttrStmt> {
-    let attr_value: PrimExpr = mutator.mutate(rewriter, &value.value)?.try_into()?;
+    let attr_value: Expr = mutator.mutate(rewriter, &value.value)?.try_into()?;
     let body: Stmt = mutator.mutate(rewriter, &value.body)?.try_into()?;
     if attr_value.same_as(&value.value) && body.same_as(&value.body) {
         return Ok(value);

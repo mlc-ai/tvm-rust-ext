@@ -21,8 +21,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use tvm::ir::prim::{Add, Broadcast, Cast, Mul};
 use tvm::ir::{Call, CallObj, DictAttrs, IRModule, IntImm, Op, PrimExpr, PrimType, Type, Var};
+use tvm::prim::{Add, Broadcast, Cast, Mul};
 use tvm::target::Target;
 use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::transform::{self, Pass};
@@ -42,11 +42,7 @@ fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() -> Result<()> {
     let four: PrimExpr = IntImm::new("int32", 4)?.into();
     let scalable = Mul::new(
         four.clone(),
-        Call::new(
-            PrimType::new("int32")?,
-            Op::get("ir.prim.vscale")?,
-            Vec::new(),
-        ),
+        Call::new(PrimType::new("int32")?, Op::get("prim.vscale")?, Vec::new()),
     )?
     .into();
     for lanes in [four, scalable] {

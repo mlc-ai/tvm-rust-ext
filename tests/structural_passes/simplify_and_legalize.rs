@@ -175,7 +175,7 @@ fn rust_stmt_simplify_matches_cpp_for_nested_expression_dispatch() -> Result<()>
     let tuple = Tuple::new(vec![sum.clone(), Tuple::new(vec![sum]).into()]);
     let call = Call::new(
         PrimType::new("int32")?,
-        Op::get("ir.prim.shift_left")?,
+        Op::get("prim.shift_left")?,
         vec![int_expression(3), int_expression(1)],
     );
     let body = SeqStmt::new(vec![
@@ -379,13 +379,13 @@ fn rust_force_narrow_index_to_int32_matches_cpp_for_buffer_indices() {
             .into()],
     )
     .unwrap();
-    let broadcast: PrimExpr = tvm::ir::prim::Broadcast::new(
+    let broadcast: PrimExpr = tvm::prim::Broadcast::new(
         IntImm::new("int64", 9).unwrap(),
         IntImm::new("int32", 4).unwrap(),
     )
     .unwrap()
     .into();
-    let shuffle = tvm::ir::prim::Shuffle::new(
+    let shuffle = tvm::prim::Shuffle::new(
         Array::new(vec![broadcast.clone()]),
         Array::new(vec![prim_int_expression(1)]),
     )
@@ -441,7 +441,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
     let buffer_type =
         BufferType::new("global", "int32", vec![typed_int_expression("int64", 16)]).unwrap();
     let buffer = buffer_type.new_var("scratch");
-    let region = BufferRegion::new(
+    let region = TensorRegion::new(
         &buffer,
         vec![Range::from_min_extent(
             typed_int_expression("int64", 0),
@@ -487,8 +487,8 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
         .unwrap()
         .try_cast::<TilePrimitiveCall>()
         .unwrap();
-    let region = BufferRegion::try_from(call.args.get(0).unwrap()).unwrap();
-    assert!(region.buffer.same_as(&allocation.buffer));
+    let region = TensorRegion::try_from(call.args.get(0).unwrap()).unwrap();
+    assert!(region.source.same_as(&allocation.buffer));
 }
 
 #[test]
@@ -557,7 +557,7 @@ fn rust_narrow_data_type_matches_cpp_for_ranges_and_shared_uses() -> Result<()> 
 
 #[test]
 fn rust_index_narrowing_matches_cpp_for_arithmetic_rebuilding() -> Result<()> {
-    use tvm::ir::prim::{Div, Max, Min, Mod, Sub};
+    use tvm::prim::{Div, Max, Min, Mod, Sub};
 
     load_tvm_compiler();
     let index = Var::new("i", "int64")?;
@@ -880,7 +880,7 @@ fn rust_compute_legalize_matches_cpp_across_buffer_boundaries() {
 
 #[test]
 fn rust_compute_legalize_recurses_into_allocated_buffer_metadata() -> Result<()> {
-    use tvm::ir::prim::Cast;
+    use tvm::prim::Cast;
 
     load_tvm_compiler();
     let extent: Expr = Cast::new(PrimType::new("int32")?, FloatImm::new("bfloat16", 8.0)?)?.into();
@@ -951,16 +951,12 @@ fn rust_compute_legalize_preserves_buffers_referenced_by_layouts() -> Result<()>
 
 #[test]
 fn rust_compute_legalize_matches_cpp_for_fixed_and_scalable_vector_stores() -> Result<()> {
-    use tvm::ir::prim::{Broadcast, Ramp};
     use tvm::ir::Op;
+    use tvm::prim::{Broadcast, Ramp};
 
     load_tvm_compiler();
     let scalable: Expr = Mul::new(
-        Call::new(
-            PrimType::new("int32")?,
-            Op::get("ir.prim.vscale")?,
-            Vec::new(),
-        ),
+        Call::new(PrimType::new("int32")?, Op::get("prim.vscale")?, Vec::new()),
         IntImm::new("int32", 4)?,
     )?
     .into();

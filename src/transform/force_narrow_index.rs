@@ -30,14 +30,14 @@ use super::utils::{
     option_same_as, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::{
+use crate::ir::TensorRegion;
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, Var};
+use crate::prim::{
     Add, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Ramp, Select, Sub, EQ, GE, GT, LE,
     LT, NE,
 };
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, Var};
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, For, IfThenElse, IterVar,
-    PrimFunc, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, For, IfThenElse, IterVar, PrimFunc, Stmt,
 };
 
 const THREAD_EXTENT: &str = "thread_extent";
@@ -137,14 +137,14 @@ impl IndexDataTypeNormalizer {
             var_remap: HashMap::new(),
             buffer_remaps: BufferRemaps::default(),
             iter_var_remap: HashMap::new(),
-            shift_right_operator: get_operator("ir.prim.shift_right")?,
-            shift_left_operator: get_operator("ir.prim.shift_left")?,
-            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
-            bitwise_or_operator: get_operator("ir.prim.bitwise_or")?,
-            bitwise_xor_operator: get_operator("ir.prim.bitwise_xor")?,
+            shift_right_operator: get_operator("prim.shift_right")?,
+            shift_left_operator: get_operator("prim.shift_left")?,
+            bitwise_and_operator: get_operator("prim.bitwise_and")?,
+            bitwise_or_operator: get_operator("prim.bitwise_or")?,
+            bitwise_xor_operator: get_operator("prim.bitwise_xor")?,
             pow_operator: get_operator("tirx.pow")?,
-            clz_operator: get_operator("tirx.clz")?,
-            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+            clz_operator: get_operator("prim.clz")?,
+            if_then_else_operator: get_operator("prim.if_then_else")?,
         })
     }
 
@@ -325,14 +325,14 @@ impl IndexDataTypeNormalizer {
             None
         };
         if let Some(replacement) = replacement.filter(|replacement| replacement.dtype != dtype) {
-            if self.selected_types.is_none() && value.value > i64::from(i32::MAX) {
+            if self.selected_types.is_none() && value.value_i64() > i64::from(i32::MAX) {
                 return Err(tvm_ffi::Error::new(
                     tvm_ffi::VALUE_ERROR,
                     "int64 index literal does not fit in int32",
                     "",
                 ));
             }
-            IntImm::from_dtype(replacement.dtype, value.value)
+            IntImm::from_dtype(replacement.dtype, value.value_i64())
         } else {
             Ok(value)
         }
@@ -371,63 +371,63 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpAdd")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpAdd")
     }
 
     fn mutate_subtract(&mut self, value: Sub, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpSub")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpSub")
     }
 
     fn mutate_multiply(&mut self, value: Mul, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMul")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMul")
     }
 
     fn mutate_divide(&mut self, value: Div, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpDiv")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpDiv")
     }
 
     fn mutate_modulo(&mut self, value: Mod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMod")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMod")
     }
 
     fn mutate_floor_divide(&mut self, value: FloorDiv, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorDiv")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpFloorDiv")
     }
 
     fn mutate_floor_modulo(&mut self, value: FloorMod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorMod")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpFloorMod")
     }
 
     fn mutate_minimum(&mut self, value: Min, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMin")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMin")
     }
 
     fn mutate_maximum(&mut self, value: Max, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMax")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMax")
     }
 
     fn mutate_equal(&mut self, value: EQ, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpEQ")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpEQ")
     }
 
     fn mutate_not_equal(&mut self, value: NE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpNE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpNE")
     }
 
     fn mutate_less_than(&mut self, value: LT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLT")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpLT")
     }
 
     fn mutate_less_equal(&mut self, value: LE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpLE")
     }
 
     fn mutate_greater_than(&mut self, value: GT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGT")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpGT")
     }
 
     fn mutate_greater_equal(&mut self, value: GE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpGE")
     }
 
     fn mutate_ramp(&mut self, value: Ramp, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -610,14 +610,14 @@ impl IndexDataTypeNormalizer {
         self.enabled = true;
         let iteration = IterVar::try_from(value.node.clone())?;
         let iteration = self.mutate_thread_iter(&iteration)?;
-        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let attr_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
         self.enabled = old_enabled;
         let ty = iteration.var()?.type_annotation();
         Ok(value.copy_with(
             iteration.into(),
             value.attr_key.clone(),
-            cast_if_needed(attr_value, &ty)?,
+            cast_if_needed(PrimExpr::try_from(attr_value)?, &ty)?,
             body,
         ))
     }
@@ -676,10 +676,12 @@ impl IndexDataTypeNormalizer {
 
     fn mutate_buffer_region(
         &mut self,
-        value: BufferRegion,
+        value: TensorRegion,
         mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.buffer_remaps.use_buffer(&value.buffer);
+    ) -> Result<TensorRegion> {
+        let buffer = self
+            .buffer_remaps
+            .use_buffer(&BufferVar::try_from(value.source.clone())?);
         mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 

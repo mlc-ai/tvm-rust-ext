@@ -29,8 +29,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
-use crate::ir::prim::{Add, Not, GE, LT};
 use crate::ir::{Call, Expr, PrimExpr, Range, TensorLoad, Var};
+use crate::prim::{Add, Not, GE, LT};
 use crate::tirx::{
     AssertStmt, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse, IterVar,
     PrimFunc, Stmt,
@@ -124,7 +124,7 @@ fn stmt_simplify_with_options(
     let analyzer = Analyzer::new()?;
     analyzer.set_enabled_extensions(options.extensions())?;
 
-    let if_then_else_operator = get_operator("ir.prim.if_then_else")?;
+    let if_then_else_operator = get_operator("prim.if_then_else")?;
     let mut simplifier = StmtSimplifier {
         analyzer,
         if_then_else_operator,
@@ -172,9 +172,9 @@ struct StmtSimplifier {
 
 impl StmtSimplifier {
     fn prove_condition(&self, condition: &PrimExpr) -> Result<Option<bool>> {
-        let substituted: PrimExpr = tvm_ffi::cached_global_func!("tirx.Substitute")
-            .call_tuple((condition, &self.non_inlined_bindings))?
-            .try_into()?;
+        let substituted: PrimExpr =
+            super::utils::substitute_vars(condition.clone().into(), &self.non_inlined_bindings)?
+                .try_into()?;
         let simplified = self.analyzer.simplify(&substituted)?;
         Ok(int_value(&simplified).map(|value| value != 0))
     }
@@ -263,7 +263,7 @@ impl StmtSimplifier {
             let extent: PrimExpr = mutator.mutate(simplifier, &value.extent)?.try_into()?;
             let step: Option<PrimExpr> = mutator.mutate(simplifier, &value.step)?.try_into()?;
             let zero = crate::ir::IntImm::from_dtype(extent.dtype(), 0)?;
-            let positive: PrimExpr = crate::ir::prim::GT::new(extent.clone(), zero)?.into();
+            let positive: PrimExpr = crate::prim::GT::new(extent.clone(), zero)?.into();
             let body: Stmt = simplifier.with_constraint(&positive, |simplifier| {
                 mutator.mutate(simplifier, &value.body)?.try_into()
             })?;
@@ -360,12 +360,15 @@ impl StmtSimplifier {
             {
                 let iteration = IterVar::try_from(value.node.clone())?;
                 let variable = iteration.var()?;
-                let zero = crate::ir::IntImm::from_dtype(value.value.dtype(), 0)?;
+                let zero = crate::ir::IntImm::from_dtype(
+                    PrimExpr::try_from(value.value.clone())?.dtype(),
+                    0,
+                )?;
                 let domain = Range::from_min_extent(zero, value.value.clone())?;
                 simplifier.analyzer.bind(variable.as_var(), &domain)?;
             }
 
-            let attr_value: PrimExpr = mutator.mutate(simplifier, &value.value)?.try_into()?;
+            let attr_value: Expr = mutator.mutate(simplifier, &value.value)?.try_into()?;
             let body: Stmt = mutator.mutate(simplifier, &value.body)?.try_into()?;
             if attr_value.same_as(&value.value) && body.same_as(&value.body) {
                 return Ok(value);

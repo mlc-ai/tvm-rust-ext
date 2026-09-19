@@ -33,8 +33,8 @@ use tvm_ffi::{
 
 pub use crate::ir::{IntSet, IntSetObj};
 
-use crate::ir::prim::{AddObj, MulObj, SubObj};
 use crate::ir::{CallObj, ExprObj, IntImmObj, OpObj, PrimExpr, Range, TensorLoadObj, Var, VarObj};
+use crate::prim::{AddObj, MulObj, SubObj};
 use crate::tirx::{
     AssertStmtObj, BufferStoreObj, EvaluateObj, ForObj, IfThenElseObj, PrimVar, SeqStmtObj, StmtObj,
 };
@@ -46,7 +46,7 @@ use crate::tirx::{
 /// analysis functions for operations.
 #[repr(C)]
 #[derive(Object)]
-#[type_key = "arith.Analyzer"]
+#[type_key = "sym.Analyzer"]
 #[type_final]
 pub struct AnalyzerObj {
     base: tvm_ffi::Object,
@@ -73,7 +73,7 @@ pub struct Analyzer {
 /// Inclusive constant-integer bounds computed by [`Analyzer`].
 #[repr(C)]
 #[derive(Object)]
-#[type_key = "arith.ConstIntBound"]
+#[type_key = "sym.ConstIntBound"]
 #[type_final]
 pub struct ConstIntBoundObj {
     base: tvm_ffi::Object,
@@ -95,7 +95,7 @@ pub struct ConstIntBound {
 /// opaque analysis handle.
 #[repr(C)]
 #[derive(Object)]
-#[type_key = "arith.ModularSet"]
+#[type_key = "sym.ModularSet"]
 #[type_final]
 pub struct ModularSetObj {
     base: tvm_ffi::Object,
@@ -137,7 +137,7 @@ impl std::ops::Deref for Analyzer {
 impl Analyzer {
     /// Construct a fresh native analyzer context.
     pub fn new() -> Result<Self> {
-        tvm_ffi::cached_global_func!("arith.Analyzer")
+        tvm_ffi::cached_global_func!("sym.Analyzer")
             .call_tuple(())?
             .try_into()
     }
@@ -149,69 +149,69 @@ impl Analyzer {
 
     /// Simplify a primitive expression with an explicit analysis-step count.
     pub fn simplify_with_steps(&self, expression: &PrimExpr, steps: i32) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSimplify")
+        tvm_ffi::cached_global_func!("sym.AnalyzerSimplify")
             .call_tuple((self, expression, steps))?
             .try_into()
     }
 
     /// Apply TVM's rewrite simplifier without the canonicalization stage.
     pub fn rewrite_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerRewriteSimplify")
+        tvm_ffi::cached_global_func!("sym.AnalyzerRewriteSimplify")
             .call_tuple((self, expression))?
             .try_into()
     }
 
     /// Canonicalize one primitive expression with TVM's arithmetic normalizer.
     pub fn canonical_simplify(&self, expression: &PrimExpr) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanonicalSimplify")
+        tvm_ffi::cached_global_func!("sym.AnalyzerCanonicalSimplify")
             .call_tuple((self, expression))?
             .try_into()
     }
 
     /// Return the analyzer's inclusive constant-integer bounds for `expression`.
     pub fn const_int_bound(&self, expression: &PrimExpr) -> Result<ConstIntBound> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerConstIntBound")
+        tvm_ffi::cached_global_func!("sym.AnalyzerConstIntBound")
             .call_tuple((self, expression))?
             .try_into()
     }
 
     /// Infer the modular set of `expression`.
     pub fn modular_set(&self, expression: &PrimExpr) -> Result<ModularSet> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerModularSet")
+        tvm_ffi::cached_global_func!("sym.AnalyzerModularSet")
             .call_tuple((self, expression))?
             .try_into()
     }
 
     /// Prove that two primitive expressions are equal.
     pub fn can_prove_equal(&self, lhs: &PrimExpr, rhs: &PrimExpr) -> Result<bool> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanProveEqual")
+        tvm_ffi::cached_global_func!("sym.AnalyzerCanProveEqual")
             .call_tuple((self, lhs, rhs))?
             .try_into()
     }
 
     /// Prove a boolean primitive expression using TVM's default proof strength.
     pub fn can_prove(&self, condition: &PrimExpr) -> Result<bool> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerCanProve")
+        tvm_ffi::cached_global_func!("sym.AnalyzerCanProve")
             .call_tuple((self, condition, 0_i32))?
             .try_into()
     }
 
     /// Evaluate the integer set of an expression under explicit variable domains.
     pub fn int_set(&self, expression: &PrimExpr, domains: &Map<Var, IntSet>) -> Result<IntSet> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerIntSet")
+        tvm_ffi::cached_global_func!("sym.AnalyzerIntSet")
             .call_tuple((self, expression, domains))?
             .try_into()
     }
 
     /// Bind a variable to a range in this analyzer context.
     pub fn bind(&self, variable: &Var, range: &Range) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, range))?;
+        tvm_ffi::cached_global_func!("sym.AnalyzerBind").call_tuple((self, variable, range))?;
         Ok(())
     }
 
     /// Bind a variable to a pure primitive expression in this analyzer context.
     pub fn bind_expression(&self, variable: &Var, value: &PrimExpr) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerBind").call_tuple((self, variable, value))?;
+        tvm_ffi::cached_global_func!("sym.AnalyzerBind").call_tuple((self, variable, value))?;
         Ok(())
     }
 
@@ -234,21 +234,21 @@ impl Analyzer {
     }
 
     pub(crate) fn enter_constraint(&self, constraint: &PrimExpr) -> Result<Function> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerEnterConstraintContext")
+        tvm_ffi::cached_global_func!("sym.AnalyzerEnterConstraintContext")
             .call_tuple((self, constraint))?
             .try_into()
     }
 
     /// Limit the rewrite simplifier for deterministic debug/test behavior.
     pub fn set_maximum_rewrite_steps(&self, maximum: i64) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSetMaximumRewriteSteps")
+        tvm_ffi::cached_global_func!("sym.AnalyzerSetMaximumRewriteSteps")
             .call_tuple((self, maximum))?;
         Ok(())
     }
 
     /// Select optional rewrite-simplifier extensions by their native bitmask.
     pub fn set_enabled_extensions(&self, extensions: i64) -> Result<()> {
-        tvm_ffi::cached_global_func!("arith.AnalyzerSetEnabledExtensions")
+        tvm_ffi::cached_global_func!("sym.AnalyzerSetEnabledExtensions")
             .call_tuple((self, extensions))?;
         Ok(())
     }
@@ -263,7 +263,7 @@ pub fn detect_linear_equation(
     expression: &PrimExpr,
     variables: Vec<PrimVar>,
 ) -> Result<tvm_ffi::Array<PrimExpr>> {
-    tvm_ffi::cached_global_func!("arith.DetectLinearEquation")
+    tvm_ffi::cached_global_func!("sym.DetectLinearEquation")
         .call_tuple((expression, tvm_ffi::Array::new(variables)))?
         .try_into()
 }
@@ -271,14 +271,14 @@ pub fn detect_linear_equation(
 impl IntSet {
     /// Construct a closed integer interval.
     pub fn interval(minimum: PrimExpr, maximum: PrimExpr) -> Result<Self> {
-        tvm_ffi::cached_global_func!("arith.intset_interval")
+        tvm_ffi::cached_global_func!("sym.intset_interval")
             .call_tuple((minimum, maximum))?
             .try_into()
     }
 
     /// Return the set's upper-bound expression.
     pub fn maximum(&self) -> Result<PrimExpr> {
-        tvm_ffi::cached_global_func!("arith.IntervalSetGetMax")
+        tvm_ffi::cached_global_func!("sym.IntervalSetGetMax")
             .call_tuple((self,))?
             .try_into()
     }
@@ -672,7 +672,7 @@ impl ExprTrace {
     }
 
     fn walk_integer(&mut self, node: &IntImmObj) -> WalkResult {
-        self.events.push(ExprTraceEvent::Int(node.value));
+        self.events.push(ExprTraceEvent::Int(node.value_i64()));
         WalkResult::Advance
     }
 }
@@ -695,7 +695,7 @@ where
     let outcome = structural_walk(
         root,
         |node: &IntImmObj| {
-            if node.value == target {
+            if node.value_i64() == target {
                 WalkResult::Interrupt
             } else {
                 WalkResult::Advance
@@ -713,7 +713,7 @@ where
 {
     structural_walk(
         root,
-        |node: &IntImmObj| WalkResult::interrupt_with(node.value),
+        |node: &IntImmObj| WalkResult::interrupt_with(node.value_i64()),
         WalkOrder::PreOrder,
     )?
     .map(|interrupt| i64::try_from(interrupt.value))

@@ -31,11 +31,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::{Let, Ramp, Shuffle};
 use crate::ir::{
     Call, CallObj, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
     VarObj,
 };
+use crate::prim::{Let, Ramp, Shuffle};
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt,
 };
@@ -724,7 +724,7 @@ impl VectorTypeRewriter {
                         let new_lanes = lanes / factor;
                         new_index = Ramp::with_span(
                             binary_op(
-                                "tirx._OpMul",
+                                "prim._OpMul",
                                 new_index,
                                 IntImm::from_dtype(ramp.base_.dtype(), i64::from(new_lanes))?
                                     .into(),
@@ -1011,7 +1011,7 @@ fn divide_by_factor(value: PrimExpr, factor: u16) -> Result<PrimExpr> {
         return Ok(value);
     }
     let divisor = IntImm::from_dtype(value.dtype(), i64::from(factor))?;
-    binary_op("tirx._OpDiv", value, divisor.into())
+    binary_op("prim._OpDiv", value, divisor.into())
 }
 
 fn type_annotation(dtype: &PrimType) -> Result<Expr> {

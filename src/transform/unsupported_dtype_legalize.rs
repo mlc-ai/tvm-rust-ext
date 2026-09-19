@@ -32,19 +32,19 @@ use super::utils::{
     with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::{
-    Add, Broadcast, Cast, CastObj, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE,
-    LT, NE,
-};
+use crate::ir::TensorRegion;
 use crate::ir::{
     Call, CallObj, Expr, FloatImm, PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj,
     TensorLoad, Type, Var,
 };
+use crate::prim::{
+    Add, Broadcast, Cast, CastObj, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE,
+    LT, NE,
+};
 use crate::target::Target;
 use crate::te::CommReducer;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, DeclBuffer, PrimFunc,
-    PrimVar, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, PrimFunc, PrimVar, Stmt,
 };
 
 /// Promote BF16 computations to float32 while preserving external storage.
@@ -784,10 +784,12 @@ impl ComputeLegalizer {
 
     fn mutate_buffer_region(
         &mut self,
-        value: BufferRegion,
+        value: TensorRegion,
         mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.definition_remaps.use_buffer(&value.buffer);
+    ) -> Result<TensorRegion> {
+        let buffer = self
+            .definition_remaps
+            .use_buffer(&BufferVar::try_from(value.source.clone())?);
         mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
@@ -820,8 +822,8 @@ impl DTypeConverter {
         if mantissa_delta < 0 {
             let shift = i64::from(-mantissa_delta);
             let least_kept = binary_op(
-                "tirx.bitwise_and",
-                shift_global("tirx.right_shift", source_bits.clone(), shift)?,
+                "prim.bitwise_and",
+                shift_global("prim.right_shift", source_bits.clone(), shift)?,
                 typed_constant(&source_uint, 1)?,
             )?;
             let bias = Add::new(
@@ -834,26 +836,26 @@ impl DTypeConverter {
         if exponent_delta == 0 {
             let mut result = if mantissa_delta >= 0 {
                 shift_global(
-                    "tirx.left_shift",
+                    "prim.left_shift",
                     cast_prim_expr(source_bits, target_uint.clone())?,
                     i64::from(mantissa_delta),
                 )?
             } else {
                 cast_prim_expr(
-                    shift_global("tirx.right_shift", source_bits, i64::from(-mantissa_delta))?,
+                    shift_global("prim.right_shift", source_bits, i64::from(-mantissa_delta))?,
                     target_uint.clone(),
                 )?
             };
             if bias_delta > 0 {
                 let bias = shift_global(
-                    "tirx.left_shift",
+                    "prim.left_shift",
                     typed_constant(&target_uint, i64::from(bias_delta))?,
                     i64::from(target_config.mantissa),
                 )?;
                 result = Add::new(result, bias)?.into();
             } else if bias_delta < 0 {
                 let bias = shift_global(
-                    "tirx.left_shift",
+                    "prim.left_shift",
                     typed_constant(&target_uint, i64::from(-bias_delta))?,
                     i64::from(target_config.mantissa),
                 )?;
@@ -864,14 +866,14 @@ impl DTypeConverter {
 
         let mantissa = if mantissa_delta >= 0 {
             shift_global(
-                "tirx.left_shift",
+                "prim.left_shift",
                 cast_prim_expr(source_bits.clone(), target_uint.clone())?,
                 i64::from(mantissa_delta),
             )?
         } else {
             cast_prim_expr(
                 shift_global(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     source_bits.clone(),
                     i64::from(-mantissa_delta),
                 )?,
@@ -879,20 +881,20 @@ impl DTypeConverter {
             )?
         };
         let mantissa = binary_op(
-            "tirx.bitwise_and",
+            "prim.bitwise_and",
             mantissa,
             typed_constant(&target_uint, (1_i64 << target_config.mantissa) - 1)?,
         )?;
         let exponent_before_delta = shift_global(
-            "tirx.right_shift",
-            shift_global("tirx.left_shift", source_bits.clone(), 1)?,
+            "prim.right_shift",
+            shift_global("prim.left_shift", source_bits.clone(), 1)?,
             i64::from(source_config.mantissa + 1),
         )?;
         let sign = shift_global(
-            "tirx.left_shift",
+            "prim.left_shift",
             cast_prim_expr(
                 shift_global(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     source_bits,
                     i64::from(source_config.mantissa + source_config.exponent),
                 )?,
@@ -912,13 +914,13 @@ impl DTypeConverter {
                 exponent_before_delta
             };
             let exponent = shift_global(
-                "tirx.left_shift",
+                "prim.left_shift",
                 cast_prim_expr(exponent, target_uint)?,
                 i64::from(target_config.mantissa),
             )?;
             binary_op(
-                "tirx.bitwise_or",
-                binary_op("tirx.bitwise_or", mantissa, exponent)?,
+                "prim.bitwise_or",
+                binary_op("prim.bitwise_or", mantissa, exponent)?,
                 sign,
             )?
         } else {
@@ -931,13 +933,13 @@ impl DTypeConverter {
                 typed_constant(&source_uint, i64::from(-bias_delta))?,
             )?;
             let exponent = shift_global(
-                "tirx.left_shift",
+                "prim.left_shift",
                 cast_prim_expr(exponent.into(), target_uint.clone())?,
                 i64::from(target_config.mantissa),
             )?;
             let populated = binary_op(
-                "tirx.bitwise_or",
-                binary_op("tirx.bitwise_or", mantissa, exponent)?,
+                "prim.bitwise_or",
+                binary_op("prim.bitwise_or", mantissa, exponent)?,
                 sign,
             )?;
             if_then_else(
@@ -1052,7 +1054,7 @@ fn if_then_else(
     true_value: PrimExpr,
     false_value: PrimExpr,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx._OpIfThenElse")
+    tvm_ffi::cached_global_func!("prim._OpIfThenElse")
         .call_tuple((
             condition,
             true_value,

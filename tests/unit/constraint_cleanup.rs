@@ -18,8 +18,8 @@
  */
 
 use super::{NoOpRemover, RemoveNoOpOptions};
-use crate::ir::prim::{FloorDiv, EQ};
 use crate::ir::{Expr, IntImm, PrimExpr, Var};
+use crate::prim::{FloorDiv, EQ};
 use crate::tirx::{Bind, IfThenElse, SeqStmt};
 use tvm_ffi::{structural_mutate, Result};
 

@@ -26,7 +26,7 @@ use tvm_ffi::{
 
 use super::utils::{cast_prim_expr, int_value, with_prim_func_body, BufferRemaps};
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::StringImm;
+use crate::ir::StringImm;
 use crate::ir::{Expr, PrimExpr, PrimType, Range, Var};
 use crate::tirx::{AttrStmt, For, ForKind, IterVar, IterVarType, PrimFunc, Stmt};
 
@@ -170,7 +170,7 @@ fn make_launch_thread(
 
 struct LoweredAnnotations {
     preserved: Map<FfiString, Any>,
-    pragmas: Vec<(FfiString, PrimExpr)>,
+    pragmas: Vec<(FfiString, Expr)>,
 }
 
 fn lower_annotations(annotations: &Map<FfiString, Any>) -> Result<LoweredAnnotations> {
@@ -180,7 +180,7 @@ fn lower_annotations(annotations: &Map<FfiString, Any>) -> Result<LoweredAnnotat
         if key.as_str() == PRAGMA_UNROLL {
             preserved.push((key, value));
         } else if key.as_str().starts_with("pragma_") {
-            pragmas.push((key, annotation_value_to_prim_expr(value)?));
+            pragmas.push((key, annotation_value_to_expr(value)?));
         } else {
             preserved.push((key, value));
         }
@@ -192,8 +192,8 @@ fn lower_annotations(annotations: &Map<FfiString, Any>) -> Result<LoweredAnnotat
     })
 }
 
-fn annotation_value_to_prim_expr(value: Any) -> Result<PrimExpr> {
-    if let Ok(expression) = PrimExpr::try_from(value.clone()) {
+fn annotation_value_to_expr(value: Any) -> Result<Expr> {
+    if let Ok(expression) = Expr::try_from(value.clone()) {
         return Ok(expression);
     }
     if let Ok(string) = FfiString::try_from(value) {

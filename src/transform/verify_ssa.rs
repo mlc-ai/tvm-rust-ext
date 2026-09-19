@@ -26,8 +26,8 @@ use tvm_ffi::{
 
 use super::utils::{visit_buffer_definition, visit_stmt_expr_default};
 use super::{create_module_pass, Pass};
-use crate::ir::prim::Let;
 use crate::ir::{Expr, PrimExpr, Var};
+use crate::prim::Let;
 use crate::tirx::{AllocBuffer, Bind, BufferVar, For, PrimFunc};
 
 /// Check TVM's SSA rules, including repeated Let bindings to deeply equal values.
@@ -115,7 +115,7 @@ fn visit_let(
     {
         // StructuralEqual may remap bound variables; native VerifySSA must not.
         let previous: PrimExpr = previous.try_into()?;
-        let equal: bool = tvm_ffi::cached_global_func!("tirx.analysis.expr_deep_equal")
+        let equal: bool = tvm_ffi::cached_global_func!("prim.expr_deep_equal")
             .call_tuple((previous, &value.value))?
             .try_into()?;
         if !equal {

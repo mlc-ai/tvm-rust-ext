@@ -25,8 +25,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::Analyzer;
-use crate::ir::prim::Add;
 use crate::ir::{Expr, IntImm, PrimExpr, TensorLoad, Var};
+use crate::prim::Add;
 use crate::tirx::{
     AttrStmt, BufferStore, BufferVar, Evaluate, For, ForKind, PrimFunc, SeqStmt, Stmt,
 };
@@ -328,7 +328,7 @@ fn rewrite_regular_attribute(
     mutator: &mut Mutator,
     value: AttrStmt,
 ) -> Result<AttrStmt> {
-    let attr_value: PrimExpr = mutator.mutate(unroller, &value.value)?.try_into()?;
+    let attr_value: Expr = mutator.mutate(unroller, &value.value)?.try_into()?;
     let body: Stmt = mutator.mutate(unroller, &value.body)?.try_into()?;
     if attr_value.same_as(&value.value) && body.same_as(&value.body) {
         return Ok(value);
@@ -388,15 +388,16 @@ impl LoopUnroller {
         let mut unrolled = Vec::with_capacity(extent as usize);
         for offset in 0..extent {
             let offset =
-                IntImm::from_complete_fields(None, loop_type.clone(), i64::from(offset)).into();
+                IntImm::from_complete_fields(None, loop_type.clone(), i64::from(offset).into())
+                    .into();
             let replacement = add_with_constant_folding(&loop_node.min, offset)?;
             let replacements = Map::<Var, Expr>::from_iter([(
                 loop_node.loop_var.as_var().clone(),
                 replacement.into(),
             )]);
-            let step: Stmt = tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((loop_node.body.clone(), replacements))?
-                .try_into()?;
+            let step: Stmt =
+                super::utils::substitute_vars(loop_node.body.clone().into(), &replacements)?
+                    .try_into()?;
             unrolled.push(step);
         }
         Stmt::sequence(unrolled)
@@ -448,7 +449,7 @@ fn add_with_constant_folding(lhs: &PrimExpr, rhs: PrimExpr) -> Result<PrimExpr> 
             let sign = 1_i64 << (dtype.bits - 1);
             result = (result ^ sign) - sign;
         }
-        return Ok(IntImm::from_complete_fields(None, result_type, result).into());
+        return Ok(IntImm::from_complete_fields(None, result_type, result.into()).into());
     }
     Ok(Add::new(lhs.clone(), rhs)?.into())
 }

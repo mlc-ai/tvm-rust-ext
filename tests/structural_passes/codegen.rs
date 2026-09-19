@@ -365,7 +365,7 @@ fn rust_pointer_value_type_rewrite_matches_cpp_for_buffer_accesses() -> Result<(
         ("local", false, true),
     ] {
         let buffer = BufferType::new(scope, "float32", vec![int_expression(16)])?.new_var("data");
-        let ramp = tvm::ir::prim::Ramp::new(
+        let ramp = tvm::prim::Ramp::new(
             prim_int_expression(0),
             prim_int_expression(1),
             prim_int_expression(4),
@@ -1250,7 +1250,8 @@ fn rust_split_host_device_matches_cpp_for_dynamic_shared_memory() -> Result<()> 
         assert_eq!(
             actual.is_ok(),
             supported,
-            "Rust: {index_type}, {dtype}, {extent}"
+            "Rust: {index_type}, {dtype}, {extent}: {:?}",
+            actual.as_ref().err()
         );
         if supported {
             assert_structural_equal(&actual?, &expected?);

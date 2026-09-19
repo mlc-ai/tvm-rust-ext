@@ -28,8 +28,8 @@ use super::force_narrow_index::IndexDataTypeNormalizer;
 use super::utils::{visit_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::Cast;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::prim::Cast;
 use crate::te::Reduce;
 use crate::tirx::{AttrStmt, For, IterVar, PrimFunc, Stmt};
 
@@ -166,7 +166,7 @@ fn visit_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, NarrowPlan>) 
                 "",
             ));
         }
-        let value_type = value.value.type_annotation();
+        let value_type = PrimExpr::try_from(value.value.clone())?.type_annotation();
         let zero = IntImm::from_dtype(value_type.dtype, 0)?;
         let range = Range::from_min_extent(zero, value.value.clone())?;
         visitor.state().analyzer.bind(variable.as_var(), &range)?;

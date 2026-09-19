@@ -23,8 +23,8 @@
 //! stubgen should replace first.  Once those bindings are generated, deleting
 //! their handwritten definitions must not require changing this file.
 
-use tvm::ir::prim::{Add, AddObj};
 use tvm::ir::{Expr, IntImm, IntImmObj, PrimExpr, PrimType, PrimTypeObj, Type, Var, VarObj};
+use tvm::prim::{Add, AddObj};
 use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::tvm_ffi::{
     structural_map, structural_walk, DefRegionKind, FieldGetter, Function, ObjectArc, ObjectCore,
@@ -108,7 +108,7 @@ fn direct_and_semantic_constructors_round_trip() {
     );
     let rhs = addition.b.as_node::<IntImmObj>().unwrap();
     assert!(addition.a.same_as(&parameter));
-    assert_eq!(rhs.value, 0);
+    assert_eq!(rhs.value_i64(), 0);
     assert!(rhs.span.is_none());
 
     // Exercise the C++ field getter on Rust-owned storage through standard FFI.
@@ -117,7 +117,7 @@ fn direct_and_semantic_constructors_round_trip() {
         .get(&*addition)
         .unwrap();
     assert!(reflected_lhs.same_as(&parameter));
-    let cpp_add: Add = Function::get_global("ir.prim.Add")
+    let cpp_add: Add = Function::get_global("prim.Add")
         .unwrap()
         .call_tuple((&addition.a, &addition.b, Option::<tvm::ir::Span>::None))
         .unwrap()
@@ -196,7 +196,7 @@ fn generated_bindings_support_structural_walk() {
                 WalkResult::Advance
             },
             |value: IntImm| {
-                integer_literals.push(value.value);
+                integer_literals.push(value.value_i64());
                 WalkResult::Advance
             },
             |_: Var, kind: DefRegionKind| {
@@ -227,7 +227,7 @@ fn generated_bindings_support_structural_map() {
             if addition
                 .b
                 .as_node::<IntImmObj>()
-                .is_some_and(|rhs| rhs.value == 0)
+                .is_some_and(|rhs| rhs.value_i64() == 0)
             {
                 addition.a.clone()
             } else {

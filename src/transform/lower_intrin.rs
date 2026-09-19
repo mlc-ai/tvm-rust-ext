@@ -32,11 +32,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
-use crate::ir::prim::{
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::prim::{
     Add, Broadcast, BroadcastObj, Cast, CastObj, FloorDiv, FloorDivObj, FloorMod, FloorModObj, Let,
     Max, MulObj, Not, Ramp, Select, EQ, GT, NE,
 };
-use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
     AssertStmt, AttrStmt, Bind, BufferType, BufferVar, DeclBuffer, Evaluate, For, IfThenElse,
@@ -159,9 +159,9 @@ impl IntrinInjecter {
             address_of_operator: get_operator("tirx.address_of")?,
             fma_operator,
             floor_operator: get_operator("tirx.floor")?,
-            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
-            likely_operator: get_operator("ir.prim.likely")?,
-            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+            bitwise_and_operator: get_operator("prim.bitwise_and")?,
+            likely_operator: get_operator("prim.likely")?,
+            if_then_else_operator: get_operator("prim.if_then_else")?,
         })
     }
 
@@ -246,7 +246,7 @@ impl IntrinInjecter {
             if inner_offset.dtype() != offset.dtype() {
                 inner_offset = Cast::new(offset.type_annotation(), inner_offset)?.into();
             }
-            offset = binary_op("tirx._OpAdd", inner_offset, offset)?;
+            offset = binary_op("prim._OpAdd", inner_offset, offset)?;
             let inner_source = inner.args.get(1)?;
             source = inner_source;
         }
@@ -261,11 +261,11 @@ impl IntrinInjecter {
         })?;
 
         let scalar_dtype = with_lanes(&dtype, 1)?;
-        let mut scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, 1)?)?;
+        let mut scalar_extent = binary_op("prim._OpAdd", offset.clone(), int_like(&offset, 1)?)?;
         if dtype.dtype.lanes != 1 {
             let lanes = fixed_lanes(&dtype)?;
-            offset = binary_op("tirx._OpMul", offset, int_like(&scalar_extent, lanes)?)?;
-            scalar_extent = binary_op("tirx._OpAdd", offset.clone(), int_like(&offset, lanes)?)?;
+            offset = binary_op("prim._OpMul", offset, int_like(&scalar_extent, lanes)?)?;
+            scalar_extent = binary_op("prim._OpAdd", offset.clone(), int_like(&offset, lanes)?)?;
             offset = Ramp::new(
                 offset,
                 int_like(&scalar_extent, 1)?,
@@ -372,7 +372,7 @@ impl IntrinInjecter {
         }
         if !lhs.same_as(a) || !rhs.same_as(b) {
             let product: PrimExpr = mutator
-                .mutate(self, &crate::ir::prim::Mul::new(lhs, rhs)?)?
+                .mutate(self, &crate::prim::Mul::new(lhs, rhs)?)?
                 .try_into()?;
             let c: PrimExpr = mutator.mutate(self, c)?.try_into()?;
             return Ok(Add::new(product, c)?.into());
@@ -529,7 +529,10 @@ impl IntrinInjecter {
                     }
                     this.analyzer.bind(
                         iteration.var()?.as_var(),
-                        &Range::from_min_extent(int_like(&value.value, 0)?, value.value.clone())?,
+                        &Range::from_min_extent(
+                            int_like(&PrimExpr::try_from(value.value.clone())?, 0)?,
+                            value.value.clone(),
+                        )?,
                     )?;
                 }
                 BufferRemaps::mutate_stmt(this, mutator, value.into(), |state| {
@@ -669,51 +672,51 @@ impl IntrinInjecter {
         let dtype = mapped.a.type_annotation();
         if let Some(shift) = constant_power_of_two(&mapped.b) {
             return binary_op(
-                "tirx.right_shift",
+                "prim.right_shift",
                 mapped.a.clone(),
                 int_like(&mapped.a, i64::from(shift))?,
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
             if self.can_prove_nonnegative(&mapped.a)? || self.can_prove_nonnegative(&original)? {
-                return binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone());
+                return binary_op("prim._OpTruncDiv", mapped.a.clone(), mapped.b.clone());
             }
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
                     let shifted = binary_op(
-                        "tirx._OpAdd",
+                        "prim._OpAdd",
                         mapped.a.clone(),
                         int_like(&mapped.a, divisor * coefficient)?,
                     )?;
                     return binary_op(
-                        "tirx._OpSub",
-                        binary_op("tirx._OpTruncDiv", shifted, mapped.b.clone())?,
+                        "prim._OpSub",
+                        binary_op("prim._OpTruncDiv", shifted, mapped.b.clone())?,
                         int_like(&mapped.a, coefficient)?,
                     );
                 }
             }
-            let quotient = binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?;
-            let remainder = binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
+            let quotient = binary_op("prim._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?;
+            let remainder = binary_op("prim._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
             if dtype.dtype.code == DLDataTypeCode::kDLInt as u8
                 && dtype.dtype.lanes == 1
                 && matches!(dtype.dtype.bits, 32 | 64)
             {
                 let correction = binary_op(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     remainder,
                     int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
-                return binary_op("tirx._OpAdd", quotient, correction);
+                return binary_op("prim._OpAdd", quotient, correction);
             }
             return Ok(Select::new(
-                binary_op("tirx._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
+                binary_op("prim._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
                 quotient.clone(),
-                binary_op("tirx._OpSub", quotient, int_like(&mapped.a, 1)?)?,
+                binary_op("prim._OpSub", quotient, int_like(&mapped.a, 1)?)?,
             )?
             .into());
         }
         if dtype.dtype.code == DLDataTypeCode::kDLFloat as u8 {
-            let division = binary_op("tirx._OpDiv", mapped.a.clone(), mapped.b.clone())?;
+            let division = binary_op("prim._OpDiv", mapped.a.clone(), mapped.b.clone())?;
             let floor = Call::new(dtype, self.floor_operator.clone(), vec![division.into()]);
             return mutator.mutate(self, &floor)?.try_into();
         }
@@ -723,14 +726,14 @@ impl IntrinInjecter {
         let selected = Select::new(
             condition,
             quotient.clone(),
-            binary_op("tirx._OpSub", (&quotient).into(), int_like(&mapped.a, 1)?)?,
+            binary_op("prim._OpSub", (&quotient).into(), int_like(&mapped.a, 1)?)?,
         )?;
         Ok(Let::new(
             remainder.into(),
-            binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
+            binary_op("prim._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
             Let::new(
                 quotient.into(),
-                binary_op("tirx._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?,
+                binary_op("prim._OpTruncDiv", mapped.a.clone(), mapped.b.clone())?,
                 selected,
             )?,
         )?
@@ -751,21 +754,21 @@ impl IntrinInjecter {
         if let Some(shift) = constant_power_of_two(&mapped.b) {
             let mask = (1_i64 << shift) - 1;
             return binary_op(
-                "tirx.bitwise_and",
+                "prim.bitwise_and",
                 mapped.a.clone(),
                 int_like(&mapped.a, mask)?,
             );
         }
         if self.can_prove_nonnegative(&mapped.b)? {
             if self.can_prove_nonnegative(&mapped.a)? {
-                return binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone());
+                return binary_op("prim._OpTruncMod", mapped.a.clone(), mapped.b.clone());
             }
             if let Some(divisor) = int_value(&mapped.b) {
                 if let Some(coefficient) = self.try_find_shift_coefficient(&mapped.a, divisor)? {
                     return binary_op(
-                        "tirx._OpTruncMod",
+                        "prim._OpTruncMod",
                         binary_op(
-                            "tirx._OpAdd",
+                            "prim._OpAdd",
                             mapped.a.clone(),
                             int_like(&mapped.a, divisor * coefficient)?,
                         )?,
@@ -773,28 +776,28 @@ impl IntrinInjecter {
                     );
                 }
             }
-            let remainder = binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
+            let remainder = binary_op("prim._OpTruncMod", mapped.a.clone(), mapped.b.clone())?;
             if dtype.dtype.code == DLDataTypeCode::kDLInt as u8
                 && dtype.dtype.lanes == 1
                 && matches!(dtype.dtype.bits, 32 | 64)
             {
                 let sign = binary_op(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     remainder.clone(),
                     int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
-                let correction = binary_op("tirx.bitwise_and", mapped.b.clone(), sign)?;
-                return binary_op("tirx._OpAdd", remainder, correction);
+                let correction = binary_op("prim.bitwise_and", mapped.b.clone(), sign)?;
+                return binary_op("prim._OpAdd", remainder, correction);
             }
             return Ok(Select::new(
-                binary_op("tirx._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
+                binary_op("prim._OpGE", remainder.clone(), int_like(&remainder, 0)?)?,
                 remainder.clone(),
-                binary_op("tirx._OpAdd", remainder, mapped.b.clone())?,
+                binary_op("prim._OpAdd", remainder, mapped.b.clone())?,
             )?
             .into());
         }
         if dtype.dtype.code == DLDataTypeCode::kDLFloat as u8 {
-            let division = binary_op("tirx._OpDiv", mapped.a.clone(), mapped.b.clone())?;
+            let division = binary_op("prim._OpDiv", mapped.a.clone(), mapped.b.clone())?;
             let floor: PrimExpr = mutator
                 .mutate(
                     self,
@@ -802,20 +805,20 @@ impl IntrinInjecter {
                 )?
                 .try_into()?;
             return binary_op(
-                "tirx._OpSub",
+                "prim._OpSub",
                 mapped.a.clone(),
-                binary_op("tirx._OpMul", floor, mapped.b.clone())?,
+                binary_op("prim._OpMul", floor, mapped.b.clone())?,
             );
         }
         let remainder: PrimVar = Var::with_type("rmod", dtype).try_into()?;
         let condition = floor_remainder_has_correct_sign(mapped.b.clone(), (&remainder).into())?;
         Ok(Let::new(
             (&remainder).into(),
-            binary_op("tirx._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
+            binary_op("prim._OpTruncMod", mapped.a.clone(), mapped.b.clone())?,
             Select::new(
                 condition,
                 remainder.clone(),
-                binary_op("tirx._OpAdd", remainder.into(), mapped.b.clone())?,
+                binary_op("prim._OpAdd", remainder.into(), mapped.b.clone())?,
             )?,
         )?
         .into())
@@ -827,9 +830,9 @@ impl IntrinInjecter {
                 && self.can_prove_nonnegative(&divide.b)?
                 && int_value(&value.b).is_some_and(|value| value >= 0)
             {
-                let quotient = binary_op("tirx._OpTruncDiv", divide.a.clone(), divide.b.clone())?;
+                let quotient = binary_op("prim._OpTruncDiv", divide.a.clone(), divide.b.clone())?;
                 let quotient = mutator.mutate(self, &quotient)?.try_into()?;
-                return binary_op("tirx._OpMax", quotient, value.b.clone());
+                return binary_op("prim._OpMax", quotient, value.b.clone());
             }
         }
         mutate_expr_default(self, mutator, value.into())?.try_into()
@@ -839,8 +842,8 @@ impl IntrinInjecter {
         if let Some(remainder) = value.a.as_node::<FloorModObj>() {
             if int_value(&value.b) == Some(0) {
                 let lowered = binary_op(
-                    "tirx._OpEQ",
-                    binary_op("tirx._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
+                    "prim._OpEQ",
+                    binary_op("prim._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
                     value.b.clone(),
                 )?;
                 return mutator.mutate(self, &lowered)?.try_into();
@@ -853,8 +856,8 @@ impl IntrinInjecter {
         if let Some(remainder) = value.a.as_node::<FloorModObj>() {
             if int_value(&value.b) == Some(0) {
                 let lowered = binary_op(
-                    "tirx._OpNE",
-                    binary_op("tirx._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
+                    "prim._OpNE",
+                    binary_op("prim._OpTruncMod", remainder.a.clone(), remainder.b.clone())?,
                     value.b.clone(),
                 )?;
                 return mutator.mutate(self, &lowered)?.try_into();
@@ -930,16 +933,16 @@ fn with_lanes(ty: &PrimType, lanes: u16) -> Result<PrimType> {
 fn floor_remainder_has_correct_sign(divisor: PrimExpr, remainder: PrimExpr) -> Result<PrimExpr> {
     let zero = int_like(&divisor, 0)?;
     binary_op(
-        "tirx._OpOr",
+        "prim._OpOr",
         binary_op(
-            "tirx._OpAnd",
-            binary_op("tirx._OpGE", divisor.clone(), zero.clone())?,
-            binary_op("tirx._OpGE", remainder.clone(), zero.clone())?,
+            "prim._OpAnd",
+            binary_op("prim._OpGE", divisor.clone(), zero.clone())?,
+            binary_op("prim._OpGE", remainder.clone(), zero.clone())?,
         )?,
         binary_op(
-            "tirx._OpAnd",
-            binary_op("tirx._OpLT", divisor, zero.clone())?,
-            binary_op("tirx._OpLE", remainder, zero)?,
+            "prim._OpAnd",
+            binary_op("prim._OpLT", divisor, zero.clone())?,
+            binary_op("prim._OpLE", remainder, zero)?,
         )?,
     )
 }

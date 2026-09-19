@@ -19,8 +19,8 @@
 
 use super::utils::{finish_constraint_contexts, int_value};
 use crate::analysis::Analyzer;
-use crate::ir::prim::{Add, AndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Mul, GE, LT};
 use crate::ir::{CallObj, Expr, IntImm, PrimExpr};
+use crate::prim::{Add, AndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Mul, GE, LT};
 use tvm_ffi::{Function, ObjectRefCore, Result};
 
 /// Enter the condition and the extra facts used by C++ IRMutatorWithAnalyzer.

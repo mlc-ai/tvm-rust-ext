@@ -18,20 +18,20 @@
  */
 
 use tvm::analysis::{loop_nesting, memory_access_statistics, node_statistics};
-use tvm::ir::prim::{
-    Add, FloorDiv, FloorMod, Let, Mul, Not, Select, StringImm, EQ, GE, GT, LE, LT, NE,
-};
+use tvm::ir::StringImm;
+use tvm::ir::TensorRegion;
 use tvm::ir::{
-    BaseFunc, Call, DictAttrs, DummyGlobalInfo, Expr, FloatImm, GlobalVar, IRModule, IntImm,
-    IntImmObj, OpaqueExpr, PointerType, PrimExpr, PrimExprConvertible, PrimType, Range,
-    SequentialSpan, SourceMap, SourceName, Span, TensorLoad, Type, Var,
+    BaseFunc, Call, DictAttrs, Expr, FloatImm, GlobalVar, IRModule, IntImm, IntImmObj, OpaqueExpr,
+    PointerType, PrimExpr, PrimExprConvertible, PrimType, Range, SequentialSpan, SourceMap,
+    SourceName, Span, TensorLoad, Type, Var,
 };
+use tvm::prim::{Add, FloorDiv, FloorMod, Let, Mul, Not, Select, EQ, GE, GT, LE, LT, NE};
 use tvm::tirx::{
-    AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegion, BufferRegionType,
-    BufferStore, BufferType, BufferVar, ComposeLayout, DeclBuffer, DispatchContext, Evaluate,
-    EvaluateObj, ExecScope, For, ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType,
-    LambdaExpr, Layout, MatchBufferRegion, PrimFunc, PrimVar, Return, ScopeBinding, ScopeIdDef,
-    ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt, TensorIntrin, TileLayout, TilePrimitiveCall, While,
+    AllocBuffer, AssertStmt, AttrStmt, Axis, Bind, BindObj, BufferRegionType, BufferStore,
+    BufferType, BufferVar, ComposeLayout, DeclBuffer, DispatchContext, Evaluate, EvaluateObj,
+    ExecScope, For, ForKind, IfThenElse, IndexMap, Iter, IterVar, IterVarType, LambdaExpr, Layout,
+    PrimFunc, PrimVar, Return, ScopeBinding, ScopeIdDef, ScopeIdDefStmt, ScopeKind, SeqStmt, Stmt,
+    TileLayout, TilePrimitiveCall, While,
 };
 use tvm::transform;
 use tvm::tvm_ffi::{
@@ -113,7 +113,7 @@ fn prim_func_body_integer(function: &PrimFunc) -> i64 {
         .value
         .as_node::<IntImmObj>()
         .expect("test evaluation must contain an IntImm")
-        .value
+        .value_i64()
 }
 
 #[path = "structural_passes/codegen.rs"]

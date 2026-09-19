@@ -30,7 +30,7 @@ use super::utils::{
     with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
-use crate::ir::prim::StringImm;
+use crate::ir::StringImm;
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
     PrimType, TupleType, Type, UniqueNameSupply, Var,
@@ -208,8 +208,7 @@ impl HostDeviceSplitter<'_> {
         let mut body: Stmt = if substitutions.is_empty() {
             body
         } else {
-            tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((body, Map::<Var, Expr>::from_iter(substitutions)))?
+            super::utils::substitute_vars(body.into(), &Map::<Var, Expr>::from_iter(substitutions))?
                 .try_into()?
         };
         let can_propagate_errors = matches!(target.device_type()?, 1 | 12 | 16);
@@ -262,7 +261,7 @@ impl HostDeviceSplitter<'_> {
             Stmt::sequence(vec![
                 Bind::new(error_code.clone(), call)?.into(),
                 AssertStmt::new(
-                    crate::ir::prim::EQ::new(error_code, success)?,
+                    crate::prim::EQ::new(error_code, success)?,
                     "RuntimeError",
                     "Error executing compute kernel",
                 )?
@@ -591,7 +590,7 @@ impl KernelInfoCollector {
             }
             int_value(&value.value)
                 .ok_or_else(|| value_error("tirx.dyn_smem_bytes must be an IntImm"))?;
-            self.dynamic_shared_bytes = Some(value.value.clone());
+            self.dynamic_shared_bytes = Some(PrimExpr::try_from(value.value.clone())?);
         }
         if value.attr_key.as_str() == THREAD_EXTENT {
             let tag = if let Ok(iteration) = IterVar::try_from(value.node.clone()) {
@@ -605,9 +604,9 @@ impl KernelInfoCollector {
             };
             if self.seen_threads.insert(tag.as_str().to_owned()) {
                 let extent = if self.bindings.is_empty() {
-                    value.value.clone()
+                    PrimExpr::try_from(value.value.clone())?
                 } else {
-                    substitute_prim(&value.value, &self.bindings)?
+                    substitute_prim(&PrimExpr::try_from(value.value.clone())?, &self.bindings)?
                 };
                 self.thread_extents.insert(tag.as_str().to_owned(), extent);
                 self.launch_parameters.push(tag);
@@ -634,10 +633,10 @@ impl KernelInfoCollector {
         }
         let mut size: PrimExpr = IntImm::new("int32", 1)?.into();
         for extent in ty.shape.iter() {
-            size = binary_op("tirx._OpMul", size, extent)?;
+            size = binary_op("prim._OpMul", size, extent)?;
         }
         let bytes = IntImm::new("int64", storage_bytes(&ty.dtype)?)?;
-        size = binary_op("tirx._OpMul", size, bytes.into())?;
+        size = binary_op("prim._OpMul", size, bytes.into())?;
         if !self.bindings.is_empty() {
             size = substitute_prim(&size, &self.bindings)?;
         }
@@ -713,20 +712,28 @@ impl KernelLaunchRewriter<'_> {
         let mut arguments = vec![StringImm::new(info.global_symbol.as_str()).into()];
         arguments.extend(value.args.iter());
         for launch_argument in info.launch_arguments.iter() {
-            let substituted: PrimExpr = tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((launch_argument, &substitutions))?
-                .try_into()?;
+            let substituted: PrimExpr =
+                super::utils::substitute_vars(launch_argument.into(), &substitutions)?
+                    .try_into()?;
             arguments.push(substituted.into());
         }
         self.launched.insert(identity);
-        let primitive = value.ty.clone().try_cast::<PrimType>()?;
-        let return_type = if primitive.dtype.code == tvm_ffi::DLDataTypeCode::kDLOpaqueHandle as u8
-            && primitive.dtype.bits == 0
-            && primitive.dtype.lanes == 0
+        let return_type = if value
+            .ty
+            .as_node::<crate::ir::TupleTypeObj>()
+            .is_some_and(|tuple| tuple.fields.is_empty())
         {
             PrimType::new("int32")?
         } else {
-            primitive
+            let primitive = value.ty.clone().try_cast::<PrimType>()?;
+            if primitive.dtype.code == tvm_ffi::DLDataTypeCode::kDLOpaqueHandle as u8
+                && primitive.dtype.bits == 0
+                && primitive.dtype.lanes == 0
+            {
+                PrimType::new("int32")?
+            } else {
+                primitive
+            }
         };
         Ok(Call::new(
             return_type,
@@ -806,7 +813,5 @@ fn target_equal(lhs: &Target, rhs: &Target) -> Result<bool> {
 }
 
 fn substitute_prim(expression: &PrimExpr, substitutions: &Map<Var, Expr>) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Substitute")
-        .call_tuple((expression, substitutions))?
-        .try_into()
+    super::utils::substitute_vars(expression.clone().into(), substitutions)?.try_into()
 }

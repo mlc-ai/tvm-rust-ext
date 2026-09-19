@@ -23,8 +23,9 @@
 use super::PrimVar;
 use super::*;
 use crate::analysis::Analyzer;
-use crate::ir::prim::primitive_type;
+use crate::ir::TensorRegion;
 use crate::ir::{Expr, IntImm, PrimExpr, PrimType, Range, Span, TensorLoad, Type, TypedVar, Var};
+use crate::prim::primitive_type;
 use tvm_ffi::{
     Any, Array, DLDataType, DLDataTypeExt, Error, FieldGetter, Map, ObjectCore, ObjectRefCast,
     ObjectRefCore, Result, String, TYPE_ERROR, VALUE_ERROR,
@@ -497,7 +498,7 @@ impl BufferType {
             } else {
                 PrimType::new(DEFAULT_INDEX_DTYPE)?
             };
-            IntImm::from_complete_fields(None, index_type, 0).into()
+            IntImm::from_complete_fields(None, index_type, 0.into()).into()
         };
         let data_alignment = if data_alignment <= 0 {
             DEFAULT_ALLOC_ALIGNMENT
@@ -865,7 +866,19 @@ impl BufferRegionType {
     }
 }
 
-impl BufferRegion {
+impl TensorMapType {
+    pub fn new() -> Self {
+        Self::from_complete_fields(None)
+    }
+}
+
+impl Default for TensorMapType {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TensorRegion {
     /// Validate and construct a declared region directly in Rust.
     pub fn new<B>(buffer: B, region: Vec<Range>) -> Result<Self>
     where
@@ -878,7 +891,7 @@ impl BufferRegion {
             return Err(Error::new(
                 VALUE_ERROR,
                 &format!(
-                    "BufferRegion dimension mismatch: buffer has {dimensions}, region has {}",
+                    "TensorRegion dimension mismatch: buffer has {dimensions}, region has {}",
                     region.len()
                 ),
                 "",
@@ -887,85 +900,9 @@ impl BufferRegion {
         let buffer = BufferVar::try_from(buffer)?;
         Ok(Self::from_complete_fields(
             None,
-            BufferRegionType::new()?,
-            buffer,
+            BufferRegionType::new()?.into(),
+            buffer.into(),
             region,
         ))
     }
-}
-
-impl MatchBufferRegion {
-    /// Validate the declaration and allocate the object directly in Rust.
-    pub fn new<B, S>(buffer: B, source: S) -> Result<Self>
-    where
-        B: Into<Var>,
-        S: Into<BufferRegion>,
-    {
-        let buffer = buffer.into();
-        let source = source.into();
-        validate_match_buffer_region(&buffer, &source)?;
-        let buffer = BufferVar::try_from(buffer)?;
-        Ok(Self::from_complete_fields(buffer, source))
-    }
-}
-
-fn validate_match_buffer_region(buffer: &Var, source: &BufferRegion) -> Result<()> {
-    let target = buffer_type(buffer)?;
-    let source_type = buffer_type(source.buffer.as_var())?;
-    if target.storage_scope != source_type.storage_scope {
-        return Err(Error::new(
-            TYPE_ERROR,
-            "match-buffer storage scopes differ",
-            "",
-        ));
-    }
-    if target.dtype.dtype != source_type.dtype.dtype {
-        return Err(Error::new(TYPE_ERROR, "match-buffer data types differ", ""));
-    }
-    if target.data_alignment == 0
-        || source_type.data_alignment.rem_euclid(target.data_alignment) != 0
-    {
-        return Err(Error::new(
-            VALUE_ERROR,
-            "source buffer does not satisfy the required alignment",
-            "",
-        ));
-    }
-
-    let region = &source.region;
-    if region.len() < target.shape.len() {
-        return Err(Error::new(
-            VALUE_ERROR,
-            "source region has fewer dimensions than the target buffer",
-            "",
-        ));
-    }
-    let analyzer = Analyzer::new()?;
-    let offset = region.len() - target.shape.len();
-    for range in region.iter().take(offset) {
-        let one: PrimExpr = IntImm::from_complete_fields(
-            None,
-            primitive_type(&range.extent, "source-region extent")?,
-            1,
-        )
-        .into();
-        if !analyzer.can_prove_equal(&range.extent, &one)? {
-            return Err(Error::new(
-                VALUE_ERROR,
-                "a leading source-region dimension is not provably one",
-                "",
-            ));
-        }
-    }
-    for (range, expected) in region.iter().skip(offset).zip(target.shape.iter()) {
-        let is_primitive_variable = PrimVar::try_from(expected.as_expr()).is_ok();
-        if !is_primitive_variable && !analyzer.can_prove_equal(&range.extent, &expected)? {
-            return Err(Error::new(
-                VALUE_ERROR,
-                "source-region extent does not match the target buffer shape",
-                "",
-            ));
-        }
-    }
-    Ok(())
 }

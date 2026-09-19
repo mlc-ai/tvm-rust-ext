@@ -21,8 +21,8 @@ under the License.
 
 This crate is the reference consumer of the Rust backend of
 `tvm-ffi-stubgen`; it is not intended to become a manually maintained TVM Rust
-IR frontend.  Since 2026-09-06 the object layer of `ir`, `ir.prim`, and `tirx`
-in [`src/ir.rs`](src/ir.rs), [`src/ir/prim.rs`](src/ir/prim.rs), and
+IR frontend.  Since 2026-09-06 the object layer of `ir`, `prim`, and `tirx`
+in [`src/ir.rs`](src/ir.rs), [`src/prim.rs`](src/prim.rs), and
 [`src/tirx.rs`](src/tirx.rs) is emitted by `tvm-ffi-stubgen --target rust`
 into marker blocks of those files; the reviewed semantic constructors and the
 passes are hand-written code around the blocks (see
@@ -132,7 +132,7 @@ function transforms, as well as SSA and GPU memory-access verification;
 [`src/transform.rs`](src/transform.rs) is the authoritative
 public list.  Differential tests compare these implementations with their C++
 counterparts using structural equality.  Arithmetic passes reuse an opaque
-handle to TVM's existing `arith.Analyzer` instead of copying its compiler rules
+handle to TVM's existing `sym.Analyzer` instead of copying its compiler rules
 into Rust. Control-flow simplification classifies expression effects with
 `structural_walk` and caches the `TCallEffectKind` attached to each registry-owned
 operator. `InlinePrivateFunctions` builds a call graph with `structural_visit`
@@ -146,10 +146,12 @@ passes using structural equality.
 
 ### Scope and remaining gaps
 
-Coverage is compared with TVM `7e06fc6c1420d0188eb9d889bd74e2e1fb76e448`,
-built with tvm-ffi `897ece64d6ad0857f803e68221375021867e81a5`.
-The Rust crate and Python package use apache/tvm-ffi main at
-`b02536e4f3804e2e41dacf2ad2d52da805f46d90` (after the #766 revert).
+Coverage is compared with TVM `5398c27e76` (TIRx #20386),
+built with tvm-ffi `daf594da8e6950fdc02ae35fcf4e0ab2e59a4979`.
+The Rust crate remains pinned to apache/tvm-ffi
+`b02536e4f3804e2e41dacf2ad2d52da805f46d90`; the tested Python runtime is
+`apache-tvm-ffi 0.1.14.post0`. Bindings use the current `prim.*` and `sym.*`
+registries, generic `ir.TensorRegion`, and the reflected BigInt literal layout.
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
 All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 `SBlockRealize` have bindings. The shared scalar/vector expressions, buffer
@@ -234,11 +236,11 @@ Rust implementations, and native semantic blockers retain their identity,
 resource ownership, or virtual ABI behind opaque wrappers. The acceptance and
 pass suites together exercise both object origins and all four structural APIs.
 
-The mechanical part of that surface for `ir`, `ir.prim`, and `tirx` is now
+The mechanical part of that surface for `ir`, `prim`, and `tirx` is now
 stubgen output: `tvm-ffi-stubgen --target rust` emits the `#[repr(C)]`
 objects, reference wrappers, `Deref` impls, complete-field allocators, open
 enum newtypes, and upcasts into marker blocks of `src/ir.rs`,
-`src/ir/prim.rs`, and `src/tirx.rs`, classifying each type as complete or
+`src/prim.rs`, and `src/tirx.rs`, classifying each type as complete or
 opaque from the reflected layout facts of `libtvm_compiler`.  The reviewed
 semantic constructors, `copy_with` rebuilds, the typed views (`PrimExpr`,
 `PrimVar`, `BufferVar`), and native-operation wrappers stay hand-written next
@@ -285,21 +287,21 @@ cargo test
 
 ### Generated bindings
 
-The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/ir/prim.rs`,
+The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/prim.rs`,
 and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
 (apache/tvm-ffi `b02536e`, the rev pinned in `Cargo.toml`) from the installed
 `libtvm_compiler.so`.  Each file opens with a `prefix` directive
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an
 `object/<type_key>` block on the next run, a `skip` line leaves one out
-(`tirx.PrimFuncPass` and the out-of-scope `tirx.SBlock`/`tirx.SBlockRealize`).
+(`tirx.PrimFuncPass`; schedulable blocks now belong to the out-of-scope `s_tir` namespace).
 Three bindings also use `skip` to retain rules the generator cannot express:
 `ir.SourceName` keeps its complete fields but no direct allocator,
 `ir.UniqueNameSupply` keeps its thread-safety marker, and `tirx.PrimFunc`
 keeps its nullable moved-from body storage. A `ty-map` line names a referenced
 hand-written binding (`ir.SourceName -> SourceName`,
-`target.Target -> crate::target::Target`); the `TensorIntrin` fields name
-`PrimFunc` through `field` overrides.
+`target.Target -> crate::target::Target`). Field overrides preserve the generic
+`Expr` in `AttrStmt.value` and the ABI-compatible `Any` in `IntImm.value`.
 Every other type key a block refers to must be provided by the same run, so the
 three files are always regenerated together.
 Regenerate with the environment active:
@@ -328,7 +330,7 @@ hand-written `NativeMutableMap` cell through `field` directives.
 
 Hand-written code lives outside the blocks: the reviewed semantics of the
 nodes defined in a file sit at its tail in a nested module (`mod semantic` in
-`src/ir.rs` and `src/ir/prim.rs`, `mod stmt` in `src/tirx.rs`) that opens with
+`src/ir.rs` and `src/prim.rs`, `mod stmt` in `src/tirx.rs`) that opens with
 `use super::*;`, so its imports cannot collide with the regenerated import
 section; the buffer, function, index-map, iteration-variable, and
 tile-primitive semantics keep their own files under `src/tirx/`, and the

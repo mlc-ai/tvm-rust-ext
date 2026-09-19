@@ -30,11 +30,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
-use crate::ir::prim::{
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::prim::{
     Add, And, Broadcast, BroadcastObj, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not,
     Or, Ramp, RampObj, Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
 };
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{Bind, BufferStore, For, ForKind, IfThenElse, PrimFunc, PrimVar, Stmt, While};
 
 /// Vectorize loops marked with `ForKind::kVectorized`, or turn them into
@@ -143,7 +143,7 @@ impl Vectorizer {
             ramp,
             need_scalarize: false,
             let_bindings: HashMap::new(),
-            if_then_else: get_operator("ir.prim.if_then_else")?,
+            if_then_else: get_operator("prim.if_then_else")?,
             reinterpret: get_operator("tirx.reinterpret")?,
             call_llvm_pure_intrin: get_operator("tirx.call_llvm_pure_intrin")?,
         })
@@ -177,9 +177,8 @@ impl Vectorizer {
         let scalar = Var::with_type(&format!("{}.s", self.variable.name.as_str()), ty.clone());
         let substitutions =
             Map::from_iter(vec![(self.variable.clone(), Expr::from(scalar.clone()))]);
-        let body: Stmt = tvm_ffi::cached_global_func!("tirx.Substitute")
-            .call_tuple((statement, substitutions))?
-            .try_into()?;
+        let body: Stmt =
+            super::utils::substitute_vars(statement.into(), &substitutions)?.try_into()?;
         For::new(
             scalar,
             IntImm::from_dtype(ty.dtype, 0)?,
@@ -309,18 +308,18 @@ impl Vectorizer {
 #[tvm_ffi::dispatch(mutate)]
 impl Vectorizer {
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.add_sub_vec(mutator, &value.a, &value.b, "tirx._OpAdd")
+        self.add_sub_vec(mutator, &value.a, &value.b, "prim._OpAdd")
     }
 
     fn mutate_subtract(&mut self, value: Sub, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.add_sub_vec(mutator, &value.a, &value.b, "tirx._OpSub")
+        self.add_sub_vec(mutator, &value.a, &value.b, "prim._OpSub")
     }
 
     fn mutate_multiply(&mut self, value: Mul, mutator: &mut Mutator) -> Result<PrimExpr> {
         let lhs = self.mutate_prim(mutator, &value.a)?;
         let rhs = self.mutate_prim(mutator, &value.b)?;
         if !is_vector(&lhs) && !is_vector(&rhs) {
-            return binary_op("tirx._OpMul", lhs, rhs);
+            return binary_op("prim._OpMul", lhs, rhs);
         }
         if is_scalable(&lhs) != is_scalable(&rhs) && is_vector(&lhs) && is_vector(&rhs) {
             return Err(value_error(
@@ -330,8 +329,8 @@ impl Vectorizer {
         if let Some(ramp) = lhs.as_node::<RampObj>() {
             if is_scalar(&rhs) && self.is_positive(&rhs)? {
                 return Ok(Ramp::new(
-                    binary_op("tirx._OpMul", ramp.base_.clone(), rhs.clone())?,
-                    binary_op("tirx._OpMul", ramp.stride.clone(), rhs)?,
+                    binary_op("prim._OpMul", ramp.base_.clone(), rhs.clone())?,
+                    binary_op("prim._OpMul", ramp.stride.clone(), rhs)?,
                     ramp.lanes.clone(),
                 )?
                 .into());
@@ -340,8 +339,8 @@ impl Vectorizer {
         if let Some(ramp) = rhs.as_node::<RampObj>() {
             if is_scalar(&lhs) && self.is_positive(&lhs)? {
                 return Ok(Ramp::new(
-                    binary_op("tirx._OpMul", ramp.base_.clone(), lhs.clone())?,
-                    binary_op("tirx._OpMul", ramp.stride.clone(), lhs)?,
+                    binary_op("prim._OpMul", ramp.base_.clone(), lhs.clone())?,
+                    binary_op("prim._OpMul", ramp.stride.clone(), lhs)?,
                     ramp.lanes.clone(),
                 )?
                 .into());
@@ -350,66 +349,66 @@ impl Vectorizer {
         let lanes = lane_count(&lhs).max(lane_count(&rhs));
         let scalable = is_scalable(&lhs) || is_scalable(&rhs);
         binary_op(
-            "tirx._OpMul",
+            "prim._OpMul",
             broadcast_to(lhs, lanes, scalable)?,
             broadcast_to(rhs, lanes, scalable)?,
         )
     }
 
     fn mutate_divide(&mut self, value: Div, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpDiv")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpDiv")
     }
 
     fn mutate_modulo(&mut self, value: Mod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpMod")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpMod")
     }
 
     fn mutate_floor_divide(&mut self, value: FloorDiv, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpFloorDiv")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpFloorDiv")
     }
 
     fn mutate_floor_modulo(&mut self, value: FloorMod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpFloorMod")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpFloorMod")
     }
 
     fn mutate_minimum(&mut self, value: Min, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpMin")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpMin")
     }
 
     fn mutate_maximum(&mut self, value: Max, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpMax")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpMax")
     }
 
     fn mutate_equal(&mut self, value: EQ, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpEQ")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpEQ")
     }
 
     fn mutate_not_equal(&mut self, value: NE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpNE")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpNE")
     }
 
     fn mutate_less_than(&mut self, value: LT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpLT")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpLT")
     }
 
     fn mutate_less_equal(&mut self, value: LE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpLE")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpLE")
     }
 
     fn mutate_greater_than(&mut self, value: GT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpGT")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpGT")
     }
 
     fn mutate_greater_equal(&mut self, value: GE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpGE")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpGE")
     }
 
     fn mutate_and(&mut self, value: And, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpAnd")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpAnd")
     }
 
     fn mutate_or(&mut self, value: Or, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.binary_vec(mutator, &value.a, &value.b, "tirx._OpOr")
+        self.binary_vec(mutator, &value.a, &value.b, "prim._OpOr")
     }
 
     fn mutate_not(&mut self, value: Not, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -438,7 +437,7 @@ impl Vectorizer {
                     value_error("vectorizing over a Ramp requires constant lanes")
                 })?;
                 let expected = binary_op(
-                    "tirx._OpMul",
+                    "prim._OpMul",
                     stride.clone(),
                     IntImm::from_dtype(stride.dtype(), base_lanes)?.into(),
                 )?;
@@ -673,8 +672,7 @@ impl Vectorizer {
                 self.variable.clone(),
                 Expr::from(IntImm::from_dtype(ty.dtype, 0)?),
             )]);
-            return tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((value.vectors.get(0)?, substitutions))?
+            return super::utils::substitute_vars(value.vectors.get(0)?.into(), &substitutions)?
                 .try_into();
         }
         // This is the same narrowed re-vectorization used by C++ for the
@@ -844,7 +842,7 @@ impl Vectorizer {
     fn is_positive(&self, value: &PrimExpr) -> Result<bool> {
         let zero = IntImm::from_dtype(value.dtype(), 0)?;
         self.analyzer
-            .can_prove(&binary_op("tirx._OpGT", value.clone(), zero.into())?)
+            .can_prove(&binary_op("prim._OpGT", value.clone(), zero.into())?)
     }
 }
 
@@ -933,12 +931,12 @@ fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
     }
     let vscale = Call::new(
         PrimType::new("int32")?,
-        get_operator("ir.prim.vscale")?,
+        get_operator("prim.vscale")?,
         Vec::new(),
     );
     let vscale: Expr = vscale.into();
     binary_op(
-        "tirx._OpMul",
+        "prim._OpMul",
         PrimExpr::try_from(vscale)?,
         IntImm::new("int32", i64::from(lanes))?.into(),
     )

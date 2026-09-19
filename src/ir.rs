@@ -27,7 +27,6 @@
 //! reviewed semantic constructors and typed views follow in `mod semantic`.
 
 /// Primitive expression nodes shared by TIRx and other IR dialects.
-pub mod prim;
 
 /// Native naming service with thread-confined state.
 mod unique_name_supply;
@@ -69,9 +68,11 @@ pub use unique_name_supply::{UniqueNameSupply, UniqueNameSupplyObj};
 // tvm-ffi-stubgen(custom-new): ir.PrimType
 // tvm-ffi-stubgen(custom-new): ir.TupleType
 // tvm-ffi-stubgen(custom-new): ir.FuncType
-// tvm-ffi-stubgen(custom-new): ir.TensorMapType
 // tvm-ffi-stubgen(custom-new): ir.IntImm
+// tvm-ffi-stubgen(field): ir.IntImm.value -> Any
 // tvm-ffi-stubgen(custom-new): ir.FloatImm
+// tvm-ffi-stubgen(custom-new): ir.StringImm
+// tvm-ffi-stubgen(custom-new): ir.TensorRegion
 // tvm-ffi-stubgen(custom-new): ir.Var
 // tvm-ffi-stubgen(custom-new): ir.GlobalVar
 // tvm-ffi-stubgen(custom-new): ir.Call
@@ -79,7 +80,6 @@ pub use unique_name_supply::{UniqueNameSupply, UniqueNameSupplyObj};
 // tvm-ffi-stubgen(custom-new): ir.DictAttrs
 
 // tvm-ffi-stubgen(begin): import-section
-use crate::target::Target;
 use std::ops::Deref;
 use tvm_ffi::Any;
 use tvm_ffi::Array;
@@ -485,7 +485,7 @@ tvm_ffi::impl_object_upcast!(Call => Expr);
 #[type_key = "ir.FloatImm"]
 #[type_final]
 pub struct FloatImmObj {
-    base: ExprObj,
+    base: ConstantObj,
     pub value: f64,
 }
 
@@ -508,15 +508,15 @@ impl Deref for FloatImm {
 }
 
 impl Deref for FloatImmObj {
-    type Target = ExprObj;
-    fn deref(&self) -> &ExprObj {
+    type Target = ConstantObj;
+    fn deref(&self) -> &ConstantObj {
         &self.base
     }
 }
 
 impl FloatImmObj {
     pub(crate) fn new(span: Option<Span>, ty: PrimType, value: f64) -> Self {
-        let base = ExprObj::new(span, ty.into());
+        let base = ConstantObj::new(span, ty.into());
         Self { base, value }
     }
 }
@@ -531,7 +531,7 @@ impl FloatImm {
     }
 }
 
-tvm_ffi::impl_object_upcast!(FloatImm => Expr, FloatImm => PrimExpr);
+tvm_ffi::impl_object_upcast!(FloatImm => Expr, FloatImm => Constant, FloatImm => PrimExpr);
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.GlobalInfo
@@ -555,39 +555,6 @@ impl Deref for GlobalInfo {
         &self.base
     }
 }
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/ir.DummyGlobalInfo
-/// Opaque: parent 'ir.GlobalInfo' is opaque (layout-unknown). Fields are read through the C ABI getters.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.DummyGlobalInfo"]
-#[type_final]
-pub struct DummyGlobalInfoObj {
-    base: GlobalInfoObj,
-}
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct DummyGlobalInfo {
-    base: ObjectArc<DummyGlobalInfoObj>,
-}
-
-impl Deref for DummyGlobalInfo {
-    type Target = DummyGlobalInfoObj;
-    fn deref(&self) -> &DummyGlobalInfoObj {
-        &self.base
-    }
-}
-
-impl Deref for DummyGlobalInfoObj {
-    type Target = GlobalInfoObj;
-    fn deref(&self) -> &GlobalInfoObj {
-        &self.base
-    }
-}
-
-tvm_ffi::impl_object_upcast!(DummyGlobalInfo => GlobalInfo);
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.GlobalVar
@@ -717,18 +684,18 @@ impl IRModule {
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.IntImm
-/// Complete: reflected fields fill [40, 48) exactly.
+/// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
 #[type_key = "ir.IntImm"]
 #[type_final]
 pub struct IntImmObj {
-    base: ExprObj,
-    pub value: i64,
+    base: ConstantObj,
+    pub value: Any,
 }
 
 const _: () = {
-    assert!(::core::mem::size_of::<IntImmObj>() == 48);
+    assert!(::core::mem::size_of::<IntImmObj>() == 56);
     assert!(::core::mem::align_of::<IntImmObj>() == 8);
 };
 
@@ -746,22 +713,22 @@ impl Deref for IntImm {
 }
 
 impl Deref for IntImmObj {
-    type Target = ExprObj;
-    fn deref(&self) -> &ExprObj {
+    type Target = ConstantObj;
+    fn deref(&self) -> &ConstantObj {
         &self.base
     }
 }
 
 impl IntImmObj {
-    pub(crate) fn new(span: Option<Span>, ty: PrimType, value: i64) -> Self {
-        let base = ExprObj::new(span, ty.into());
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, value: Any) -> Self {
+        let base = ConstantObj::new(span, ty.into());
         Self { base, value }
     }
 }
 
 impl IntImm {
     /// Lossless complete-field allocation.
-    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: i64) -> Self {
+    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: Any) -> Self {
         let obj = IntImmObj::new(span, ty, value);
         Self {
             base: ObjectArc::new(obj),
@@ -769,7 +736,7 @@ impl IntImm {
     }
 }
 
-tvm_ffi::impl_object_upcast!(IntImm => Expr, IntImm => PrimExpr);
+tvm_ffi::impl_object_upcast!(IntImm => Expr, IntImm => Constant, IntImm => PrimExpr);
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.IntSet
@@ -1719,61 +1686,6 @@ impl PrimType {
 tvm_ffi::impl_object_upcast!(PrimType => Type);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.TensorMapType
-/// Complete: reflected fields fill [32, 32) exactly.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.TensorMapType"]
-#[type_final]
-pub struct TensorMapTypeObj {
-    base: TypeObj,
-}
-
-const _: () = {
-    assert!(::core::mem::size_of::<TensorMapTypeObj>() == 32);
-    assert!(::core::mem::align_of::<TensorMapTypeObj>() == 8);
-};
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct TensorMapType {
-    base: ObjectArc<TensorMapTypeObj>,
-}
-
-impl Deref for TensorMapType {
-    type Target = TensorMapTypeObj;
-    fn deref(&self) -> &TensorMapTypeObj {
-        &self.base
-    }
-}
-
-impl Deref for TensorMapTypeObj {
-    type Target = TypeObj;
-    fn deref(&self) -> &TypeObj {
-        &self.base
-    }
-}
-
-impl TensorMapTypeObj {
-    pub(crate) fn new(span: Option<Span>) -> Self {
-        let base = TypeObj::new(span);
-        Self { base }
-    }
-}
-
-impl TensorMapType {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(span: Option<Span>) -> Self {
-        let obj = TensorMapTypeObj::new(span);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-
-tvm_ffi::impl_object_upcast!(TensorMapType => Type);
-// tvm-ffi-stubgen(end)
-
 // tvm-ffi-stubgen(begin): object/ir.TupleType
 /// Complete: reflected fields fill [32, 40) exactly.
 #[repr(C)]
@@ -1828,53 +1740,6 @@ impl TupleType {
 }
 
 tvm_ffi::impl_object_upcast!(TupleType => Type);
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/ir.VDevice
-/// Opaque: parent 'ir.GlobalInfo' is opaque (layout-unknown). Fields are read through the C ABI getters.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.VDevice"]
-#[type_final]
-pub struct VDeviceObj {
-    base: GlobalInfoObj,
-}
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct VDevice {
-    base: ObjectArc<VDeviceObj>,
-}
-
-impl Deref for VDevice {
-    type Target = VDeviceObj;
-    fn deref(&self) -> &VDeviceObj {
-        &self.base
-    }
-}
-
-impl Deref for VDeviceObj {
-    type Target = GlobalInfoObj;
-    fn deref(&self) -> &GlobalInfoObj {
-        &self.base
-    }
-}
-
-impl VDeviceObj {
-    pub fn target(&self) -> Result<Target> {
-        FieldGetter::new(Self::type_index(), "target")?.get(self)
-    }
-
-    pub fn vdevice_id(&self) -> Result<i64> {
-        FieldGetter::new(Self::type_index(), "vdevice_id")?.get(self)
-    }
-
-    pub fn memory_scope(&self) -> Result<String> {
-        FieldGetter::new(Self::type_index(), "memory_scope")?.get(self)
-    }
-}
-
-tvm_ffi::impl_object_upcast!(VDevice => GlobalInfo);
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/ir.Var
@@ -1932,6 +1797,293 @@ impl Var {
 tvm_ffi::impl_object_upcast!(Var => Expr);
 // tvm-ffi-stubgen(end)
 
+// tvm-ffi-stubgen(begin): object/ir.Constant
+/// Complete: reflected fields fill [40, 40) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.Constant"]
+pub struct ConstantObj {
+    base: ExprObj,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<ConstantObj>() == 40);
+    assert!(::core::mem::align_of::<ConstantObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct Constant {
+    base: ObjectArc<ConstantObj>,
+}
+
+impl Deref for Constant {
+    type Target = ConstantObj;
+    fn deref(&self) -> &ConstantObj {
+        &self.base
+    }
+}
+
+impl Deref for ConstantObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl ConstantObj {
+    pub(crate) fn new(span: Option<Span>, ty: Type) -> Self {
+        let base = ExprObj::new(span, ty);
+        Self { base }
+    }
+}
+
+impl Constant {
+    /// Lossless complete-field allocation.
+    pub fn new(span: Option<Span>, ty: Type) -> Self {
+        let obj = ConstantObj::new(span, ty);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(Constant => Expr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/ir.GenericConst
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.GenericConst"]
+#[type_final]
+pub struct GenericConstObj {
+    base: ConstantObj,
+    pub value: Any,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<GenericConstObj>() == 56);
+    assert!(::core::mem::align_of::<GenericConstObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct GenericConst {
+    base: ObjectArc<GenericConstObj>,
+}
+
+impl Deref for GenericConst {
+    type Target = GenericConstObj;
+    fn deref(&self) -> &GenericConstObj {
+        &self.base
+    }
+}
+
+impl Deref for GenericConstObj {
+    type Target = ConstantObj;
+    fn deref(&self) -> &ConstantObj {
+        &self.base
+    }
+}
+
+impl GenericConstObj {
+    pub(crate) fn new(span: Option<Span>, ty: Type, value: Any) -> Self {
+        let base = ConstantObj::new(span, ty);
+        Self { base, value }
+    }
+}
+
+impl GenericConst {
+    /// Lossless complete-field allocation.
+    pub fn new(span: Option<Span>, ty: Type, value: Any) -> Self {
+        let obj = GenericConstObj::new(span, ty, value);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(GenericConst => Expr, GenericConst => Constant);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/ir.StringImm
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.StringImm"]
+#[type_final]
+pub struct StringImmObj {
+    base: ConstantObj,
+    pub value: String,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<StringImmObj>() == 56);
+    assert!(::core::mem::align_of::<StringImmObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct StringImm {
+    base: ObjectArc<StringImmObj>,
+}
+
+impl Deref for StringImm {
+    type Target = StringImmObj;
+    fn deref(&self) -> &StringImmObj {
+        &self.base
+    }
+}
+
+impl Deref for StringImmObj {
+    type Target = ConstantObj;
+    fn deref(&self) -> &ConstantObj {
+        &self.base
+    }
+}
+
+impl StringImmObj {
+    pub(crate) fn new(span: Option<Span>, ty: Type, value: String) -> Self {
+        let base = ConstantObj::new(span, ty);
+        Self { base, value }
+    }
+}
+
+impl StringImm {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(span: Option<Span>, ty: Type, value: String) -> Self {
+        let obj = StringImmObj::new(span, ty, value);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(StringImm => Expr, StringImm => Constant);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/ir.StringType
+/// Complete: reflected fields fill [32, 32) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.StringType"]
+#[type_final]
+pub struct StringTypeObj {
+    base: TypeObj,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<StringTypeObj>() == 32);
+    assert!(::core::mem::align_of::<StringTypeObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct StringType {
+    base: ObjectArc<StringTypeObj>,
+}
+
+impl Deref for StringType {
+    type Target = StringTypeObj;
+    fn deref(&self) -> &StringTypeObj {
+        &self.base
+    }
+}
+
+impl Deref for StringTypeObj {
+    type Target = TypeObj;
+    fn deref(&self) -> &TypeObj {
+        &self.base
+    }
+}
+
+impl StringTypeObj {
+    pub(crate) fn new(span: Option<Span>) -> Self {
+        let base = TypeObj::new(span);
+        Self { base }
+    }
+}
+
+impl StringType {
+    /// Lossless complete-field allocation.
+    pub fn new(span: Option<Span>) -> Self {
+        let obj = StringTypeObj::new(span);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(StringType => Type);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/ir.TensorRegion
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "ir.TensorRegion"]
+#[type_final]
+pub struct TensorRegionObj {
+    base: ExprObj,
+    pub source: Expr,
+    pub region: Array<Range>,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<TensorRegionObj>() == 56);
+    assert!(::core::mem::align_of::<TensorRegionObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct TensorRegion {
+    base: ObjectArc<TensorRegionObj>,
+}
+
+impl Deref for TensorRegion {
+    type Target = TensorRegionObj;
+    fn deref(&self) -> &TensorRegionObj {
+        &self.base
+    }
+}
+
+impl Deref for TensorRegionObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl TensorRegionObj {
+    pub(crate) fn new(span: Option<Span>, ty: Type, source: Expr, region: Array<Range>) -> Self {
+        let base = ExprObj::new(span, ty);
+        Self {
+            base,
+            source,
+            region,
+        }
+    }
+}
+
+impl TensorRegion {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: Type,
+        source: Expr,
+        region: Array<Range>,
+    ) -> Self {
+        let obj = TensorRegionObj::new(span, ty, source, region);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(TensorRegion => Expr);
+// tvm-ffi-stubgen(end)
+
 // ---------------------------------------------------------------------------
 // Hand-written semantics for the generated bindings above.  Lines outside the
 // `tvm-ffi-stubgen(begin)`/`(end)` blocks are kept verbatim by the generator,
@@ -1942,6 +2094,51 @@ tvm_ffi::impl_object_upcast!(Var => Expr);
 #[warn(dead_code, unused_imports)]
 mod semantic {
     use super::*;
+
+    impl StringImm {
+        pub fn new(value: &str) -> Self {
+            Self::with_span(value, None)
+        }
+
+        pub fn with_span(value: &str, span: Option<&Span>) -> Self {
+            Self::from_complete_fields(
+                span.cloned(),
+                StringType::new(None).into(),
+                String::from(value),
+            )
+        }
+    }
+
+    impl IntImmObj {
+        /// Convert to a machine integer without panicking on a BigInt.
+        pub fn try_value_i64(&self) -> Result<i64> {
+            self.value.clone().try_into()
+        }
+
+        /// Decimal spelling, including values beyond the signed 64-bit range.
+        pub fn value_decimal(&self) -> Result<String> {
+            tvm_ffi::cached_global_func!("ffi.ReprPrint")
+                .call_tuple((self.value.clone(),))?
+                .try_into()
+        }
+
+        pub fn try_value_i128(&self) -> Result<i128> {
+            if let Ok(value) = self.try_value_i64() {
+                return Ok(i128::from(value));
+            }
+            self.value_decimal()?.as_str().parse().map_err(|_| {
+                Error::new(VALUE_ERROR, "IntImm exceeds the signed 128-bit domain", "")
+            })
+        }
+
+        /// Read a signed machine integer, rejecting arbitrary-precision values.
+        pub fn value_i64(&self) -> i64 {
+            self.value
+                .clone()
+                .try_into()
+                .expect("IntImm value exceeds the supported signed 64-bit domain")
+        }
+    }
     use tvm_ffi::{
         Any, AnyCompatible, AnyView, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error,
         FieldGetter, Map, ObjectArc, ObjectCore, ObjectRefCast, ObjectRefCore, Result, String,
@@ -2479,7 +2676,7 @@ mod semantic {
     impl PrimExprConvertible {
         /// Invoke TVM's standard FFI fallback conversion to a primitive expression.
         pub fn to_prim_expr(&self) -> Result<Expr> {
-            tvm_ffi::cached_global_func!("tirx.convert")
+            tvm_ffi::cached_global_func!("prim.convert")
                 .call_tuple((self,))?
                 .try_into()
         }
@@ -2707,43 +2904,6 @@ mod semantic {
         }
     }
 
-    impl TensorMapType {
-        /// Construct a tensor-map marker type directly in Rust.
-        pub fn new() -> Self {
-            Self::with_span(None)
-        }
-
-        /// Construct a tensor-map marker type with optional source metadata.
-        pub fn with_span(span: Option<&Span>) -> Self {
-            Self::from_complete_fields(span.cloned())
-        }
-    }
-
-    impl Default for TensorMapType {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl DummyGlobalInfo {
-        /// Construct TVM's fieldless global-info test value through its native
-        /// constructor: `ir.GlobalInfo` registers no layout of its own, so the
-        /// generated binding keeps this node opaque.
-        pub fn new() -> Self {
-            tvm_ffi::cached_global_func!("ir.DummyGlobalInfo")
-                .call_tuple(())
-                .expect("native DummyGlobalInfo constructor failed")
-                .try_into()
-                .expect("native DummyGlobalInfo constructor returned the wrong type")
-        }
-    }
-
-    impl Default for DummyGlobalInfo {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
     impl IntImm {
         /// Construct an integer literal directly in Rust.
         pub fn new(dtype: &str, value: i64) -> Result<Self> {
@@ -2763,7 +2923,11 @@ mod semantic {
         ) -> Result<Self> {
             validate_integer_literal(dtype, value)?;
             let value_type = PrimType::from_dtype(dtype)?;
-            Ok(Self::from_complete_fields(span.cloned(), value_type, value))
+            Ok(Self::from_complete_fields(
+                span.cloned(),
+                value_type,
+                value.into(),
+            ))
         }
     }
 
