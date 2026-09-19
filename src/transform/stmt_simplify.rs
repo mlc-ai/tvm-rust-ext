@@ -172,9 +172,9 @@ struct StmtSimplifier {
 
 impl StmtSimplifier {
     fn prove_condition(&self, condition: &PrimExpr) -> Result<Option<bool>> {
-        let substituted: PrimExpr = tvm_ffi::cached_global_func!("tirx.Substitute")
-            .call_tuple((condition, &self.non_inlined_bindings))?
-            .try_into()?;
+        let substituted: PrimExpr =
+            super::utils::substitute_vars(condition.clone().into(), &self.non_inlined_bindings)?
+                .try_into()?;
         let simplified = self.analyzer.simplify(&substituted)?;
         Ok(int_value(&simplified).map(|value| value != 0))
     }

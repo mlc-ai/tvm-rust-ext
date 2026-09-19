@@ -115,7 +115,7 @@ fn visit_let(
     {
         // StructuralEqual may remap bound variables; native VerifySSA must not.
         let previous: PrimExpr = previous.try_into()?;
-        let equal: bool = tvm_ffi::cached_global_func!("tirx.analysis.expr_deep_equal")
+        let equal: bool = tvm_ffi::cached_global_func!("prim.expr_deep_equal")
             .call_tuple((previous, &value.value))?
             .try_into()?;
         if !equal {

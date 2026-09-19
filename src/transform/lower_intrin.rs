@@ -672,7 +672,7 @@ impl IntrinInjecter {
         let dtype = mapped.a.type_annotation();
         if let Some(shift) = constant_power_of_two(&mapped.b) {
             return binary_op(
-                "tirx.right_shift",
+                "prim.right_shift",
                 mapped.a.clone(),
                 int_like(&mapped.a, i64::from(shift))?,
             );
@@ -702,7 +702,7 @@ impl IntrinInjecter {
                 && matches!(dtype.dtype.bits, 32 | 64)
             {
                 let correction = binary_op(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     remainder,
                     int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
@@ -754,7 +754,7 @@ impl IntrinInjecter {
         if let Some(shift) = constant_power_of_two(&mapped.b) {
             let mask = (1_i64 << shift) - 1;
             return binary_op(
-                "tirx.bitwise_and",
+                "prim.bitwise_and",
                 mapped.a.clone(),
                 int_like(&mapped.a, mask)?,
             );
@@ -782,11 +782,11 @@ impl IntrinInjecter {
                 && matches!(dtype.dtype.bits, 32 | 64)
             {
                 let sign = binary_op(
-                    "tirx.right_shift",
+                    "prim.right_shift",
                     remainder.clone(),
                     int_like(&mapped.a, i64::from(dtype.dtype.bits - 1))?,
                 )?;
-                let correction = binary_op("tirx.bitwise_and", mapped.b.clone(), sign)?;
+                let correction = binary_op("prim.bitwise_and", mapped.b.clone(), sign)?;
                 return binary_op("prim._OpAdd", remainder, correction);
             }
             return Ok(Select::new(

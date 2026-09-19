@@ -1250,7 +1250,8 @@ fn rust_split_host_device_matches_cpp_for_dynamic_shared_memory() -> Result<()> 
         assert_eq!(
             actual.is_ok(),
             supported,
-            "Rust: {index_type}, {dtype}, {extent}"
+            "Rust: {index_type}, {dtype}, {extent}: {:?}",
+            actual.as_ref().err()
         );
         if supported {
             assert_structural_equal(&actual?, &expected?);

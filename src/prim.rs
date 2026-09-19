@@ -1707,7 +1707,7 @@ mod semantic {
     };
     use tvm_ffi::{
         Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, ObjectRefCast, ObjectRefCore,
-        Result, String, TYPE_ERROR, VALUE_ERROR,
+        Result, TYPE_ERROR, VALUE_ERROR,
     };
 
     impl Add {
@@ -2289,25 +2289,10 @@ mod semantic {
             }
             .ok_or_else(|| Error::new(VALUE_ERROR, "Stride literal is outside uint64 range", ""))?;
             if unsigned > i64::MAX as u64 {
-                let word_type = PrimType::new("uint32")?.dtype;
-                return Call::with_metadata(
-                    ty,
-                    Op::get("tirx.large_uint_imm")?,
-                    vec![
-                        IntImm::from_dtype_with_span(
-                            word_type,
-                            (unsigned & 0xffff_ffff) as i64,
-                            span,
-                        )?
-                        .into(),
-                        IntImm::from_dtype_with_span(word_type, (unsigned >> 32) as i64, span)?
-                            .into(),
-                    ],
-                    None,
-                    Vec::new(),
-                    span,
-                )
-                .try_cast();
+                // Current TVM represents the full uint64 domain with BigInt.
+                return tvm_ffi::cached_global_func!("prim._cast")
+                    .call_tuple((ty, value.clone(), value.span.clone()))?
+                    .try_into();
             }
             return Ok(IntImm::from_dtype_with_span(dtype, unsigned as i64, span)?.into());
         }

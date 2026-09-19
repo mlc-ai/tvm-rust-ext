@@ -1077,7 +1077,7 @@ fn cast(dtype: &str, value: PrimExpr) -> Result<PrimExpr> {
     if value.dtype() == target.dtype {
         Ok(value)
     } else {
-        tvm_ffi::cached_global_func!("tirx._cast")
+        tvm_ffi::cached_global_func!("prim._cast")
             .call_tuple((target, value, Option::<crate::ir::Span>::None))?
             .try_into()
     }

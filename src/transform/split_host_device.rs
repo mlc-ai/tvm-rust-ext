@@ -208,8 +208,7 @@ impl HostDeviceSplitter<'_> {
         let mut body: Stmt = if substitutions.is_empty() {
             body
         } else {
-            tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((body, Map::<Var, Expr>::from_iter(substitutions)))?
+            super::utils::substitute_vars(body.into(), &Map::<Var, Expr>::from_iter(substitutions))?
                 .try_into()?
         };
         let can_propagate_errors = matches!(target.device_type()?, 1 | 12 | 16);
@@ -713,20 +712,28 @@ impl KernelLaunchRewriter<'_> {
         let mut arguments = vec![StringImm::new(info.global_symbol.as_str()).into()];
         arguments.extend(value.args.iter());
         for launch_argument in info.launch_arguments.iter() {
-            let substituted: PrimExpr = tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((launch_argument, &substitutions))?
-                .try_into()?;
+            let substituted: PrimExpr =
+                super::utils::substitute_vars(launch_argument.into(), &substitutions)?
+                    .try_into()?;
             arguments.push(substituted.into());
         }
         self.launched.insert(identity);
-        let primitive = value.ty.clone().try_cast::<PrimType>()?;
-        let return_type = if primitive.dtype.code == tvm_ffi::DLDataTypeCode::kDLOpaqueHandle as u8
-            && primitive.dtype.bits == 0
-            && primitive.dtype.lanes == 0
+        let return_type = if value
+            .ty
+            .as_node::<crate::ir::TupleTypeObj>()
+            .is_some_and(|tuple| tuple.fields.is_empty())
         {
             PrimType::new("int32")?
         } else {
-            primitive
+            let primitive = value.ty.clone().try_cast::<PrimType>()?;
+            if primitive.dtype.code == tvm_ffi::DLDataTypeCode::kDLOpaqueHandle as u8
+                && primitive.dtype.bits == 0
+                && primitive.dtype.lanes == 0
+            {
+                PrimType::new("int32")?
+            } else {
+                primitive
+            }
         };
         Ok(Call::new(
             return_type,
@@ -806,7 +813,5 @@ fn target_equal(lhs: &Target, rhs: &Target) -> Result<bool> {
 }
 
 fn substitute_prim(expression: &PrimExpr, substitutions: &Map<Var, Expr>) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx.Substitute")
-        .call_tuple((expression, substitutions))?
-        .try_into()
+    super::utils::substitute_vars(expression.clone().into(), substitutions)?.try_into()
 }

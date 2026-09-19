@@ -40,10 +40,10 @@ use crate::prim::{
 };
 use crate::tirx::{
     AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj,
-    BreakObj, BufferRegionType, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar,
-    ContinueObj, DeclBuffer, DeclBufferObj, Evaluate, EvaluateObj, For, ForObj, IfThenElse,
-    IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj, ScopeIdDef, ScopeIdDefStmt, SeqStmt,
-    SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While, WhileObj,
+    BreakObj, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ContinueObj,
+    DeclBuffer, DeclBufferObj, Evaluate, EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter,
+    Layout, PrimFunc, Return, ReturnObj, ScopeIdDef, ScopeIdDefStmt, SeqStmt, SeqStmtObj, Stmt,
+    TileLayout, TilePrimitiveCall, While, WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
@@ -52,6 +52,19 @@ pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
 
 pub(super) fn get_operator(name: &str) -> Result<Expr> {
     Op::get(name).map(Into::into)
+}
+
+pub(super) fn substitute_vars(node: Any, replacements: &Map<Var, Expr>) -> Result<Any> {
+    tvm_ffi::structural_map(
+        node,
+        |variable: Var| -> Result<Any> {
+            Ok(match replacements.get(&variable)? {
+                Some(replacement) => replacement.into(),
+                None => variable.into(),
+            })
+        },
+        tvm_ffi::WalkOrder::PostOrder,
+    )
 }
 
 pub(super) fn const_handle(value: i64) -> Result<Expr> {
@@ -199,7 +212,7 @@ pub(super) fn without_prim_func_attr(function: PrimFunc, key: &str) -> PrimFunc 
 }
 
 pub(super) fn cast_prim_expr(value: PrimExpr, target: PrimType) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx._cast")
+    tvm_ffi::cached_global_func!("prim._cast")
         .call_tuple((target, value, Option::<crate::ir::Span>::None))?
         .try_into()
 }

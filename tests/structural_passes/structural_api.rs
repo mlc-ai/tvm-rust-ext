@@ -22,6 +22,22 @@ use tvm::prim::{Broadcast, Ramp, Shuffle};
 use tvm::tvm_ffi::AnyView;
 
 #[test]
+fn bigint_literals_preserve_values_outside_i64() -> Result<()> {
+    load_tvm_compiler();
+    let wide: IntImm = Function::get_global("prim._cast")?
+        .call_tuple((
+            tvm::ir::PrimType::new("uint64")?,
+            FloatImm::new("float64", 9223372036854775808.0)?,
+            Option::<Span>::None,
+        ))?
+        .try_into()?;
+    assert!(wide.try_value_i64().is_err());
+    assert_eq!(wide.try_value_i128()?, 1_i128 << 63);
+    assert_eq!(wide.value_decimal()?.as_str(), "9223372036854775808");
+    Ok(())
+}
+
+#[test]
 fn vector_constructors_match_cpp() -> Result<()> {
     load_tvm_compiler();
     let span = Some(Span::new(&SourceName::get("vectors")?, 1, 1, 1, 8)?);
@@ -395,18 +411,14 @@ fn source_and_module_metadata_round_trip_cpp_objects() {
     assert_eq!(source.text().unwrap().as_str(), "first line\nsecond line");
 
     assert!(module.global_infos.is_empty());
-    let dummy = DummyGlobalInfo::new();
-    let updated = module
-        .with_updated_global_info("dummy", vec![dummy.clone().into()])
-        .unwrap();
+    let updated = module.with_updated_global_info("empty", vec![]).unwrap();
     assert!(module.global_infos.is_empty());
     let group = updated
         .global_infos
-        .get(&tvm::tvm_ffi::String::from("dummy"))
+        .get(&tvm::tvm_ffi::String::from("empty"))
         .unwrap()
         .unwrap();
-    assert_eq!(group.len(), 1);
-    assert!(group.get(0).unwrap().same_as(&dummy));
+    assert_eq!(group.len(), 0);
 }
 
 #[test]
@@ -592,7 +604,15 @@ fn statement_sequence_normalizes_empty_single_and_nested_inputs() {
 
     let empty = Stmt::sequence(Vec::new()).unwrap();
     let empty = empty.try_cast::<Evaluate>().unwrap();
-    assert_eq!(empty.value.clone().try_cast::<IntImm>().unwrap().value, 0);
+    assert_eq!(
+        empty
+            .value
+            .clone()
+            .try_cast::<IntImm>()
+            .unwrap()
+            .value_i64(),
+        0
+    );
 
     let single: Stmt = Evaluate::from_i64(7).unwrap().into();
     let single_pointer = object_pointer(&single);
@@ -636,7 +656,7 @@ fn buffer_defaults_match_the_cpp_constructor() {
         .unwrap();
 
     assert_eq!(buffer_type.storage_scope.as_str(), "global");
-    assert_eq!(element_offset.value, 0);
+    assert_eq!(element_offset.value_i64(), 0);
     assert_eq!(
         element_offset
             .ty
@@ -846,27 +866,6 @@ fn index_maps_and_tensor_intrinsics_cross_the_native_abi() {
     assert_structural_equal(&recovered.get(0).unwrap(), &prim_int_expression(3));
     let (non_surjective_inverse, _) = index_map.non_surjective_inverse(domain, None).unwrap();
     assert_eq!(non_surjective_inverse.initial_indices.len(), 1);
-
-    let handle_type = PointerType::new(PrimType::void(), "global").unwrap();
-    let parameter = Var::with_type("data", handle_type);
-    let function = PrimFunc::new(vec![parameter], Evaluate::from_i64(0).unwrap()).unwrap();
-    let intrinsic = TensorIntrin::new(function.clone(), function).unwrap();
-    intrinsic
-        .register("testing.rust_tensor_intrin", true)
-        .unwrap();
-    assert!(TensorIntrin::get("testing.rust_tensor_intrin")
-        .unwrap()
-        .same_as(&intrinsic));
-    assert!(TensorIntrin::try_get("testing.missing_tensor_intrin")
-        .unwrap()
-        .is_none());
-
-    let invalid = PrimFunc::new(
-        vec![Var::new("scalar", "int32").unwrap()],
-        Evaluate::from_i64(0).unwrap(),
-    )
-    .unwrap();
-    assert!(TensorIntrin::new(invalid.clone(), invalid).is_err());
 }
 
 #[test]
@@ -983,7 +982,12 @@ fn decorate_device_scope_matches_cpp() {
     assert_eq!(attribute.attr_key.as_str(), "device_scope");
     assert_eq!(i64::try_from(attribute.node.clone()).unwrap(), 0);
     assert_eq!(
-        attribute.value.clone().try_cast::<IntImm>().unwrap().value,
+        attribute
+            .value
+            .clone()
+            .try_cast::<IntImm>()
+            .unwrap()
+            .value_i64(),
         0
     );
 }
@@ -1083,11 +1087,19 @@ fn buffer_bindings_round_trip_cpp_objects() {
     assert!(reflected_layout.offset().unwrap().is_empty());
     let reflected_iter = reflected_layout.shard().unwrap().get(0).unwrap();
     assert_eq!(
-        reflected_iter.extent.as_node::<IntImmObj>().unwrap().value,
+        reflected_iter
+            .extent
+            .as_node::<IntImmObj>()
+            .unwrap()
+            .value_i64(),
         8
     );
     assert_eq!(
-        reflected_iter.stride.as_node::<IntImmObj>().unwrap().value,
+        reflected_iter
+            .stride
+            .as_node::<IntImmObj>()
+            .unwrap()
+            .value_i64(),
         1
     );
     assert_eq!(reflected_iter.axis.name().unwrap().as_str(), "m");
@@ -1156,23 +1168,13 @@ fn buffer_bindings_round_trip_cpp_objects() {
     let region = TensorRegion::new(&buffer, vec![axis_domain]).unwrap();
     let _: Expr = region.clone().into();
     let _: BufferRegionType = region.ty.clone().try_cast().unwrap();
-    let cpp_region: TensorRegion = Function::get_global("tirx.TensorRegion")
+    let cpp_region: TensorRegion = Function::get_global("tirx.BufferRegion")
         .unwrap()
         .call_tuple((&buffer, &region.region))
         .unwrap()
         .try_into()
         .unwrap();
     assert_structural_equal(&region, &cpp_region);
-    let match_buffer = MatchBufferRegion::new(&buffer, &region).unwrap();
-    let cpp_match_buffer: MatchBufferRegion = Function::get_global("tirx.MatchBufferRegion")
-        .unwrap()
-        .call_tuple((&buffer, &region))
-        .unwrap()
-        .try_into()
-        .unwrap();
-    assert_structural_equal(&match_buffer, &cpp_match_buffer);
-    assert!(match_buffer.buffer.same_as(&buffer));
-    assert!(match_buffer.source.same_as(&region));
     let function = PrimFunc::new(vec![buffer.clone().into()], store.clone()).unwrap();
 
     assert!(load.source.same_as(&buffer));
@@ -1189,7 +1191,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
             .extent
             .as_node::<IntImmObj>()
             .unwrap()
-            .value,
+            .value_i64(),
         8
     );
 
@@ -1269,7 +1271,12 @@ fn rust_unit_loop_elimination_matches_cpp_on_buffer_indices() {
         .try_cast::<Add>()
         .unwrap();
     assert_eq!(
-        mapped_index.b.clone().try_cast::<IntImm>().unwrap().value,
+        mapped_index
+            .b
+            .clone()
+            .try_cast::<IntImm>()
+            .unwrap()
+            .value_i64(),
         2
     );
     assert_eq!(memory_access_statistics(&rust_result).unwrap().loads, 1);

@@ -395,9 +395,9 @@ impl LoopUnroller {
                 loop_node.loop_var.as_var().clone(),
                 replacement.into(),
             )]);
-            let step: Stmt = tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((loop_node.body.clone(), replacements))?
-                .try_into()?;
+            let step: Stmt =
+                super::utils::substitute_vars(loop_node.body.clone().into(), &replacements)?
+                    .try_into()?;
             unrolled.push(step);
         }
         Stmt::sequence(unrolled)

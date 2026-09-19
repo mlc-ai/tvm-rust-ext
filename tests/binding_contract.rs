@@ -71,7 +71,6 @@ const SCHEMA_ARRAY_TYPE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Type"
 const SCHEMA_ARRAY_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Var"}]}"#;
 const SCHEMA_ATTRS: &str = r#"{"type":"ir.Attrs"}"#;
 const SCHEMA_AXIS: &str = r#"{"type":"tirx.Axis"}"#;
-const SCHEMA_BUFFER_REGION: &str = r#"{"type":"ir.TensorRegion"}"#;
 const SCHEMA_BOOL: &str = r#"{"type":"bool"}"#;
 const SCHEMA_COMM_REDUCER: &str = r#"{"type":"te.CommReducer"}"#;
 const SCHEMA_DICT_ATTRS: &str = r#"{"type":"ir.DictAttrs"}"#;
@@ -115,7 +114,6 @@ const SCHEMA_STRING: &str = r#"{"type":"ffi.String"}"#;
 const SCHEMA_STRING_IMM: &str = r#"{"type":"ir.StringImm"}"#;
 const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
-const SCHEMA_PRIM_FUNC: &str = r#"{"type":"tirx.PrimFunc"}"#;
 const SCHEMA_TILE_LAYOUT: &str = r#"{"type":"tirx.TileLayout"}"#;
 const SCHEMA_TARGET: &str = r#"{"type":"target.Target"}"#;
 const SCHEMA_SCOPE_ID_DEF: &str = r#"{"type":"tirx.ScopeIdDef"}"#;
@@ -636,7 +634,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("source", DEF_RECURSIVE, SCHEMA_EXPR),
+            ("source", 0, SCHEMA_EXPR),
             ("indices", 0, SCHEMA_ARRAY_EXPR),
         ],
     );
@@ -644,7 +642,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("buffer", 0, SCHEMA_VAR),
             ("value", 0, SCHEMA_EXPR),
             ("indices", 0, SCHEMA_ARRAY_EXPR),
         ],

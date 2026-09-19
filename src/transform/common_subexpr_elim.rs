@@ -748,7 +748,5 @@ where
     R: TryFrom<Any, Error = Error>,
 {
     let node: Any = node.clone().into();
-    tvm_ffi::cached_global_func!("tirx.Substitute")
-        .call_tuple((node, replacements))?
-        .try_into()
+    super::utils::substitute_vars(node, replacements)?.try_into()
 }

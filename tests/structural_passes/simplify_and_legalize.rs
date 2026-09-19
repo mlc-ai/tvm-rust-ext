@@ -488,7 +488,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
         .try_cast::<TilePrimitiveCall>()
         .unwrap();
     let region = TensorRegion::try_from(call.args.get(0).unwrap()).unwrap();
-    assert!(region.buffer.same_as(&allocation.buffer));
+    assert!(region.source.same_as(&allocation.buffer));
 }
 
 #[test]

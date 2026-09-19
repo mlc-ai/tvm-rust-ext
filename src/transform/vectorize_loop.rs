@@ -177,9 +177,8 @@ impl Vectorizer {
         let scalar = Var::with_type(&format!("{}.s", self.variable.name.as_str()), ty.clone());
         let substitutions =
             Map::from_iter(vec![(self.variable.clone(), Expr::from(scalar.clone()))]);
-        let body: Stmt = tvm_ffi::cached_global_func!("tirx.Substitute")
-            .call_tuple((statement, substitutions))?
-            .try_into()?;
+        let body: Stmt =
+            super::utils::substitute_vars(statement.into(), &substitutions)?.try_into()?;
         For::new(
             scalar,
             IntImm::from_dtype(ty.dtype, 0)?,
@@ -673,8 +672,7 @@ impl Vectorizer {
                 self.variable.clone(),
                 Expr::from(IntImm::from_dtype(ty.dtype, 0)?),
             )]);
-            return tvm_ffi::cached_global_func!("tirx.Substitute")
-                .call_tuple((value.vectors.get(0)?, substitutions))?
+            return super::utils::substitute_vars(value.vectors.get(0)?.into(), &substitutions)?
                 .try_into();
         }
         // This is the same narrowed re-vectorization used by C++ for the

@@ -143,7 +143,7 @@ impl IndexDataTypeNormalizer {
             bitwise_or_operator: get_operator("prim.bitwise_or")?,
             bitwise_xor_operator: get_operator("prim.bitwise_xor")?,
             pow_operator: get_operator("tirx.pow")?,
-            clz_operator: get_operator("tirx.clz")?,
+            clz_operator: get_operator("prim.clz")?,
             if_then_else_operator: get_operator("prim.if_then_else")?,
         })
     }

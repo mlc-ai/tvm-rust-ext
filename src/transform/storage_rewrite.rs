@@ -1058,7 +1058,7 @@ fn find_free_entry(
 }
 
 fn expr_deep_equal(lhs: &PrimExpr, rhs: &PrimExpr) -> Result<bool> {
-    tvm_ffi::cached_global_func!("tirx.analysis.expr_deep_equal")
+    tvm_ffi::cached_global_func!("prim.expr_deep_equal")
         .call_tuple((lhs, rhs))?
         .try_into()
 }

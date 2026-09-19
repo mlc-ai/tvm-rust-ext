@@ -2110,6 +2110,27 @@ mod semantic {
     }
 
     impl IntImmObj {
+        /// Convert to a machine integer without panicking on a BigInt.
+        pub fn try_value_i64(&self) -> Result<i64> {
+            self.value.clone().try_into()
+        }
+
+        /// Decimal spelling, including values beyond the signed 64-bit range.
+        pub fn value_decimal(&self) -> Result<String> {
+            tvm_ffi::cached_global_func!("ffi.ReprPrint")
+                .call_tuple((self.value.clone(),))?
+                .try_into()
+        }
+
+        pub fn try_value_i128(&self) -> Result<i128> {
+            if let Ok(value) = self.try_value_i64() {
+                return Ok(i128::from(value));
+            }
+            self.value_decimal()?.as_str().parse().map_err(|_| {
+                Error::new(VALUE_ERROR, "IntImm exceeds the signed 128-bit domain", "")
+            })
+        }
+
         /// Read a signed machine integer, rejecting arbitrary-precision values.
         pub fn value_i64(&self) -> i64 {
             self.value
@@ -2655,7 +2676,7 @@ mod semantic {
     impl PrimExprConvertible {
         /// Invoke TVM's standard FFI fallback conversion to a primitive expression.
         pub fn to_prim_expr(&self) -> Result<Expr> {
-            tvm_ffi::cached_global_func!("tirx.convert")
+            tvm_ffi::cached_global_func!("prim.convert")
                 .call_tuple((self,))?
                 .try_into()
         }

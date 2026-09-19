@@ -108,7 +108,7 @@ fn direct_and_semantic_constructors_round_trip() {
     );
     let rhs = addition.b.as_node::<IntImmObj>().unwrap();
     assert!(addition.a.same_as(&parameter));
-    assert_eq!(rhs.value, 0);
+    assert_eq!(rhs.value_i64(), 0);
     assert!(rhs.span.is_none());
 
     // Exercise the C++ field getter on Rust-owned storage through standard FFI.
@@ -196,7 +196,7 @@ fn generated_bindings_support_structural_walk() {
                 WalkResult::Advance
             },
             |value: IntImm| {
-                integer_literals.push(value.value);
+                integer_literals.push(value.value_i64());
                 WalkResult::Advance
             },
             |_: Var, kind: DefRegionKind| {
@@ -227,7 +227,7 @@ fn generated_bindings_support_structural_map() {
             if addition
                 .b
                 .as_node::<IntImmObj>()
-                .is_some_and(|rhs| rhs.value == 0)
+                .is_some_and(|rhs| rhs.value_i64() == 0)
             {
                 addition.a.clone()
             } else {

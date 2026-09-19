@@ -361,7 +361,7 @@ fn rust_lower_tirx_opaque_matches_cpp_for_thread_binding_and_pragmas() {
     let annotations: Map<tvm::tvm_ffi::String, Any> = [
         (
             tvm::tvm_ffi::String::from("pragma_zeta"),
-            Any::from(tvm::prim::StringImm::new("z")),
+            Any::from(tvm::ir::StringImm::new("z")),
         ),
         (
             tvm::tvm_ffi::String::from("pragma_alpha"),
@@ -565,7 +565,12 @@ fn rust_remove_assume_matches_cpp_for_a_root_assume() {
         .unwrap();
     let evaluate = rust_function.body().clone().try_cast::<Evaluate>().unwrap();
     assert_eq!(
-        evaluate.value.clone().try_cast::<IntImm>().unwrap().value,
+        evaluate
+            .value
+            .clone()
+            .try_cast::<IntImm>()
+            .unwrap()
+            .value_i64(),
         0
     );
 }
