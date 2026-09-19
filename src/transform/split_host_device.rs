@@ -634,10 +634,10 @@ impl KernelInfoCollector {
         }
         let mut size: PrimExpr = IntImm::new("int32", 1)?.into();
         for extent in ty.shape.iter() {
-            size = binary_op("tirx._OpMul", size, extent)?;
+            size = binary_op("prim._OpMul", size, extent)?;
         }
         let bytes = IntImm::new("int64", storage_bytes(&ty.dtype)?)?;
-        size = binary_op("tirx._OpMul", size, bytes.into())?;
+        size = binary_op("prim._OpMul", size, bytes.into())?;
         if !self.bindings.is_empty() {
             size = substitute_prim(&size, &self.bindings)?;
         }

@@ -23,8 +23,8 @@
 //! stubgen should replace first.  Once those bindings are generated, deleting
 //! their handwritten definitions must not require changing this file.
 
-use tvm::ir::prim::{Add, AddObj};
 use tvm::ir::{Expr, IntImm, IntImmObj, PrimExpr, PrimType, PrimTypeObj, Type, Var, VarObj};
+use tvm::prim::{Add, AddObj};
 use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::tvm_ffi::{
     structural_map, structural_walk, DefRegionKind, FieldGetter, Function, ObjectArc, ObjectCore,

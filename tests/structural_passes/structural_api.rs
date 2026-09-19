@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use tvm::ir::prim::{Broadcast, Ramp, Shuffle};
+use tvm::prim::{Broadcast, Ramp, Shuffle};
 use tvm::tvm_ffi::AnyView;
 
 #[test]

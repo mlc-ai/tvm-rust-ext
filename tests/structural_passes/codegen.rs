@@ -365,7 +365,7 @@ fn rust_pointer_value_type_rewrite_matches_cpp_for_buffer_accesses() -> Result<(
         ("local", false, true),
     ] {
         let buffer = BufferType::new(scope, "float32", vec![int_expression(16)])?.new_var("data");
-        let ramp = tvm::ir::prim::Ramp::new(
+        let ramp = tvm::prim::Ramp::new(
             prim_int_expression(0),
             prim_int_expression(1),
             prim_int_expression(4),

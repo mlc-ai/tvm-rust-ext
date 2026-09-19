@@ -536,12 +536,12 @@ impl WarpAccessRewriter {
         }
         let coefficient: PrimExpr =
             IntImm::from_dtype(index_type.dtype, self.warp_coefficient)?.into();
-        let local_remainder = binary_op("tirx._OpIndexMod", index.clone(), coefficient.clone())?;
+        let local_remainder = binary_op("prim._OpIndexMod", index.clone(), coefficient.clone())?;
         if self.warp_group == 1 {
             return Ok((
                 self.analyzer.canonical_simplify(&local_remainder)?,
                 self.analyzer.canonical_simplify(&binary_op(
-                    "tirx._OpIndexDiv",
+                    "prim._OpIndexDiv",
                     index.clone(),
                     coefficient,
                 )?)?,
@@ -553,15 +553,15 @@ impl WarpAccessRewriter {
             self.warp_coefficient * i64::from(self.width),
         )?
         .into();
-        let quotient = binary_op("tirx._OpDiv", index.clone(), width_coefficient.clone())?;
+        let quotient = binary_op("prim._OpDiv", index.clone(), width_coefficient.clone())?;
         let local = binary_op(
-            "tirx._OpAdd",
-            binary_op("tirx._OpMul", quotient, coefficient.clone())?,
+            "prim._OpAdd",
+            binary_op("prim._OpMul", quotient, coefficient.clone())?,
             local_remainder,
         )?;
         let group = binary_op(
-            "tirx._OpIndexDiv",
-            binary_op("tirx._OpIndexMod", index.clone(), width_coefficient)?,
+            "prim._OpIndexDiv",
+            binary_op("prim._OpIndexMod", index.clone(), width_coefficient)?,
             coefficient,
         )?;
         Ok((

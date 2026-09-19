@@ -336,7 +336,7 @@ fn rust_lower_tirx_dedup_cu_tensor_maps_matches_cpp() {
 
 #[test]
 fn rust_lower_intrin_matches_cpp_for_scalar_and_vector_floor_operations() -> Result<()> {
-    use tvm::ir::prim::{Broadcast, Max};
+    use tvm::prim::{Broadcast, Max};
 
     load_tvm_compiler();
     let scalable: PrimExpr = Mul::new(
@@ -438,7 +438,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
         Ok(Evaluate::new(FloorDiv::new(value, int_expression(3))?)?.into())
     };
     let condition: PrimExpr = GE::new(n.clone(), int_expression(0))?.into();
-    let negative: PrimExpr = tvm::ir::prim::Sub::new(int_expression(0), n.clone())?.into();
+    let negative: PrimExpr = tvm::prim::Sub::new(int_expression(0), n.clone())?.into();
     let division: PrimExpr = FloorDiv::new(n.clone(), int_expression(3))?.into();
     let negative_division: PrimExpr = FloorDiv::new(negative, int_expression(3))?.into();
     let assertion = AssertStmt::new(condition.clone(), "ValueError", "nonnegative")?;

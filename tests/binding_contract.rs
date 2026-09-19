@@ -20,29 +20,28 @@
 //! Reflection contracts and constructor checks for the object slice listed below.
 
 use tvm::analysis::CallEffectKind;
-use tvm::ir::ir::StringImmObj;
-use tvm::ir::prim::{
+use tvm::ir::StringImmObj;
+use tvm::ir::TensorRegionObj;
+use tvm::ir::{
+    AttrsObj, BaseFuncObj, CallObj, DictAttrsObj, Expr, ExprObj, FuncType, FuncTypeObj,
+    GlobalInfoObj, GlobalVarObj, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj, OpaqueTypeObj,
+    PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj, PrimType, PrimTypeObj, RangeObj,
+    SequentialSpanObj, SourceMapObj, SourceNameObj, SourceObj, Span, SpanObj, TensorLoadObj, Tuple,
+    TupleGetItem, TupleGetItemObj, TupleObj, TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
+};
+use tvm::prim::{
     AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj, GTObj,
     LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, RampObj, SelectObj,
     ShuffleObj, SubObj,
-};
-use tvm::ir::TensorRegionObj;
-use tvm::ir::{
-    AttrsObj, BaseFuncObj, CallObj, DictAttrsObj, DummyGlobalInfoObj, Expr, ExprObj, FuncType,
-    FuncTypeObj, GlobalInfoObj, GlobalVarObj, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj,
-    OpaqueTypeObj, PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj, PrimType,
-    PrimTypeObj, RangeObj, SequentialSpanObj, SourceMapObj, SourceNameObj, SourceObj, Span,
-    SpanObj, TensorLoadObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, TupleType,
-    TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
 use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
     AllocBufferObj, AssertStmtObj, AttrStmtObj, AxisObj, BindObj, BufferRegionTypeObj,
     BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj, DeclBufferObj,
     DispatchContextObj, EvaluateObj, ExecScopeObj, ForKind, ForObj, IfThenElseObj, IndexMapObj,
-    IterObj, IterVarObj, IterVarType, LambdaExprObj, LayoutObj, MatchBufferRegionObj, PrimFuncObj,
-    PrimVar, ScopeBinding, ScopeIdDefObj, ScopeIdDefStmtObj, ScopeKind, SeqStmtObj, StmtObj,
-    TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
+    IterObj, IterVarObj, IterVarType, LambdaExprObj, LayoutObj, PrimFuncObj, PrimVar, ScopeBinding,
+    ScopeIdDefObj, ScopeIdDefStmtObj, ScopeKind, SeqStmtObj, StmtObj, TileLayoutObj,
+    TilePrimitiveCallObj,
 };
 use tvm::tirx::{TensorMapType, TensorMapTypeObj};
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
@@ -67,12 +66,12 @@ const SCHEMA_ARRAY_ITER_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx
 const SCHEMA_ARRAY_RANGE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Range"}]}"#;
 const SCHEMA_ARRAY_SPAN: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Span"}]}"#;
 const SCHEMA_ARRAY_STMT: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Stmt"}]}"#;
-const SCHEMA_ARRAY_STRING_IMM: &str = r#"{"type":"ffi.Array","args":[{"type":"prim.StringImm"}]}"#;
+const SCHEMA_ARRAY_STRING_IMM: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.StringImm"}]}"#;
 const SCHEMA_ARRAY_TYPE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Type"}]}"#;
 const SCHEMA_ARRAY_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Var"}]}"#;
 const SCHEMA_ATTRS: &str = r#"{"type":"ir.Attrs"}"#;
 const SCHEMA_AXIS: &str = r#"{"type":"tirx.Axis"}"#;
-const SCHEMA_BUFFER_REGION: &str = r#"{"type":"tirx.TensorRegion"}"#;
+const SCHEMA_BUFFER_REGION: &str = r#"{"type":"ir.TensorRegion"}"#;
 const SCHEMA_BOOL: &str = r#"{"type":"bool"}"#;
 const SCHEMA_COMM_REDUCER: &str = r#"{"type":"te.CommReducer"}"#;
 const SCHEMA_DICT_ATTRS: &str = r#"{"type":"ir.DictAttrs"}"#;
@@ -113,7 +112,7 @@ const SCHEMA_SOURCE_NAME: &str = r#"{"type":"ir.SourceName"}"#;
 const SCHEMA_SPAN: &str = r#"{"type":"ir.Span"}"#;
 const SCHEMA_STMT: &str = r#"{"type":"tirx.Stmt"}"#;
 const SCHEMA_STRING: &str = r#"{"type":"ffi.String"}"#;
-const SCHEMA_STRING_IMM: &str = r#"{"type":"prim.StringImm"}"#;
+const SCHEMA_STRING_IMM: &str = r#"{"type":"ir.StringImm"}"#;
 const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
 const SCHEMA_PRIM_FUNC: &str = r#"{"type":"tirx.PrimFunc"}"#;
@@ -339,11 +338,14 @@ fn covered_object_schemas_match_runtime_metadata() {
         ],
     );
     assert_contract::<TensorMapTypeObj, TypeObj>(true, Some(Tree), &[]);
-    assert_contract::<IntImmObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_INT)]);
+    assert_contract::<IntImmObj, tvm::ir::ConstantObj>(
+        true,
+        Some(Tree),
+        &[("value", 0, r#"{"type":"ffi.BigInt"}"#)],
+    );
     assert_contract::<AttrsObj, Object>(false, Some(Tree), &[]);
     assert_contract::<DictAttrsObj, AttrsObj>(true, Some(Tree), &[("__dict__", 0, SCHEMA_ANY_MAP)]);
     assert_contract::<GlobalInfoObj, Object>(false, None, &[]);
-    assert_contract::<DummyGlobalInfoObj, GlobalInfoObj>(true, Some(Tree), &[]);
     assert_contract::<IRModuleObj, Object>(
         true,
         Some(Tree),
@@ -483,7 +485,11 @@ fn covered_object_schemas_match_runtime_metadata() {
             ("body", 0, SCHEMA_EXPR),
         ],
     );
-    assert_contract::<StringImmObj, ExprObj>(true, Some(Tree), &[("value", 0, SCHEMA_STRING)]);
+    assert_contract::<StringImmObj, tvm::ir::ConstantObj>(
+        true,
+        Some(Tree),
+        &[("value", 0, SCHEMA_STRING)],
+    );
     assert_contract::<CommReducerObj, Object>(
         true,
         Some(Tree),
@@ -611,11 +617,6 @@ fn covered_object_schemas_match_runtime_metadata() {
             ("inverse_index_map", IGNORE, SCHEMA_OPTIONAL_OBJECT),
         ],
     );
-    assert_contract::<TensorIntrinObj, Object>(
-        true,
-        Some(Unsupported),
-        &[("desc", 0, SCHEMA_PRIM_FUNC), ("impl", 0, SCHEMA_PRIM_FUNC)],
-    );
     assert_contract::<BufferTypeObj, TypeObj>(
         true,
         Some(Tree),
@@ -669,16 +670,8 @@ fn covered_object_schemas_match_runtime_metadata() {
         true,
         Some(Tree),
         &[
-            ("buffer", DEF_RECURSIVE, SCHEMA_VAR),
+            ("source", DEF_RECURSIVE, SCHEMA_EXPR),
             ("region", 0, SCHEMA_ARRAY_RANGE),
-        ],
-    );
-    assert_contract::<MatchBufferRegionObj, Object>(
-        true,
-        Some(Tree),
-        &[
-            ("buffer", DEF_NON_RECURSIVE, SCHEMA_VAR),
-            ("source", 0, SCHEMA_BUFFER_REGION),
         ],
     );
     assert_contract::<ExecScopeObj, Object>(false, Some(Tree), &[("kind", 0, SCHEMA_INT)]);
@@ -853,7 +846,7 @@ fn tuple_constructors_match_native_type_derivation_and_bounds() {
     assert_structural_equal(&function_type, &native_function_type);
 
     let tensor_map_type = TensorMapType::new();
-    let native_tensor_map_type: TensorMapType = Function::get_global("ir.TensorMapType")
+    let native_tensor_map_type: TensorMapType = Function::get_global("tirx.TensorMapType")
         .unwrap()
         .call_tuple((Option::<Span>::None,))
         .unwrap()

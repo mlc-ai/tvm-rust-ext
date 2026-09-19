@@ -1121,9 +1121,9 @@ fn prepare_backing(
         if int_value(&extent).is_some_and(|value| value > i64::from(i32::MAX) / bits) {
             extent = IntImm::new("int64", int_value(&extent).expect("constant extent"))?.into();
         }
-        let size_bits = binary_op("tirx._OpMul", extent, IntImm::new("int32", bits)?.into())?;
+        let size_bits = binary_op("prim._OpMul", extent, IntImm::new("int32", bits)?.into())?;
         size = Some(match size {
-            Some(previous) => binary_op("tirx._OpMax", previous, size_bits)?,
+            Some(previous) => binary_op("prim._OpMax", previous, size_bits)?,
             None => size_bits,
         });
     }
@@ -1133,15 +1133,15 @@ fn prepare_backing(
         i64::from(dtype.dtype.bits) * i64::from(dtype.dtype.lanes),
     )?
     .into();
-    let remainder = binary_op("tirx._OpFloorMod", size.clone(), bits.clone())?;
+    let remainder = binary_op("prim._OpFloorMod", size.clone(), bits.clone())?;
     let divisible = analyzer.can_prove(&binary_op(
-        "tirx._OpEQ",
+        "prim._OpEQ",
         remainder,
         IntImm::new("int32", 0)?.into(),
     )?)?;
-    let mut extent = binary_op("tirx._OpFloorDiv", size, bits)?;
+    let mut extent = binary_op("prim._OpFloorDiv", size, bits)?;
     if !divisible {
-        extent = binary_op("tirx._OpAdd", extent, IntImm::new("int32", 1)?.into())?;
+        extent = binary_op("prim._OpAdd", extent, IntImm::new("int32", 1)?.into())?;
     }
     resized_buffer(first, dtype, analyzer.simplify(&extent)?)
 }
@@ -1280,5 +1280,5 @@ fn remap_offset(index: PrimExpr, bit_offset: u64, element_bits: u64) -> Result<P
         i64::try_from(bit_offset / element_bits)
             .map_err(|_| value_error("a merged storage offset does not fit i64"))?,
     )?;
-    binary_op("tirx._OpAdd", offset.into(), index)
+    binary_op("prim._OpAdd", offset.into(), index)
 }

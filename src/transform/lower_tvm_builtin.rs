@@ -354,7 +354,7 @@ impl BuiltinLower {
             .ok_or_else(|| value_error("allocation requires a device id"))?;
         let mut total_bytes: PrimExpr = IntImm::new("uint64", element_bytes)?.into();
         for extent in buffer_type.shape.iter() {
-            total_bytes = binary_op("tirx._OpMul", total_bytes, extent)?;
+            total_bytes = binary_op("prim._OpMul", total_bytes, extent)?;
         }
         let throw = Evaluate::new(Call::new(
             PrimType::new("int32")?,
@@ -652,7 +652,7 @@ impl BuiltinLower {
             element_offset
         } else {
             binary_op(
-                "tirx._OpMul",
+                "prim._OpMul",
                 element_offset.clone(),
                 IntImm::from_dtype(element_offset.dtype(), storage_bytes(&dtype)?)?.into(),
             )?

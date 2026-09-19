@@ -776,7 +776,7 @@ impl PackedAbiBinder {
                 let offset_type = ty.elem_offset.dtype();
                 let condition = equal(
                     binary_op(
-                        "tirx._OpMod",
+                        "prim._OpMod",
                         ty.elem_offset.clone(),
                         IntImm::from_dtype(offset_type, i64::from(ty.offset_factor))?.into(),
                     )?,
@@ -1356,7 +1356,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    binary_op("tirx._OpEQ", lhs.into().try_cast()?, rhs.into().try_cast()?)
+    binary_op("prim._OpEQ", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn greater_equal<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1364,7 +1364,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    binary_op("tirx._OpGE", lhs.into().try_cast()?, rhs.into().try_cast()?)
+    binary_op("prim._OpGE", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn or<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1372,7 +1372,7 @@ where
     L: Into<Expr>,
     R: Into<Expr>,
 {
-    binary_op("tirx._OpOr", lhs.into().try_cast()?, rhs.into().try_cast()?)
+    binary_op("prim._OpOr", lhs.into().try_cast()?, rhs.into().try_cast()?)
 }
 
 fn and<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>
@@ -1381,7 +1381,7 @@ where
     R: Into<Expr>,
 {
     binary_op(
-        "tirx._OpAnd",
+        "prim._OpAnd",
         lhs.into().try_cast()?,
         rhs.into().try_cast()?,
     )
@@ -1393,7 +1393,7 @@ where
     R: Into<Expr>,
 {
     binary_op(
-        "tirx._OpMul",
+        "prim._OpMul",
         lhs.into().try_cast()?,
         rhs.into().try_cast()?,
     )
@@ -1405,7 +1405,7 @@ where
     R: Into<Expr>,
 {
     binary_op(
-        "tirx._OpDiv",
+        "prim._OpDiv",
         lhs.into().try_cast()?,
         rhs.into().try_cast()?,
     )

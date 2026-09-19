@@ -1054,7 +1054,7 @@ fn if_then_else(
     true_value: PrimExpr,
     false_value: PrimExpr,
 ) -> Result<PrimExpr> {
-    tvm_ffi::cached_global_func!("tirx._OpIfThenElse")
+    tvm_ffi::cached_global_func!("prim._OpIfThenElse")
         .call_tuple((
             condition,
             true_value,

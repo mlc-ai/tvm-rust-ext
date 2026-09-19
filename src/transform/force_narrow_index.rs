@@ -371,63 +371,63 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpAdd")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpAdd")
     }
 
     fn mutate_subtract(&mut self, value: Sub, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpSub")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpSub")
     }
 
     fn mutate_multiply(&mut self, value: Mul, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMul")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMul")
     }
 
     fn mutate_divide(&mut self, value: Div, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpDiv")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpDiv")
     }
 
     fn mutate_modulo(&mut self, value: Mod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMod")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMod")
     }
 
     fn mutate_floor_divide(&mut self, value: FloorDiv, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorDiv")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpFloorDiv")
     }
 
     fn mutate_floor_modulo(&mut self, value: FloorMod, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpFloorMod")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpFloorMod")
     }
 
     fn mutate_minimum(&mut self, value: Min, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMin")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMin")
     }
 
     fn mutate_maximum(&mut self, value: Max, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_binary(mutator, &value.a, &value.b, &value, "tirx._OpMax")
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim._OpMax")
     }
 
     fn mutate_equal(&mut self, value: EQ, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpEQ")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpEQ")
     }
 
     fn mutate_not_equal(&mut self, value: NE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpNE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpNE")
     }
 
     fn mutate_less_than(&mut self, value: LT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLT")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpLT")
     }
 
     fn mutate_less_equal(&mut self, value: LE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpLE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpLE")
     }
 
     fn mutate_greater_than(&mut self, value: GT, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGT")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpGT")
     }
 
     fn mutate_greater_equal(&mut self, value: GE, mutator: &mut Mutator) -> Result<PrimExpr> {
-        self.mutate_comparison(mutator, &value.a, &value.b, &value, "tirx._OpGE")
+        self.mutate_comparison(mutator, &value.a, &value.b, &value, "prim._OpGE")
     }
 
     fn mutate_ramp(&mut self, value: Ramp, mutator: &mut Mutator) -> Result<PrimExpr> {

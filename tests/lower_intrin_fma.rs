@@ -21,8 +21,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use tvm::ir::prim::{Add, Broadcast, Cast, Mul};
 use tvm::ir::{Call, CallObj, DictAttrs, IRModule, IntImm, Op, PrimExpr, PrimType, Type, Var};
+use tvm::prim::{Add, Broadcast, Cast, Mul};
 use tvm::target::Target;
 use tvm::tirx::{Evaluate, EvaluateObj, PrimFunc};
 use tvm::transform::{self, Pass};
