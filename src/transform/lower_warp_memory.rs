@@ -31,8 +31,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
-use crate::ir::prim::Ramp;
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::prim::Ramp;
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, BufferStore, BufferType, BufferVar, DeclBuffer, For, IterVar, PrimFunc,
@@ -155,7 +155,7 @@ fn find_warp_attribute(
     if value.attr_key.as_str() == THREAD_EXTENT {
         let iteration = IterVar::try_from(value.node.clone())?;
         if iteration.thread_tag()?.as_str() == "threadIdx.x" {
-            let width = int_value(&value.value)?;
+            let width = int_value(&PrimExpr::try_from(value.value.clone())?)?;
             let width =
                 i32::try_from(width).map_err(|_| value_error("thread extent exceeds i32"))?;
             if width <= 0

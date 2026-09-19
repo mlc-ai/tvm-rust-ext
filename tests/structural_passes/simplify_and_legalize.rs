@@ -175,7 +175,7 @@ fn rust_stmt_simplify_matches_cpp_for_nested_expression_dispatch() -> Result<()>
     let tuple = Tuple::new(vec![sum.clone(), Tuple::new(vec![sum]).into()]);
     let call = Call::new(
         PrimType::new("int32")?,
-        Op::get("ir.prim.shift_left")?,
+        Op::get("prim.shift_left")?,
         vec![int_expression(3), int_expression(1)],
     );
     let body = SeqStmt::new(vec![
@@ -441,7 +441,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
     let buffer_type =
         BufferType::new("global", "int32", vec![typed_int_expression("int64", 16)]).unwrap();
     let buffer = buffer_type.new_var("scratch");
-    let region = BufferRegion::new(
+    let region = TensorRegion::new(
         &buffer,
         vec![Range::from_min_extent(
             typed_int_expression("int64", 0),
@@ -487,7 +487,7 @@ fn rust_force_narrow_remaps_buffer_regions_inside_tile_calls() {
         .unwrap()
         .try_cast::<TilePrimitiveCall>()
         .unwrap();
-    let region = BufferRegion::try_from(call.args.get(0).unwrap()).unwrap();
+    let region = TensorRegion::try_from(call.args.get(0).unwrap()).unwrap();
     assert!(region.buffer.same_as(&allocation.buffer));
 }
 
@@ -956,11 +956,7 @@ fn rust_compute_legalize_matches_cpp_for_fixed_and_scalable_vector_stores() -> R
 
     load_tvm_compiler();
     let scalable: Expr = Mul::new(
-        Call::new(
-            PrimType::new("int32")?,
-            Op::get("ir.prim.vscale")?,
-            Vec::new(),
-        ),
+        Call::new(PrimType::new("int32")?, Op::get("prim.vscale")?, Vec::new()),
         IntImm::new("int32", 4)?,
     )?
     .into();

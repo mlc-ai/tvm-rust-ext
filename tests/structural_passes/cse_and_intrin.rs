@@ -72,7 +72,7 @@ fn common_subexpr_elim_matches_cpp_scope_and_forbidden_call_rules() {
     let let_lhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
     let let_rhs = Add::new(let_variable.clone(), variable.clone()).unwrap();
     let let_body = Add::new(let_lhs, let_rhs).unwrap();
-    let let_expression: Expr = Function::get_global("ir.prim.Let")
+    let let_expression: Expr = Function::get_global("prim.Let")
         .unwrap()
         .call_tuple((
             let_variable,
@@ -343,7 +343,7 @@ fn rust_lower_intrin_matches_cpp_for_scalar_and_vector_floor_operations() -> Res
         int_expression(4),
         Call::new(
             PrimType::new("int32")?,
-            tvm::ir::Op::get("ir.prim.vscale")?,
+            tvm::ir::Op::get("prim.vscale")?,
             Vec::new(),
         ),
     )?
@@ -484,7 +484,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
             IfThenElse::new(
                 Call::new(
                     PrimType::new("bool")?,
-                    tvm::ir::Op::get("ir.prim.likely")?,
+                    tvm::ir::Op::get("prim.likely")?,
                     vec![condition.clone().into()],
                 ),
                 quotient(n.clone())?,
@@ -504,7 +504,7 @@ fn rust_lower_intrin_matches_cpp_analyzer_scopes() -> Result<()> {
             "if_then_else_call",
             Evaluate::new(Call::new(
                 PrimType::new("int32")?,
-                tvm::ir::Op::get("ir.prim.if_then_else")?,
+                tvm::ir::Op::get("prim.if_then_else")?,
                 vec![condition.into(), division.into(), negative_division.into()],
             ))?
             .into(),
@@ -706,7 +706,7 @@ fn rust_lower_intrin_rewrites_buffer_definitions_and_uses() -> Result<()> {
                 tvm::ir::Op::get("tirx.call_extern")?,
                 vec![
                     StringImm::new("use_buffer").into(),
-                    BufferRegion::new(
+                    TensorRegion::new(
                         &buffer,
                         vec![Range::from_min_extent(
                             int_expression(0),

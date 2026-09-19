@@ -18,8 +18,8 @@
  */
 
 use super::IntrinInjecter;
-use crate::ir::prim::GE;
 use crate::ir::{Expr, IntImm, PrimExpr, Var};
+use crate::prim::GE;
 use crate::target::Target;
 use crate::tirx::{AssertStmt, AttrStmt, Bind, For, IfThenElse, SeqStmt, Stmt};
 use tvm_ffi::{structural_mutate, Result};

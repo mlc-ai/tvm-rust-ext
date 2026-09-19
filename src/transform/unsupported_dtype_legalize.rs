@@ -32,19 +32,19 @@ use super::utils::{
     with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::{
-    Add, Broadcast, Cast, CastObj, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE,
-    LT, NE,
-};
+use crate::ir::TensorRegion;
 use crate::ir::{
     Call, CallObj, Expr, FloatImm, PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj,
     TensorLoad, Type, Var,
 };
+use crate::prim::{
+    Add, Broadcast, Cast, CastObj, Div, Let, Max, Min, Mul, Select, Shuffle, Sub, EQ, GE, GT, LE,
+    LT, NE,
+};
 use crate::target::Target;
 use crate::te::CommReducer;
 use crate::tirx::{
-    AllocBuffer, AttrStmt, Bind, BufferRegion, BufferStore, BufferVar, DeclBuffer, PrimFunc,
-    PrimVar, Stmt,
+    AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, PrimFunc, PrimVar, Stmt,
 };
 
 /// Promote BF16 computations to float32 while preserving external storage.
@@ -784,10 +784,12 @@ impl ComputeLegalizer {
 
     fn mutate_buffer_region(
         &mut self,
-        value: BufferRegion,
+        value: TensorRegion,
         mutator: &mut Mutator,
-    ) -> Result<BufferRegion> {
-        let buffer = self.definition_remaps.use_buffer(&value.buffer);
+    ) -> Result<TensorRegion> {
+        let buffer = self
+            .definition_remaps
+            .use_buffer(&BufferVar::try_from(value.source.clone())?);
         mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 

@@ -28,10 +28,11 @@ use super::utils::{
     option_same_as, storage_bytes, value_error, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::{Cast, StringImm};
+use crate::ir::StringImm;
 use crate::ir::{
     Call, CallObj, Expr, IntImm, PointerType, PrimExpr, PrimType, TensorLoad, Type, Var,
 };
+use crate::prim::Cast;
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, Evaluate, For,
@@ -325,7 +326,7 @@ impl BuiltinLower {
             .get(&String::from(DISABLE_LOWER_BUILTIN))?
             .map(IntImm::try_from)
             .transpose()?
-            .is_some_and(|flag| flag.value != 0)
+            .is_some_and(|flag| flag.value_i64() != 0)
         {
             return Ok(value.into());
         }
@@ -380,7 +381,7 @@ impl BuiltinLower {
         );
         let free_call = PrimExpr::try_from(Expr::from(free_call))?;
         let free = IfThenElse::new(
-            crate::ir::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
+            crate::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
             throw,
         )?;
         self.pending_frees
@@ -413,13 +414,17 @@ impl BuiltinLower {
 
     fn mutate_attribute(&mut self, value: AttrStmt, mutator: &mut Mutator) -> Result<Stmt> {
         if value.attr_key.as_str() == DEVICE_ID {
-            let saved = self.device_id.replace(value.value.clone());
+            let saved = self
+                .device_id
+                .replace(PrimExpr::try_from(value.value.clone())?);
             let result = self.with_free_scope(|this| mutator.mutate(this, &value.body)?.try_into());
             self.device_id = saved;
             return result;
         }
         if value.attr_key.as_str() == DEVICE_TYPE {
-            let saved = self.device_type.replace(value.value.clone());
+            let saved = self
+                .device_type
+                .replace(PrimExpr::try_from(value.value.clone())?);
             let result = self.with_free_scope(|this| mutator.mutate(this, &value.body)?.try_into());
             self.device_type = saved;
             return result;
@@ -940,7 +945,7 @@ impl BuiltinLower {
         );
         let free_call: PrimExpr = self.lower_call(free_call, mutator)?.try_into()?;
         let free = IfThenElse::new(
-            crate::ir::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
+            crate::prim::NE::new(free_call, IntImm::new("int32", 0)?)?,
             Evaluate::new(Call::new(
                 PrimType::new("int32")?,
                 get_operator("tirx.tvm_throw_last_error")?,
@@ -1123,7 +1128,7 @@ fn is_array_handle(value: &Expr, struct_get_operator: &Expr) -> Result<bool> {
         .args
         .get(2)?
         .try_cast::<IntImm>()
-        .is_ok_and(|field| field.value == DLTENSOR_ADDR))
+        .is_ok_and(|field| field.value_i64() == DLTENSOR_ADDR))
 }
 
 fn function_target(function: &PrimFunc) -> Result<Option<Target>> {

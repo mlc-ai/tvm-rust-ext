@@ -29,11 +29,12 @@ use super::utils::{
     mutate_expr_default, visit_stmt_expr_default, with_prim_func_body, BufferRemaps,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::{
-    Add, And, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not, Or, Select, StringImm,
-    Sub, EQ, GE, GT, LE, LT, NE,
-};
+use crate::ir::StringImm;
 use crate::ir::{Call, Expr, FloatImm, IntImm, PrimExpr, TensorLoad, Var};
+use crate::prim::{
+    Add, And, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not, Or, Select, Sub, EQ, GE,
+    GT, LE, LT, NE,
+};
 use crate::te::Reduce;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, DeclBuffer, For, IfThenElse, PrimFunc,
@@ -363,7 +364,7 @@ impl CsePlanner {
                 ExprClass::Let => {
                     let node = value
                         .cast::<Let>()
-                        .expect("ir.prim.Let has already been classified above");
+                        .expect("prim.Let has already been classified above");
                     visit_cse_child(visitor, &node.value)?;
                     visitor.state_mut().let_depth += 1;
                     let body_result = visit_cse_child(visitor, &node.body);

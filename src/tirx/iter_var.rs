@@ -21,8 +21,8 @@
 
 use super::PrimVar;
 use super::*;
-use crate::ir::prim::primitive_type;
 use crate::ir::{Range, Span, Var};
+use crate::prim::primitive_type;
 use tvm_ffi::{DLDataTypeCode, Error, ObjectRefCast, Result, String, TYPE_ERROR};
 
 impl IterVar {

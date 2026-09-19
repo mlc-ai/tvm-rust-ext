@@ -30,11 +30,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{operator_bool_attr, Analyzer};
-use crate::ir::prim::{
+use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
+use crate::prim::{
     Add, And, Broadcast, BroadcastObj, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Not,
     Or, Ramp, RampObj, Select, Shuffle, Sub, EQ, GE, GT, LE, LT, NE,
 };
-use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, TensorLoad, Var};
 use crate::tirx::{Bind, BufferStore, For, ForKind, IfThenElse, PrimFunc, PrimVar, Stmt, While};
 
 /// Vectorize loops marked with `ForKind::kVectorized`, or turn them into
@@ -143,7 +143,7 @@ impl Vectorizer {
             ramp,
             need_scalarize: false,
             let_bindings: HashMap::new(),
-            if_then_else: get_operator("ir.prim.if_then_else")?,
+            if_then_else: get_operator("prim.if_then_else")?,
             reinterpret: get_operator("tirx.reinterpret")?,
             call_llvm_pure_intrin: get_operator("tirx.call_llvm_pure_intrin")?,
         })
@@ -933,7 +933,7 @@ fn lane_expression(lanes: u16, scalable: bool) -> Result<PrimExpr> {
     }
     let vscale = Call::new(
         PrimType::new("int32")?,
-        get_operator("ir.prim.vscale")?,
+        get_operator("prim.vscale")?,
         Vec::new(),
     );
     let vscale: Expr = vscale.into();

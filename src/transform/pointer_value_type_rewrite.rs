@@ -31,11 +31,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::{Let, Ramp, Shuffle};
 use crate::ir::{
     Call, CallObj, Expr, IntImm, PointerType, PointerTypeObj, PrimExpr, PrimType, TensorLoad, Var,
     VarObj,
 };
+use crate::prim::{Let, Ramp, Shuffle};
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, PrimFunc, Stmt,
 };

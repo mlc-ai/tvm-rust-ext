@@ -20,28 +20,31 @@
 //! Reflection contracts and constructor checks for the object slice listed below.
 
 use tvm::analysis::CallEffectKind;
+use tvm::ir::ir::StringImmObj;
 use tvm::ir::prim::{
     AddObj, AndObj, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj, GEObj, GTObj,
     LEObj, LTObj, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj, RampObj, SelectObj,
-    ShuffleObj, StringImmObj, SubObj,
+    ShuffleObj, SubObj,
 };
+use tvm::ir::TensorRegionObj;
 use tvm::ir::{
     AttrsObj, BaseFuncObj, CallObj, DictAttrsObj, DummyGlobalInfoObj, Expr, ExprObj, FuncType,
     FuncTypeObj, GlobalInfoObj, GlobalVarObj, IRModuleObj, IntImm, IntImmObj, OpaqueExprObj,
     OpaqueTypeObj, PointerType, PointerTypeObj, PrimExpr, PrimExprConvertibleObj, PrimType,
     PrimTypeObj, RangeObj, SequentialSpanObj, SourceMapObj, SourceNameObj, SourceObj, Span,
-    SpanObj, TensorLoadObj, TensorMapType, TensorMapTypeObj, Tuple, TupleGetItem, TupleGetItemObj,
-    TupleObj, TupleType, TupleTypeObj, Type, TypeObj, Var, VarObj,
+    SpanObj, TensorLoadObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, TupleType,
+    TupleTypeObj, Type, TypeObj, Var, VarObj,
 };
 use tvm::te::{CommReducerObj, ReduceObj};
 use tvm::tirx::{
-    AllocBufferObj, AssertStmtObj, AttrStmtObj, AxisObj, BindObj, BufferRegionObj,
-    BufferRegionTypeObj, BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj,
-    DeclBufferObj, DispatchContextObj, EvaluateObj, ExecScopeObj, ForKind, ForObj, IfThenElseObj,
-    IndexMapObj, IterObj, IterVarObj, IterVarType, LambdaExprObj, LayoutObj, MatchBufferRegionObj,
-    PrimFuncObj, PrimVar, ScopeBinding, ScopeIdDefObj, ScopeIdDefStmtObj, ScopeKind, SeqStmtObj,
-    StmtObj, TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
+    AllocBufferObj, AssertStmtObj, AttrStmtObj, AxisObj, BindObj, BufferRegionTypeObj,
+    BufferStoreObj, BufferType, BufferTypeObj, BufferVar, ComposeLayoutObj, DeclBufferObj,
+    DispatchContextObj, EvaluateObj, ExecScopeObj, ForKind, ForObj, IfThenElseObj, IndexMapObj,
+    IterObj, IterVarObj, IterVarType, LambdaExprObj, LayoutObj, MatchBufferRegionObj, PrimFuncObj,
+    PrimVar, ScopeBinding, ScopeIdDefObj, ScopeIdDefStmtObj, ScopeKind, SeqStmtObj, StmtObj,
+    TensorIntrinObj, TileLayoutObj, TilePrimitiveCallObj,
 };
+use tvm::tirx::{TensorMapType, TensorMapTypeObj};
 use tvm::tvm_ffi::tvm_ffi_sys::{TVMFFIFieldFlagBitMask, TVMFFISEqHashKind};
 use tvm::tvm_ffi::{Array, Function, Object, ObjectCore, ObjectRefCore, String};
 
@@ -64,13 +67,12 @@ const SCHEMA_ARRAY_ITER_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx
 const SCHEMA_ARRAY_RANGE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Range"}]}"#;
 const SCHEMA_ARRAY_SPAN: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Span"}]}"#;
 const SCHEMA_ARRAY_STMT: &str = r#"{"type":"ffi.Array","args":[{"type":"tirx.Stmt"}]}"#;
-const SCHEMA_ARRAY_STRING_IMM: &str =
-    r#"{"type":"ffi.Array","args":[{"type":"ir.prim.StringImm"}]}"#;
+const SCHEMA_ARRAY_STRING_IMM: &str = r#"{"type":"ffi.Array","args":[{"type":"prim.StringImm"}]}"#;
 const SCHEMA_ARRAY_TYPE: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Type"}]}"#;
 const SCHEMA_ARRAY_VAR: &str = r#"{"type":"ffi.Array","args":[{"type":"ir.Var"}]}"#;
 const SCHEMA_ATTRS: &str = r#"{"type":"ir.Attrs"}"#;
 const SCHEMA_AXIS: &str = r#"{"type":"tirx.Axis"}"#;
-const SCHEMA_BUFFER_REGION: &str = r#"{"type":"tirx.BufferRegion"}"#;
+const SCHEMA_BUFFER_REGION: &str = r#"{"type":"tirx.TensorRegion"}"#;
 const SCHEMA_BOOL: &str = r#"{"type":"bool"}"#;
 const SCHEMA_COMM_REDUCER: &str = r#"{"type":"te.CommReducer"}"#;
 const SCHEMA_DICT_ATTRS: &str = r#"{"type":"ir.DictAttrs"}"#;
@@ -111,7 +113,7 @@ const SCHEMA_SOURCE_NAME: &str = r#"{"type":"ir.SourceName"}"#;
 const SCHEMA_SPAN: &str = r#"{"type":"ir.Span"}"#;
 const SCHEMA_STMT: &str = r#"{"type":"tirx.Stmt"}"#;
 const SCHEMA_STRING: &str = r#"{"type":"ffi.String"}"#;
-const SCHEMA_STRING_IMM: &str = r#"{"type":"ir.prim.StringImm"}"#;
+const SCHEMA_STRING_IMM: &str = r#"{"type":"prim.StringImm"}"#;
 const SCHEMA_TYPE: &str = r#"{"type":"ir.Type"}"#;
 const SCHEMA_VAR: &str = r#"{"type":"ir.Var"}"#;
 const SCHEMA_PRIM_FUNC: &str = r#"{"type":"tirx.PrimFunc"}"#;
@@ -663,7 +665,7 @@ fn covered_object_schemas_match_runtime_metadata() {
         ],
     );
     assert_contract::<BufferRegionTypeObj, TypeObj>(true, Some(Tree), &[]);
-    assert_contract::<BufferRegionObj, ExprObj>(
+    assert_contract::<TensorRegionObj, ExprObj>(
         true,
         Some(Tree),
         &[

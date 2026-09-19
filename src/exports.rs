@@ -37,7 +37,7 @@
 //! `tvm.tirx.PrimFunc` goes in, a `PrimFunc` comes back.  The host must have
 //! loaded `libtvm_compiler` before calling (importing `tvm` in Python does),
 //! because several passes use registered compiler services such as
-//! `arith.Analyzer` and `tirx.transform.CreatePrimFuncPass`.
+//! `sym.Analyzer` and `tirx.transform.CreatePrimFuncPass`.
 //!
 //! See `python/demo.py` for an end-to-end example.
 

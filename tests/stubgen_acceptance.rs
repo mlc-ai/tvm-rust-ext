@@ -117,7 +117,7 @@ fn direct_and_semantic_constructors_round_trip() {
         .get(&*addition)
         .unwrap();
     assert!(reflected_lhs.same_as(&parameter));
-    let cpp_add: Add = Function::get_global("ir.prim.Add")
+    let cpp_add: Add = Function::get_global("prim.Add")
         .unwrap()
         .call_tuple((&addition.a, &addition.b, Option::<tvm::ir::Span>::None))
         .unwrap()

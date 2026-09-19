@@ -30,7 +30,7 @@ use super::utils::{
     with_prim_func_body,
 };
 use super::{convert_ssa_module, create_module_pass, Pass};
-use crate::ir::prim::StringImm;
+use crate::ir::StringImm;
 use crate::ir::{
     BaseFunc, Call, Expr, GlobalVar, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
     PrimType, TupleType, Type, UniqueNameSupply, Var,
@@ -262,7 +262,7 @@ impl HostDeviceSplitter<'_> {
             Stmt::sequence(vec![
                 Bind::new(error_code.clone(), call)?.into(),
                 AssertStmt::new(
-                    crate::ir::prim::EQ::new(error_code, success)?,
+                    crate::prim::EQ::new(error_code, success)?,
                     "RuntimeError",
                     "Error executing compute kernel",
                 )?
@@ -591,7 +591,7 @@ impl KernelInfoCollector {
             }
             int_value(&value.value)
                 .ok_or_else(|| value_error("tirx.dyn_smem_bytes must be an IntImm"))?;
-            self.dynamic_shared_bytes = Some(value.value.clone());
+            self.dynamic_shared_bytes = Some(PrimExpr::try_from(value.value.clone())?);
         }
         if value.attr_key.as_str() == THREAD_EXTENT {
             let tag = if let Ok(iteration) = IterVar::try_from(value.node.clone()) {
@@ -605,9 +605,9 @@ impl KernelInfoCollector {
             };
             if self.seen_threads.insert(tag.as_str().to_owned()) {
                 let extent = if self.bindings.is_empty() {
-                    value.value.clone()
+                    PrimExpr::try_from(value.value.clone())?
                 } else {
-                    substitute_prim(&value.value, &self.bindings)?
+                    substitute_prim(&PrimExpr::try_from(value.value.clone())?, &self.bindings)?
                 };
                 self.thread_extents.insert(tag.as_str().to_owned(), extent);
                 self.launch_parameters.push(tag);

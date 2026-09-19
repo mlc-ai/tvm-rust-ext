@@ -26,7 +26,6 @@
 //! iteration-variable, and tile-primitive semantics live in the sibling modules.
 
 mod buffer;
-mod function;
 mod index_map;
 mod iter_var;
 mod tile_primitive;
@@ -37,6 +36,7 @@ pub use tile_primitive::NativeMutableMap;
 
 // Every object registered under `tirx` gets its block in this file; `skip` leaves one out.
 // tvm-ffi-stubgen(prefix): tirx
+// tvm-ffi-stubgen(custom-new): tirx.TensorMapType
 // SBlock APIs are outside this crate's TIRx pass scope.
 // tvm-ffi-stubgen(skip): tirx.SBlock
 // tvm-ffi-stubgen(skip): tirx.SBlockRealize
@@ -47,8 +47,6 @@ pub use tile_primitive::NativeMutableMap;
 // directive expresses that (see STUBGEN_FEEDBACK.md), so the binding stays hand-written in
 // `mod stmt` and the two `TensorIntrin` fields name it through `field` overrides.
 // tvm-ffi-stubgen(skip): tirx.PrimFunc
-// tvm-ffi-stubgen(field): tirx.TensorIntrin.desc -> PrimFunc
-// tvm-ffi-stubgen(field): tirx.TensorIntrin.impl -> PrimFunc
 // `tirx.DispatchContext.target` refers to the hand-written `target` binding.
 // tvm-ffi-stubgen(ty-map): target.Target -> crate::target::Target
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
@@ -70,15 +68,12 @@ pub use tile_primitive::NativeMutableMap;
 // tvm-ffi-stubgen(field): tirx.While.condition -> PrimExpr
 // tvm-ffi-stubgen(field): tirx.IfThenElse.condition -> PrimExpr
 // tvm-ffi-stubgen(field): tirx.AssertStmt.condition -> PrimExpr
-// tvm-ffi-stubgen(field): tirx.AttrStmt.value -> PrimExpr
+// tvm-ffi-stubgen(field): tirx.AttrStmt.value -> Expr
 // tvm-ffi-stubgen(field): tirx.BufferStore.buffer -> BufferVar
 // tvm-ffi-stubgen(field): tirx.BufferStore.value -> PrimExpr
 // tvm-ffi-stubgen(field): tirx.BufferStore.indices -> Array<PrimExpr>
 // tvm-ffi-stubgen(field): tirx.DeclBuffer.buffer -> BufferVar
 // tvm-ffi-stubgen(field): tirx.AllocBuffer.buffer -> BufferVar
-// tvm-ffi-stubgen(field): tirx.BufferRegion.buffer -> BufferVar
-// tvm-ffi-stubgen(field): tirx.BufferRegion.ty -> BufferRegionType
-// tvm-ffi-stubgen(field): tirx.MatchBufferRegion.buffer -> BufferVar
 // tvm-ffi-stubgen(field): tirx.BufferType.shape -> Array<PrimExpr>
 // tvm-ffi-stubgen(field): tirx.BufferType.strides -> Array<PrimExpr>
 // tvm-ffi-stubgen(field): tirx.BufferType.elem_offset -> PrimExpr
@@ -113,11 +108,8 @@ pub use tile_primitive::NativeMutableMap;
 // tvm-ffi-stubgen(custom-new): tirx.BufferStore
 // tvm-ffi-stubgen(custom-new): tirx.DeclBuffer
 // tvm-ffi-stubgen(custom-new): tirx.AllocBuffer
-// tvm-ffi-stubgen(custom-new): tirx.BufferRegion
-// tvm-ffi-stubgen(custom-new): tirx.MatchBufferRegion
 // tvm-ffi-stubgen(custom-new): tirx.Iter
 // tvm-ffi-stubgen(custom-new): tirx.IndexMap
-// tvm-ffi-stubgen(custom-new): tirx.TensorIntrin
 // tvm-ffi-stubgen(custom-new): tirx.ExecScope
 // tvm-ffi-stubgen(custom-new): tirx.ScopeIdDef
 // tvm-ffi-stubgen(custom-new): tirx.ScopeIdDefStmt
@@ -126,15 +118,14 @@ pub use tile_primitive::NativeMutableMap;
 // tvm-ffi-stubgen(custom-new): tirx.TilePrimitiveCall
 
 // tvm-ffi-stubgen(begin): import-section
-use super::ir::prim::StringImm;
 use super::ir::Expr;
-use super::ir::ExprObj;
 use super::ir::Op;
 use super::ir::PrimExprConvertible;
 use super::ir::PrimExprConvertibleObj;
 use super::ir::PrimType;
 use super::ir::Range;
 use super::ir::Span;
+use super::ir::StringImm;
 use super::ir::Type;
 use super::ir::TypeObj;
 use super::ir::Var;
@@ -183,77 +174,6 @@ impl AxisObj {
         FieldGetter::new(Self::type_index(), "name")?.get(self)
     }
 }
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/tirx.BufferRegion
-/// Complete: reflected fields fill [40, 56) exactly.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "tirx.BufferRegion"]
-#[type_final]
-pub struct BufferRegionObj {
-    base: ExprObj,
-    pub buffer: BufferVar,
-    pub region: Array<Range>,
-}
-
-const _: () = {
-    assert!(::core::mem::size_of::<BufferRegionObj>() == 56);
-    assert!(::core::mem::align_of::<BufferRegionObj>() == 8);
-};
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct BufferRegion {
-    base: ObjectArc<BufferRegionObj>,
-}
-
-impl Deref for BufferRegion {
-    type Target = BufferRegionObj;
-    fn deref(&self) -> &BufferRegionObj {
-        &self.base
-    }
-}
-
-impl Deref for BufferRegionObj {
-    type Target = ExprObj;
-    fn deref(&self) -> &ExprObj {
-        &self.base
-    }
-}
-
-impl BufferRegionObj {
-    pub(crate) fn new(
-        span: Option<Span>,
-        ty: BufferRegionType,
-        buffer: BufferVar,
-        region: Array<Range>,
-    ) -> Self {
-        let base = ExprObj::new(span, ty.into());
-        Self {
-            base,
-            buffer,
-            region,
-        }
-    }
-}
-
-impl BufferRegion {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(
-        span: Option<Span>,
-        ty: BufferRegionType,
-        buffer: BufferVar,
-        region: Array<Range>,
-    ) -> Self {
-        let obj = BufferRegionObj::new(span, ty, buffer, region);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-
-tvm_ffi::impl_object_upcast!(BufferRegion => Expr);
 // tvm-ffi-stubgen(end)
 
 // tvm-ffi-stubgen(begin): object/tirx.BufferRegionType
@@ -940,104 +860,6 @@ impl ComposeLayoutObj {
 tvm_ffi::impl_object_upcast!(ComposeLayout => Layout);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/tirx.MatchBufferRegion
-/// Complete: reflected fields fill [24, 40) exactly.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "tirx.MatchBufferRegion"]
-#[type_final]
-pub struct MatchBufferRegionObj {
-    base: Object,
-    pub buffer: BufferVar,
-    pub source: BufferRegion,
-}
-
-const _: () = {
-    assert!(::core::mem::size_of::<MatchBufferRegionObj>() == 40);
-    assert!(::core::mem::align_of::<MatchBufferRegionObj>() == 8);
-};
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct MatchBufferRegion {
-    base: ObjectArc<MatchBufferRegionObj>,
-}
-
-impl Deref for MatchBufferRegion {
-    type Target = MatchBufferRegionObj;
-    fn deref(&self) -> &MatchBufferRegionObj {
-        &self.base
-    }
-}
-
-impl MatchBufferRegionObj {
-    pub(crate) fn new(buffer: BufferVar, source: BufferRegion) -> Self {
-        let base = Object::new();
-        Self {
-            base,
-            buffer,
-            source,
-        }
-    }
-}
-
-impl MatchBufferRegion {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(buffer: BufferVar, source: BufferRegion) -> Self {
-        let obj = MatchBufferRegionObj::new(buffer, source);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/tirx.PyStmtExprMutator
-/// Opaque: bytes [24, 424) of [24, 424) are not accounted for by reflected fields. Fields are read through the C ABI getters.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "tirx.PyStmtExprMutator"]
-pub struct PyStmtExprMutatorObj {
-    base: Object,
-}
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct PyStmtExprMutator {
-    base: ObjectArc<PyStmtExprMutatorObj>,
-}
-
-impl Deref for PyStmtExprMutator {
-    type Target = PyStmtExprMutatorObj;
-    fn deref(&self) -> &PyStmtExprMutatorObj {
-        &self.base
-    }
-}
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/tirx.PyStmtExprVisitor
-/// Opaque: bytes [24, 408) of [24, 408) are not accounted for by reflected fields. Fields are read through the C ABI getters.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "tirx.PyStmtExprVisitor"]
-pub struct PyStmtExprVisitorObj {
-    base: Object,
-}
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct PyStmtExprVisitor {
-    base: ObjectArc<PyStmtExprVisitorObj>,
-}
-
-impl Deref for PyStmtExprVisitor {
-    type Target = PyStmtExprVisitorObj;
-    fn deref(&self) -> &PyStmtExprVisitorObj {
-        &self.base
-    }
-}
-// tvm-ffi-stubgen(end)
-
 // tvm-ffi-stubgen(begin): object/tirx.ScopeIdDef
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(transparent)]
@@ -1339,7 +1161,7 @@ pub struct AttrStmtObj {
     base: StmtObj,
     pub node: Any,
     pub attr_key: String,
-    pub value: PrimExpr,
+    pub value: Expr,
     pub body: Stmt,
 }
 
@@ -1373,7 +1195,7 @@ impl AttrStmtObj {
         span: Option<Span>,
         node: Any,
         attr_key: String,
-        value: PrimExpr,
+        value: Expr,
         body: Stmt,
     ) -> Self {
         let base = StmtObj::new(span);
@@ -1393,7 +1215,7 @@ impl AttrStmt {
         span: Option<Span>,
         node: Any,
         attr_key: String,
-        value: PrimExpr,
+        value: Expr,
         body: Stmt,
     ) -> Self {
         let obj = AttrStmtObj::new(span, node, attr_key, value, body);
@@ -2135,54 +1957,6 @@ impl SeqStmt {
 tvm_ffi::impl_object_upcast!(SeqStmt => Stmt);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/tirx.TensorIntrin
-/// Complete: reflected fields fill [24, 40) exactly.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "tirx.TensorIntrin"]
-#[type_final]
-pub struct TensorIntrinObj {
-    base: Object,
-    pub desc: PrimFunc,
-    pub r#impl: PrimFunc,
-}
-
-const _: () = {
-    assert!(::core::mem::size_of::<TensorIntrinObj>() == 40);
-    assert!(::core::mem::align_of::<TensorIntrinObj>() == 8);
-};
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct TensorIntrin {
-    base: ObjectArc<TensorIntrinObj>,
-}
-
-impl Deref for TensorIntrin {
-    type Target = TensorIntrinObj;
-    fn deref(&self) -> &TensorIntrinObj {
-        &self.base
-    }
-}
-
-impl TensorIntrinObj {
-    pub(crate) fn new(desc: PrimFunc, r#impl: PrimFunc) -> Self {
-        let base = Object::new();
-        Self { base, desc, r#impl }
-    }
-}
-
-impl TensorIntrin {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(desc: PrimFunc, r#impl: PrimFunc) -> Self {
-        let obj = TensorIntrinObj::new(desc, r#impl);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-// tvm-ffi-stubgen(end)
-
 // tvm-ffi-stubgen(begin): object/tirx.TileLayout
 /// Opaque: parent 'tirx.Layout' is opaque (layout-unknown). Fields are read through the C ABI getters.
 #[repr(C)]
@@ -2376,6 +2150,61 @@ impl While {
 tvm_ffi::impl_object_upcast!(While => Stmt);
 // tvm-ffi-stubgen(end)
 
+// tvm-ffi-stubgen(begin): object/tirx.TensorMapType
+/// Complete: reflected fields fill [32, 32) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "tirx.TensorMapType"]
+#[type_final]
+pub struct TensorMapTypeObj {
+    base: TypeObj,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<TensorMapTypeObj>() == 32);
+    assert!(::core::mem::align_of::<TensorMapTypeObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct TensorMapType {
+    base: ObjectArc<TensorMapTypeObj>,
+}
+
+impl Deref for TensorMapType {
+    type Target = TensorMapTypeObj;
+    fn deref(&self) -> &TensorMapTypeObj {
+        &self.base
+    }
+}
+
+impl Deref for TensorMapTypeObj {
+    type Target = TypeObj;
+    fn deref(&self) -> &TypeObj {
+        &self.base
+    }
+}
+
+impl TensorMapTypeObj {
+    pub(crate) fn new(span: Option<Span>) -> Self {
+        let base = TypeObj::new(span);
+        Self { base }
+    }
+}
+
+impl TensorMapType {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(span: Option<Span>) -> Self {
+        let obj = TensorMapTypeObj::new(span);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(TensorMapType => Type);
+// tvm-ffi-stubgen(end)
+
 // ---------------------------------------------------------------------------
 // Hand-written semantics for the generated bindings above.  Lines outside the
 // `tvm-ffi-stubgen(begin)`/`(end)` blocks are kept verbatim by the generator,
@@ -2386,11 +2215,12 @@ tvm_ffi::impl_object_upcast!(While => Stmt);
 #[warn(dead_code, unused_imports)]
 mod stmt {
     use super::*;
-    use crate::ir::prim::{primitive_type, StringImm};
+    use crate::ir::StringImm;
     use crate::ir::{
         BaseFuncObj, DictAttrs, Expr, IntImm, IntImmObj, PointerTypeObj, PrimExpr, PrimType,
         PrimTypeObj, Span, TupleType, TupleTypeObj, Type, TypedVar, Var,
     };
+    use crate::prim::primitive_type;
     use tvm_ffi::{
         Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Error, Map, ObjectRefCore, Result,
         String, TYPE_ERROR, VALUE_ERROR,
@@ -2468,7 +2298,7 @@ mod stmt {
                 span.cloned(),
                 node.into(),
                 String::from(attr_key),
-                PrimExpr::try_from(value.into())?,
+                value.into(),
                 body.into(),
             ))
         }
@@ -2478,8 +2308,14 @@ mod stmt {
         ///
         /// Takes the same required fields as [`AttrStmt::new`] and, like
         /// [`AttrStmt::from_complete_fields`], runs no validation.
-        pub fn copy_with(&self, node: Any, attr_key: String, value: PrimExpr, body: Stmt) -> Self {
-            Self::from_complete_fields(self.span.clone(), node, attr_key, value, body)
+        pub fn copy_with(
+            &self,
+            node: Any,
+            attr_key: String,
+            value: impl Into<Expr>,
+            body: Stmt,
+        ) -> Self {
+            Self::from_complete_fields(self.span.clone(), node, attr_key, value.into(), body)
         }
     }
 
@@ -2578,7 +2414,7 @@ mod stmt {
         statement
             .as_node::<EvaluateObj>()
             .and_then(|evaluate| evaluate.value.as_node::<IntImmObj>())
-            .is_some_and(|literal| literal.value == 0)
+            .is_some_and(|literal| literal.value_i64() == 0)
     }
 
     impl IfThenElse {
@@ -2830,7 +2666,10 @@ mod stmt {
             return PrimExpr::try_from(value);
         }
         if let Some(literal) = value.as_node::<IntImmObj>() {
-            return PrimExpr::try_from(Expr::from(IntImm::from_dtype(loop_dtype, literal.value)?));
+            return PrimExpr::try_from(Expr::from(IntImm::from_dtype(
+                loop_dtype,
+                literal.value_i64(),
+            )?));
         }
         if value_dtype.bits > loop_dtype.bits {
             return Err(Error::new(
@@ -3179,11 +3018,14 @@ mod stmt {
             return Ok(value);
         }
         if let Some(literal) = value.as_node::<IntImmObj>() {
-            return Ok(
-                IntImm::from_complete_fields(literal.span.clone(), target, literal.value).into(),
-            );
+            return Ok(IntImm::from_complete_fields(
+                literal.span.clone(),
+                target,
+                literal.value.clone(),
+            )
+            .into());
         }
-        tvm_ffi::cached_global_func!("ir.prim.Cast")
+        tvm_ffi::cached_global_func!("prim.Cast")
             .call_tuple((target, value, Option::<Span>::None))?
             .try_into()
     }

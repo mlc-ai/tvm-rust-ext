@@ -33,7 +33,7 @@ fn vector_constructors_match_cpp() -> Result<()> {
     let vscale = |dtype| {
         Call::new(
             tvm::ir::PrimType::new(dtype).unwrap(),
-            tvm::ir::Op::get("ir.prim.vscale").unwrap(),
+            tvm::ir::Op::get("prim.vscale").unwrap(),
             Vec::new(),
         )
     };
@@ -45,14 +45,14 @@ fn vector_constructors_match_cpp() -> Result<()> {
     for lanes in lanes {
         for stride in &strides {
             let rust = Ramp::with_span(&base, stride, &lanes, span.as_ref())?;
-            let native: PrimExpr = Function::get_global("ir.prim.Ramp")?
+            let native: PrimExpr = Function::get_global("prim.Ramp")?
                 .call_tuple((&base, stride, &lanes, &span))?
                 .try_into()?;
             assert_structural_equal(&rust, &native);
             assert!(rust.span.as_ref().unwrap().same_as(span.as_ref().unwrap()));
         }
         let rust = Broadcast::with_span(&base, &lanes, span.as_ref())?;
-        let native: PrimExpr = Function::get_global("ir.prim.Broadcast")?
+        let native: PrimExpr = Function::get_global("prim.Broadcast")?
             .call_tuple((&base, &lanes, &span))?
             .try_into()?;
         assert_structural_equal(&rust, &native);
@@ -71,7 +71,7 @@ fn vector_constructors_match_cpp() -> Result<()> {
         let base = Var::new("base", dtype)?;
         let lanes = prim_int_expression(4);
         let rust = Ramp::new(&base, &stride, &lanes)?;
-        let native: PrimExpr = Function::get_global("ir.prim.Ramp")?
+        let native: PrimExpr = Function::get_global("prim.Ramp")?
             .call_tuple((&base, &stride, &lanes, Option::<Span>::None))?
             .try_into()?;
         assert_structural_equal(&rust, &native);
@@ -84,7 +84,7 @@ fn vector_constructors_match_cpp() -> Result<()> {
         let base = Var::new("base", dtype)?;
         let lanes = prim_int_expression(4);
         assert!(Ramp::new(&base, &stride, &lanes).is_err());
-        assert!(Function::get_global("ir.prim.Ramp")?
+        assert!(Function::get_global("prim.Ramp")?
             .call_tuple((&base, &stride, &lanes, Option::<Span>::None))
             .is_err());
     }
@@ -93,7 +93,7 @@ fn vector_constructors_match_cpp() -> Result<()> {
     let vectors = Array::new(vec![vector.clone(), base.clone()]);
     let indices = Array::new(vec![prim_int_expression(4), prim_int_expression(1)]);
     let rust = Shuffle::with_span(vectors.clone(), indices.clone(), span.as_ref())?;
-    let native: PrimExpr = Function::get_global("ir.prim.Shuffle")?
+    let native: PrimExpr = Function::get_global("prim.Shuffle")?
         .call_tuple((&vectors, &indices, &span))?
         .try_into()?;
     assert_structural_equal(&rust, &native);
@@ -106,7 +106,7 @@ fn vector_constructors_match_cpp() -> Result<()> {
         Var::new("lanes", "int32")?.try_cast::<PrimExpr>()?,
     ] {
         assert!(Broadcast::new(&base, &lanes).is_err());
-        assert!(Function::get_global("ir.prim.Broadcast")?
+        assert!(Function::get_global("prim.Broadcast")?
             .call_tuple((&base, &lanes, &span))
             .is_err());
     }
@@ -117,11 +117,11 @@ fn vector_constructors_match_cpp() -> Result<()> {
         Array::new(vec![PrimExpr::from(scalable)]),
     ] {
         assert!(Shuffle::new(vectors.clone(), indices.clone()).is_err());
-        assert!(Function::get_global("ir.prim.Shuffle")?
+        assert!(Function::get_global("prim.Shuffle")?
             .call_tuple((&vectors, &indices, &span))
             .is_err());
     }
-    let select = Function::get_global("ir.prim.Select")?;
+    let select = Function::get_global("prim.Select")?;
     for (condition_type, value_type, false_type, supported) in [
         ("bool", "int32", "int32", true),
         ("bool", "int32xvscalex4", "int32xvscalex4", true),
@@ -235,14 +235,14 @@ fn scalar_and_statement_constructors_match_cpp() {
         }};
     }
 
-    assert_binary_constructor!(NE, "ir.prim.NE");
-    assert_binary_constructor!(LT, "ir.prim.LT");
-    assert_binary_constructor!(LE, "ir.prim.LE");
-    assert_binary_constructor!(GT, "ir.prim.GT");
-    assert_binary_constructor!(GE, "ir.prim.GE");
+    assert_binary_constructor!(NE, "prim.NE");
+    assert_binary_constructor!(LT, "prim.LT");
+    assert_binary_constructor!(LE, "prim.LE");
+    assert_binary_constructor!(GT, "prim.GT");
+    assert_binary_constructor!(GE, "prim.GE");
 
     let condition = PrimExpr::try_from(typed_int_expression("bool", 1)).unwrap();
-    let native_not: Expr = Function::get_global("ir.prim.Not")
+    let native_not: Expr = Function::get_global("prim.Not")
         .unwrap()
         .call_tuple((condition.clone(), Option::<Span>::None))
         .unwrap()
@@ -265,7 +265,7 @@ fn scalar_and_statement_constructors_match_cpp() {
     ] {
         let variable = Var::with_type("let_bound", ty);
         let rust = Let::new(variable.clone(), &lhs, &rhs);
-        let native = Function::get_global("ir.prim.Let").unwrap().call_tuple((
+        let native = Function::get_global("prim.Let").unwrap().call_tuple((
             variable,
             &lhs,
             &rhs,
@@ -1103,7 +1103,7 @@ fn buffer_bindings_round_trip_cpp_objects() {
         .to_prim_expr()
         .unwrap();
     assert!(converted_axis.same_as(&axis));
-    let converted_by_cpp: Add = Function::get_global("ir.prim.Add")
+    let converted_by_cpp: Add = Function::get_global("prim.Add")
         .unwrap()
         .call_tuple((&iter_var, &typed_int_expression("int64", 1), ()))
         .unwrap()
@@ -1153,10 +1153,10 @@ fn buffer_bindings_round_trip_cpp_objects() {
         .unwrap();
     assert_structural_equal(&store, &cpp_store);
 
-    let region = BufferRegion::new(&buffer, vec![axis_domain]).unwrap();
+    let region = TensorRegion::new(&buffer, vec![axis_domain]).unwrap();
     let _: Expr = region.clone().into();
     let _: BufferRegionType = region.ty.clone().try_cast().unwrap();
-    let cpp_region: BufferRegion = Function::get_global("tirx.BufferRegion")
+    let cpp_region: TensorRegion = Function::get_global("tirx.TensorRegion")
         .unwrap()
         .call_tuple((&buffer, &region.region))
         .unwrap()

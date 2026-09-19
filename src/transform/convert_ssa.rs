@@ -26,8 +26,8 @@ use tvm_ffi::{
 
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
 use super::{create_module_pass, Pass};
-use crate::ir::prim::Let;
 use crate::ir::{BaseFunc, DictAttrs, Expr, IRModule, PrimExpr, Range, TensorLoad, Type, Var};
+use crate::prim::Let;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferType, BufferVar, DeclBuffer, For, IfThenElse,
     Iter, IterVar, Layout, PrimFunc, Stmt, TileLayout, While,
@@ -572,7 +572,7 @@ impl SsaConverter {
             // recursive expression child.
             (value.node.clone(), true)
         };
-        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let attr_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         let body = mutate_scoped_statement(self, mutator, &value.body)?;
         if node_unchanged && attr_value.same_as(&value.value) && body.same_as(&value.body) {
             return Ok(value);
@@ -682,7 +682,7 @@ fn mutate_iter_var_attribute(
                 iteration.span()?.as_ref(),
             )?
         };
-    let attr_value: PrimExpr = mutator.mutate(converter, &value.value)?.try_into()?;
+    let attr_value: Expr = mutator.mutate(converter, &value.value)?.try_into()?;
     let body = mutate_scoped_statement(converter, mutator, &value.body)?;
 
     if delayed_definition && !converter.defined.contains(&identity) {

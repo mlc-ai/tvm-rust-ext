@@ -32,11 +32,11 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind};
-use crate::ir::prim::{
+use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
+use crate::prim::{
     Add, Broadcast, BroadcastObj, Cast, CastObj, FloorDiv, FloorDivObj, FloorMod, FloorModObj, Let,
     Max, MulObj, Not, Ramp, Select, EQ, GT, NE,
 };
-use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, PrimType, Range, TensorLoad, Var};
 use crate::target::Target;
 use crate::tirx::{
     AssertStmt, AttrStmt, Bind, BufferType, BufferVar, DeclBuffer, Evaluate, For, IfThenElse,
@@ -159,9 +159,9 @@ impl IntrinInjecter {
             address_of_operator: get_operator("tirx.address_of")?,
             fma_operator,
             floor_operator: get_operator("tirx.floor")?,
-            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
-            likely_operator: get_operator("ir.prim.likely")?,
-            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+            bitwise_and_operator: get_operator("prim.bitwise_and")?,
+            likely_operator: get_operator("prim.likely")?,
+            if_then_else_operator: get_operator("prim.if_then_else")?,
         })
     }
 
@@ -372,7 +372,7 @@ impl IntrinInjecter {
         }
         if !lhs.same_as(a) || !rhs.same_as(b) {
             let product: PrimExpr = mutator
-                .mutate(self, &crate::ir::prim::Mul::new(lhs, rhs)?)?
+                .mutate(self, &crate::prim::Mul::new(lhs, rhs)?)?
                 .try_into()?;
             let c: PrimExpr = mutator.mutate(self, c)?.try_into()?;
             return Ok(Add::new(product, c)?.into());
@@ -529,7 +529,10 @@ impl IntrinInjecter {
                     }
                     this.analyzer.bind(
                         iteration.var()?.as_var(),
-                        &Range::from_min_extent(int_like(&value.value, 0)?, value.value.clone())?,
+                        &Range::from_min_extent(
+                            int_like(&PrimExpr::try_from(value.value.clone())?, 0)?,
+                            value.value.clone(),
+                        )?,
                     )?;
                 }
                 BufferRemaps::mutate_stmt(this, mutator, value.into(), |state| {

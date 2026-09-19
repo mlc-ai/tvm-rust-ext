@@ -42,11 +42,7 @@ fn rust_lower_intrin_matches_cpp_for_fused_multiply_add() -> Result<()> {
     let four: PrimExpr = IntImm::new("int32", 4)?.into();
     let scalable = Mul::new(
         four.clone(),
-        Call::new(
-            PrimType::new("int32")?,
-            Op::get("ir.prim.vscale")?,
-            Vec::new(),
-        ),
+        Call::new(PrimType::new("int32")?, Op::get("prim.vscale")?, Vec::new()),
     )?
     .into();
     for lanes in [four, scalable] {

@@ -25,28 +25,29 @@ use tvm_ffi::{
     VisitValue,
 };
 
-use crate::ir::prim::{
-    AddObj, AndObj, Broadcast, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj,
-    GEObj, GTObj, LEObj, LTObj, Let, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj,
-    Ramp, RampObj, SelectObj, Shuffle, ShuffleObj, StringImm, StringImmObj, SubObj,
-};
 use crate::ir::{
     Call, CallObj, DictAttrs, Expr, FloatImmObj, GlobalVarObj, IntImm, IntImmObj, Op, OpObj,
     OpaqueExprObj, PointerType, PointerTypeObj, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad,
     TensorLoadObj, Tuple, TupleGetItem, TupleGetItemObj, TupleObj, Type, UniqueNameSupply, Var,
     VarObj,
 };
+use crate::ir::{StringImm, StringImmObj};
+use crate::ir::{TensorRegion, TensorRegionObj};
+use crate::prim::{
+    AddObj, AndObj, Broadcast, BroadcastObj, CastObj, DivObj, EQObj, FloorDivObj, FloorModObj,
+    GEObj, GTObj, LEObj, LTObj, Let, LetObj, MaxObj, MinObj, ModObj, MulObj, NEObj, NotObj, OrObj,
+    Ramp, RampObj, SelectObj, Shuffle, ShuffleObj, SubObj,
+};
 use crate::tirx::{
     AllocBuffer, AllocBufferObj, AssertStmt, AssertStmtObj, AttrStmt, AttrStmtObj, Bind, BindObj,
-    BreakObj, BufferRegion, BufferRegionObj, BufferRegionType, BufferStore, BufferStoreObj,
-    BufferType, BufferTypeObj, BufferVar, ContinueObj, DeclBuffer, DeclBufferObj, Evaluate,
-    EvaluateObj, For, ForObj, IfThenElse, IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj,
-    ScopeIdDef, ScopeIdDefStmt, SeqStmt, SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While,
-    WhileObj,
+    BreakObj, BufferRegionType, BufferStore, BufferStoreObj, BufferType, BufferTypeObj, BufferVar,
+    ContinueObj, DeclBuffer, DeclBufferObj, Evaluate, EvaluateObj, For, ForObj, IfThenElse,
+    IfThenElseObj, Iter, Layout, PrimFunc, Return, ReturnObj, ScopeIdDef, ScopeIdDefStmt, SeqStmt,
+    SeqStmtObj, Stmt, TileLayout, TilePrimitiveCall, While, WhileObj,
 };
 
 pub(super) fn int_value<T: ObjectRefCore>(expr: &T) -> Option<i64> {
-    expr.as_node::<IntImmObj>().map(|value| value.value)
+    expr.as_node::<IntImmObj>().map(|value| value.value_i64())
 }
 
 pub(super) fn get_operator(name: &str) -> Result<Expr> {
@@ -130,7 +131,7 @@ pub(super) fn is_string_imm<T: ObjectRefCore>(value: &T) -> bool {
 pub(super) fn int_dtype_and_value<T: ObjectRefCore>(expr: &T) -> Option<(DLDataType, i64)> {
     let literal = expr.as_node::<IntImmObj>()?;
     let dtype = literal.ty.as_node::<PrimTypeObj>()?.dtype;
-    Some((dtype, literal.value))
+    Some((dtype, literal.value_i64()))
 }
 
 pub(super) fn variable_name<T: ObjectRefCore>(expr: &T) -> Option<&str> {
@@ -319,8 +320,8 @@ impl BufferRemaps {
             )?
             .into());
         }
-        if let Some(region) = clone_downcast::<BufferRegion>(&value)? {
-            let buffer = remaps(dispatch).use_buffer(&region.buffer);
+        if let Some(region) = clone_downcast::<TensorRegion>(&value)? {
+            let buffer = remaps(dispatch).use_buffer(&BufferVar::try_from(region.source.clone())?);
             return mutate_buffer_region_with_buffer(dispatch, mutator, region, buffer)
                 .map(Into::into);
         }
@@ -477,7 +478,7 @@ pub(super) fn visit_stmt_expr_default<State>(
         }
         return Ok(None);
     }
-    if let Some(region) = value.as_node::<BufferRegionObj>() {
+    if let Some(region) = value.as_node::<TensorRegionObj>() {
         for range in region.region.iter() {
             if let Some(interrupt) = visitor.visit(&range.min)? {
                 return Ok(Some(interrupt));
@@ -719,7 +720,7 @@ fn visit_tile_value<State>(
     visitor: &mut VisitContext<'_, State>,
     value: &Any,
 ) -> Result<Option<VisitInterrupt>> {
-    if let Some(region) = value.try_as::<BufferRegion>() {
+    if let Some(region) = value.try_as::<TensorRegion>() {
         for range in region.region.iter() {
             if let Some(interrupt) = visitor.visit(&range.min)? {
                 return Ok(Some(interrupt));
@@ -818,7 +819,7 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         }
         return Ok(load.copy_with(load.source.clone(), indices).into());
     }
-    if let Some(region) = clone_downcast::<BufferRegion>(&value)? {
+    if let Some(region) = clone_downcast::<TensorRegion>(&value)? {
         let ranges = region
             .region
             .iter()
@@ -828,10 +829,10 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         if array_same_as(&ranges, &region.region) {
             return Ok(value);
         }
-        return Ok(BufferRegion::from_complete_fields(
+        return Ok(TensorRegion::from_complete_fields(
             region.span.clone(),
-            region.ty.clone().try_cast::<BufferRegionType>()?,
-            region.buffer.clone(),
+            region.ty.clone(),
+            region.source.clone(),
             ranges,
         )
         .into());
@@ -936,7 +937,7 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         return Ok(bind.copy_with(bind.var.clone(), bound_value).into());
     }
     if let Some(attribute) = clone_downcast::<AttrStmt>(&value)? {
-        let attr_value: PrimExpr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
+        let attr_value: Expr = mutator.mutate(dispatch, &attribute.value)?.try_into()?;
         let body: Stmt = mutator.mutate(dispatch, &attribute.body)?.try_into()?;
         if attr_value.same_as(&attribute.value) && body.same_as(&attribute.body) {
             return Ok(value);
@@ -1146,11 +1147,11 @@ fn mutate_tile_value<D: MutateDispatch>(
     mutator: &mut Mutator,
     value: &Any,
 ) -> Result<(Any, bool)> {
-    if let Some(region) = value.try_as::<BufferRegion>() {
+    if let Some(region) = value.try_as::<TensorRegion>() {
         let mapped = mutator.mutate(dispatch, &region)?;
         let mapped_region = mapped
-            .try_as::<BufferRegion>()
-            .ok_or_else(|| value_error("mutating a BufferRegion must return a BufferRegion"))?;
+            .try_as::<TensorRegion>()
+            .ok_or_else(|| value_error("mutating a TensorRegion must return a TensorRegion"))?;
         let changed = !mapped_region.same_as(&region);
         return Ok((mapped, changed));
     }
@@ -1212,22 +1213,24 @@ fn mutate_range<D: MutateDispatch>(
 pub(super) fn mutate_buffer_region_with_buffer<D: MutateDispatch>(
     dispatch: &mut D,
     mutator: &mut Mutator,
-    value: BufferRegion,
+    value: TensorRegion,
     buffer: BufferVar,
-) -> Result<BufferRegion> {
+) -> Result<TensorRegion> {
     let ranges = value
         .region
         .iter()
         .map(|range| mutate_range(dispatch, mutator, &range))
         .collect::<Result<Vec<_>>>()?;
     let ranges = Array::new(ranges);
-    if buffer.same_as(&value.buffer) && array_same_as(&ranges, &value.region) {
+    if buffer.same_as(&BufferVar::try_from(value.source.clone())?)
+        && array_same_as(&ranges, &value.region)
+    {
         return Ok(value);
     }
-    Ok(BufferRegion::from_complete_fields(
+    Ok(TensorRegion::from_complete_fields(
         value.span.clone(),
-        value.ty.clone().try_cast::<BufferRegionType>()?,
-        buffer,
+        value.ty.clone(),
+        buffer.into(),
         ranges,
     ))
 }

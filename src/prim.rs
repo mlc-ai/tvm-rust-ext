@@ -19,7 +19,7 @@
 
 #![allow(dead_code, unused_imports)]
 
-//! Primitive scalar and vector expression nodes (`ir.prim.*`).
+//! Primitive scalar and vector expression nodes (`prim.*`).
 //!
 //! The blocks are emitted by `tvm-ffi-stubgen --target rust`; the reviewed
 //! semantic constructors follow in `mod semantic`.
@@ -27,155 +27,151 @@
 pub(crate) use semantic::primitive_type;
 
 // Every object registered under `ir.prim` gets its block in this file; `skip` leaves one out.
-// tvm-ffi-stubgen(prefix): ir.prim
+// tvm-ffi-stubgen(prefix): prim
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
 // tvm-ffi-stubgen(import-object): crate::ir::PrimExpr
-// tvm-ffi-stubgen(import-object): super::super::ir::PrimType
+// tvm-ffi-stubgen(import-object): crate::ir::PrimType
 // tvm-ffi-stubgen(nullable): ir.Expr.span
-// tvm-ffi-stubgen(field): ir.prim.Add.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Add.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Sub.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Sub.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Mul.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Mul.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Div.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Div.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Mod.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Mod.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.FloorDiv.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.FloorDiv.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.FloorMod.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.FloorMod.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Min.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Min.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Max.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Max.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.EQ.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.EQ.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.NE.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.NE.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.LT.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.LT.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.LE.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.LE.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.GT.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.GT.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.GE.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.GE.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.And.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.And.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Or.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Or.b -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Not.a -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Cast.value -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Ramp.base -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Ramp.stride -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Ramp.lanes -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Broadcast.value -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Broadcast.lanes -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Shuffle.vectors -> Array<PrimExpr>
-// tvm-ffi-stubgen(field): ir.prim.Shuffle.indices -> Array<PrimExpr>
-// tvm-ffi-stubgen(field): ir.prim.Select.condition -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Select.true_value -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Select.false_value -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Let.value -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Let.body -> PrimExpr
-// tvm-ffi-stubgen(field): ir.prim.Add.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Sub.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Mul.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Div.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Mod.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.FloorDiv.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.FloorMod.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Min.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Max.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.EQ.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.NE.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.LT.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.LE.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.GT.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.GE.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.And.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Or.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Not.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Cast.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Ramp.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Broadcast.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Shuffle.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Select.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.Let.ty -> PrimType
-// tvm-ffi-stubgen(field): ir.prim.StringImm.ty -> PrimType
-// tvm-ffi-stubgen(upcast): ir.prim.Add -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Sub -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Mul -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Div -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Mod -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.FloorDiv -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.FloorMod -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Min -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Max -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.EQ -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.NE -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.LT -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.LE -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.GT -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.GE -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.And -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Or -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Not -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Cast -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Ramp -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Broadcast -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Shuffle -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Select -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.Let -> PrimExpr
-// tvm-ffi-stubgen(upcast): ir.prim.StringImm -> PrimExpr
-// tvm-ffi-stubgen(custom-new): ir.prim.Add
-// tvm-ffi-stubgen(custom-new): ir.prim.Sub
-// tvm-ffi-stubgen(custom-new): ir.prim.Mul
-// tvm-ffi-stubgen(custom-new): ir.prim.Div
-// tvm-ffi-stubgen(custom-new): ir.prim.Mod
-// tvm-ffi-stubgen(custom-new): ir.prim.FloorDiv
-// tvm-ffi-stubgen(custom-new): ir.prim.FloorMod
-// tvm-ffi-stubgen(custom-new): ir.prim.Min
-// tvm-ffi-stubgen(custom-new): ir.prim.Max
-// tvm-ffi-stubgen(custom-new): ir.prim.EQ
-// tvm-ffi-stubgen(custom-new): ir.prim.NE
-// tvm-ffi-stubgen(custom-new): ir.prim.LT
-// tvm-ffi-stubgen(custom-new): ir.prim.LE
-// tvm-ffi-stubgen(custom-new): ir.prim.GT
-// tvm-ffi-stubgen(custom-new): ir.prim.GE
-// tvm-ffi-stubgen(custom-new): ir.prim.And
-// tvm-ffi-stubgen(custom-new): ir.prim.Or
-// tvm-ffi-stubgen(custom-new): ir.prim.Not
-// tvm-ffi-stubgen(custom-new): ir.prim.Cast
-// tvm-ffi-stubgen(custom-new): ir.prim.Ramp
-// tvm-ffi-stubgen(custom-new): ir.prim.Broadcast
-// tvm-ffi-stubgen(custom-new): ir.prim.Shuffle
-// tvm-ffi-stubgen(custom-new): ir.prim.Select
-// tvm-ffi-stubgen(custom-new): ir.prim.Let
-// tvm-ffi-stubgen(custom-new): ir.prim.StringImm
+// tvm-ffi-stubgen(field): prim.Add.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Add.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Sub.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Sub.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Mul.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Mul.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Div.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Div.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Mod.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Mod.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.FloorDiv.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.FloorDiv.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.FloorMod.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.FloorMod.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Min.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Min.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Max.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Max.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.EQ.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.EQ.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.NE.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.NE.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LT.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LT.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LE.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LE.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.GT.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.GT.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.GE.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.GE.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.And.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.And.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Or.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Or.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Not.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Cast.value -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Ramp.base -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Ramp.stride -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Ramp.lanes -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Broadcast.value -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Broadcast.lanes -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Shuffle.vectors -> Array<PrimExpr>
+// tvm-ffi-stubgen(field): prim.Shuffle.indices -> Array<PrimExpr>
+// tvm-ffi-stubgen(field): prim.Select.condition -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Select.true_value -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Select.false_value -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Let.value -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Let.body -> PrimExpr
+// tvm-ffi-stubgen(field): prim.Add.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Sub.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Mul.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Div.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Mod.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.FloorDiv.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.FloorMod.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Min.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Max.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.EQ.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.NE.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.LT.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.LE.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.GT.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.GE.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.And.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Or.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Not.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Cast.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Ramp.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Broadcast.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Shuffle.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Select.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.Let.ty -> PrimType
+// tvm-ffi-stubgen(upcast): prim.Add -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Sub -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Mul -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Div -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Mod -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.FloorDiv -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.FloorMod -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Min -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Max -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.EQ -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.NE -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.LT -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.LE -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.GT -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.GE -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.And -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Or -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Not -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Cast -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Ramp -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Broadcast -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Shuffle -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Select -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.Let -> PrimExpr
+// tvm-ffi-stubgen(custom-new): prim.Add
+// tvm-ffi-stubgen(custom-new): prim.Sub
+// tvm-ffi-stubgen(custom-new): prim.Mul
+// tvm-ffi-stubgen(custom-new): prim.Div
+// tvm-ffi-stubgen(custom-new): prim.Mod
+// tvm-ffi-stubgen(custom-new): prim.FloorDiv
+// tvm-ffi-stubgen(custom-new): prim.FloorMod
+// tvm-ffi-stubgen(custom-new): prim.Min
+// tvm-ffi-stubgen(custom-new): prim.Max
+// tvm-ffi-stubgen(custom-new): prim.EQ
+// tvm-ffi-stubgen(custom-new): prim.NE
+// tvm-ffi-stubgen(custom-new): prim.LT
+// tvm-ffi-stubgen(custom-new): prim.LE
+// tvm-ffi-stubgen(custom-new): prim.GT
+// tvm-ffi-stubgen(custom-new): prim.GE
+// tvm-ffi-stubgen(custom-new): prim.And
+// tvm-ffi-stubgen(custom-new): prim.Or
+// tvm-ffi-stubgen(custom-new): prim.Not
+// tvm-ffi-stubgen(custom-new): prim.Cast
+// tvm-ffi-stubgen(custom-new): prim.Ramp
+// tvm-ffi-stubgen(custom-new): prim.Broadcast
+// tvm-ffi-stubgen(custom-new): prim.Shuffle
+// tvm-ffi-stubgen(custom-new): prim.Select
+// tvm-ffi-stubgen(custom-new): prim.Let
 // tvm-ffi-stubgen(import-object): tvm_ffi::Array
 
 // tvm-ffi-stubgen(begin): import-section
-use super::super::ir::Expr;
-use super::super::ir::ExprObj;
-use super::super::ir::PrimType;
-use super::super::ir::Span;
-use super::super::ir::Type;
-use super::super::ir::Var;
+use super::ir::Expr;
+use super::ir::ExprObj;
+use super::ir::Span;
+use super::ir::Type;
+use super::ir::Var;
 use crate::ir::PrimExpr;
+use crate::ir::PrimType;
 use std::ops::Deref;
 use tvm_ffi::Array;
 use tvm_ffi::ObjectArc;
-use tvm_ffi::String;
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Add
+// tvm-ffi-stubgen(begin): object/prim.Add
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Add"]
+#[type_key = "prim.Add"]
 #[type_final]
 pub struct AddObj {
     base: ExprObj,
@@ -233,11 +229,11 @@ impl Add {
 tvm_ffi::impl_object_upcast!(Add => Expr, Add => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.And
+// tvm-ffi-stubgen(begin): object/prim.And
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.And"]
+#[type_key = "prim.And"]
 #[type_final]
 pub struct AndObj {
     base: ExprObj,
@@ -295,11 +291,11 @@ impl And {
 tvm_ffi::impl_object_upcast!(And => Expr, And => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Broadcast
+// tvm-ffi-stubgen(begin): object/prim.Broadcast
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Broadcast"]
+#[type_key = "prim.Broadcast"]
 #[type_final]
 pub struct BroadcastObj {
     base: ExprObj,
@@ -357,11 +353,11 @@ impl Broadcast {
 tvm_ffi::impl_object_upcast!(Broadcast => Expr, Broadcast => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Cast
+// tvm-ffi-stubgen(begin): object/prim.Cast
 /// Complete: reflected fields fill [40, 48) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Cast"]
+#[type_key = "prim.Cast"]
 #[type_final]
 pub struct CastObj {
     base: ExprObj,
@@ -413,11 +409,11 @@ impl Cast {
 tvm_ffi::impl_object_upcast!(Cast => Expr, Cast => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Div
+// tvm-ffi-stubgen(begin): object/prim.Div
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Div"]
+#[type_key = "prim.Div"]
 #[type_final]
 pub struct DivObj {
     base: ExprObj,
@@ -475,11 +471,11 @@ impl Div {
 tvm_ffi::impl_object_upcast!(Div => Expr, Div => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.EQ
+// tvm-ffi-stubgen(begin): object/prim.EQ
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.EQ"]
+#[type_key = "prim.EQ"]
 #[type_final]
 pub struct EQObj {
     base: ExprObj,
@@ -537,11 +533,11 @@ impl EQ {
 tvm_ffi::impl_object_upcast!(EQ => Expr, EQ => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.FloorDiv
+// tvm-ffi-stubgen(begin): object/prim.FloorDiv
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.FloorDiv"]
+#[type_key = "prim.FloorDiv"]
 #[type_final]
 pub struct FloorDivObj {
     base: ExprObj,
@@ -599,11 +595,11 @@ impl FloorDiv {
 tvm_ffi::impl_object_upcast!(FloorDiv => Expr, FloorDiv => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.FloorMod
+// tvm-ffi-stubgen(begin): object/prim.FloorMod
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.FloorMod"]
+#[type_key = "prim.FloorMod"]
 #[type_final]
 pub struct FloorModObj {
     base: ExprObj,
@@ -661,11 +657,11 @@ impl FloorMod {
 tvm_ffi::impl_object_upcast!(FloorMod => Expr, FloorMod => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.GE
+// tvm-ffi-stubgen(begin): object/prim.GE
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.GE"]
+#[type_key = "prim.GE"]
 #[type_final]
 pub struct GEObj {
     base: ExprObj,
@@ -723,11 +719,11 @@ impl GE {
 tvm_ffi::impl_object_upcast!(GE => Expr, GE => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.GT
+// tvm-ffi-stubgen(begin): object/prim.GT
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.GT"]
+#[type_key = "prim.GT"]
 #[type_final]
 pub struct GTObj {
     base: ExprObj,
@@ -785,11 +781,11 @@ impl GT {
 tvm_ffi::impl_object_upcast!(GT => Expr, GT => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.LE
+// tvm-ffi-stubgen(begin): object/prim.LE
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.LE"]
+#[type_key = "prim.LE"]
 #[type_final]
 pub struct LEObj {
     base: ExprObj,
@@ -847,11 +843,11 @@ impl LE {
 tvm_ffi::impl_object_upcast!(LE => Expr, LE => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.LT
+// tvm-ffi-stubgen(begin): object/prim.LT
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.LT"]
+#[type_key = "prim.LT"]
 #[type_final]
 pub struct LTObj {
     base: ExprObj,
@@ -909,11 +905,11 @@ impl LT {
 tvm_ffi::impl_object_upcast!(LT => Expr, LT => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Let
+// tvm-ffi-stubgen(begin): object/prim.Let
 /// Complete: reflected fields fill [40, 64) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Let"]
+#[type_key = "prim.Let"]
 #[type_final]
 pub struct LetObj {
     base: ExprObj,
@@ -984,11 +980,11 @@ impl Let {
 tvm_ffi::impl_object_upcast!(Let => Expr, Let => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Max
+// tvm-ffi-stubgen(begin): object/prim.Max
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Max"]
+#[type_key = "prim.Max"]
 #[type_final]
 pub struct MaxObj {
     base: ExprObj,
@@ -1046,11 +1042,11 @@ impl Max {
 tvm_ffi::impl_object_upcast!(Max => Expr, Max => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Min
+// tvm-ffi-stubgen(begin): object/prim.Min
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Min"]
+#[type_key = "prim.Min"]
 #[type_final]
 pub struct MinObj {
     base: ExprObj,
@@ -1108,11 +1104,11 @@ impl Min {
 tvm_ffi::impl_object_upcast!(Min => Expr, Min => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Mod
+// tvm-ffi-stubgen(begin): object/prim.Mod
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Mod"]
+#[type_key = "prim.Mod"]
 #[type_final]
 pub struct ModObj {
     base: ExprObj,
@@ -1170,11 +1166,11 @@ impl Mod {
 tvm_ffi::impl_object_upcast!(Mod => Expr, Mod => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Mul
+// tvm-ffi-stubgen(begin): object/prim.Mul
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Mul"]
+#[type_key = "prim.Mul"]
 #[type_final]
 pub struct MulObj {
     base: ExprObj,
@@ -1232,11 +1228,11 @@ impl Mul {
 tvm_ffi::impl_object_upcast!(Mul => Expr, Mul => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.NE
+// tvm-ffi-stubgen(begin): object/prim.NE
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.NE"]
+#[type_key = "prim.NE"]
 #[type_final]
 pub struct NEObj {
     base: ExprObj,
@@ -1294,11 +1290,11 @@ impl NE {
 tvm_ffi::impl_object_upcast!(NE => Expr, NE => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Not
+// tvm-ffi-stubgen(begin): object/prim.Not
 /// Complete: reflected fields fill [40, 48) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Not"]
+#[type_key = "prim.Not"]
 #[type_final]
 pub struct NotObj {
     base: ExprObj,
@@ -1350,11 +1346,11 @@ impl Not {
 tvm_ffi::impl_object_upcast!(Not => Expr, Not => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Or
+// tvm-ffi-stubgen(begin): object/prim.Or
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Or"]
+#[type_key = "prim.Or"]
 #[type_final]
 pub struct OrObj {
     base: ExprObj,
@@ -1412,11 +1408,11 @@ impl Or {
 tvm_ffi::impl_object_upcast!(Or => Expr, Or => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Ramp
+// tvm-ffi-stubgen(begin): object/prim.Ramp
 /// Complete: reflected fields fill [40, 64) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Ramp"]
+#[type_key = "prim.Ramp"]
 #[type_final]
 pub struct RampObj {
     base: ExprObj,
@@ -1487,11 +1483,11 @@ impl Ramp {
 tvm_ffi::impl_object_upcast!(Ramp => Expr, Ramp => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Select
+// tvm-ffi-stubgen(begin): object/prim.Select
 /// Complete: reflected fields fill [40, 64) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Select"]
+#[type_key = "prim.Select"]
 #[type_final]
 pub struct SelectObj {
     base: ExprObj,
@@ -1562,11 +1558,11 @@ impl Select {
 tvm_ffi::impl_object_upcast!(Select => Expr, Select => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.Shuffle
+// tvm-ffi-stubgen(begin): object/prim.Shuffle
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Shuffle"]
+#[type_key = "prim.Shuffle"]
 #[type_final]
 pub struct ShuffleObj {
     base: ExprObj,
@@ -1633,67 +1629,11 @@ impl Shuffle {
 tvm_ffi::impl_object_upcast!(Shuffle => Expr, Shuffle => PrimExpr);
 // tvm-ffi-stubgen(end)
 
-// tvm-ffi-stubgen(begin): object/ir.prim.StringImm
+// tvm-ffi-stubgen(begin): object/prim.Sub
 /// Complete: reflected fields fill [40, 56) exactly.
 #[repr(C)]
 #[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.StringImm"]
-#[type_final]
-pub struct StringImmObj {
-    base: ExprObj,
-    pub value: String,
-}
-
-const _: () = {
-    assert!(::core::mem::size_of::<StringImmObj>() == 56);
-    assert!(::core::mem::align_of::<StringImmObj>() == 8);
-};
-
-#[repr(C)]
-#[derive(tvm_ffi::derive::ObjectRef, Clone)]
-pub struct StringImm {
-    base: ObjectArc<StringImmObj>,
-}
-
-impl Deref for StringImm {
-    type Target = StringImmObj;
-    fn deref(&self) -> &StringImmObj {
-        &self.base
-    }
-}
-
-impl Deref for StringImmObj {
-    type Target = ExprObj;
-    fn deref(&self) -> &ExprObj {
-        &self.base
-    }
-}
-
-impl StringImmObj {
-    pub(crate) fn new(span: Option<Span>, ty: PrimType, value: String) -> Self {
-        let base = ExprObj::new(span, ty.into());
-        Self { base, value }
-    }
-}
-
-impl StringImm {
-    /// Lossless complete-field allocation.
-    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, value: String) -> Self {
-        let obj = StringImmObj::new(span, ty, value);
-        Self {
-            base: ObjectArc::new(obj),
-        }
-    }
-}
-
-tvm_ffi::impl_object_upcast!(StringImm => Expr, StringImm => PrimExpr);
-// tvm-ffi-stubgen(end)
-
-// tvm-ffi-stubgen(begin): object/ir.prim.Sub
-/// Complete: reflected fields fill [40, 56) exactly.
-#[repr(C)]
-#[derive(tvm_ffi::derive::Object)]
-#[type_key = "ir.prim.Sub"]
+#[type_key = "prim.Sub"]
 #[type_final]
 pub struct SubObj {
     base: ExprObj,
@@ -2329,7 +2269,9 @@ mod semantic {
 
     // Ramp uses TVM's scalar cast semantics: fold literals, otherwise create a Cast.
     fn cast_ramp_stride(ty: PrimType, value: PrimExpr) -> Result<PrimExpr> {
-        let integer = value.as_node::<IntImmObj>().map(|literal| literal.value);
+        let integer = value
+            .as_node::<IntImmObj>()
+            .map(|literal| literal.value_i64());
         let float = value.as_node::<FloatImmObj>().map(|literal| literal.value);
         if integer.is_none() && float.is_none() {
             return Ok(Cast::new(ty, value)?.into());
@@ -2417,7 +2359,7 @@ mod semantic {
 
     fn vector_type_and_lanes(dtype: DLDataType, lanes: PrimExpr) -> Result<(PrimType, PrimExpr)> {
         if let Some(literal) = lanes.as_node::<IntImmObj>() {
-            let count = literal.value as i32;
+            let count = literal.value_i64() as i32;
             if count <= 1 {
                 return Err(Error::new(
                     VALUE_ERROR,
@@ -2431,14 +2373,16 @@ mod semantic {
             })?;
             return Ok((ty, IntImm::new("int32", i64::from(count))?.into()));
         }
-        let vscale = Op::get("ir.prim.vscale")?;
+        let vscale = Op::get("prim.vscale")?;
         let factor = lanes.as_node::<MulObj>().and_then(|multiply| {
             [(&multiply.a, &multiply.b), (&multiply.b, &multiply.a)]
                 .into_iter()
                 .find_map(|(constant, call)| {
                     let constant = constant.as_node::<IntImmObj>()?;
                     let call = call.as_node::<CallObj>()?;
-                    call.op.same_as(&vscale).then_some(constant.value as i32)
+                    call.op
+                        .same_as(&vscale)
+                        .then_some(constant.value_i64() as i32)
                 })
         });
         let factor = factor
@@ -2586,19 +2530,6 @@ mod semantic {
         /// The result type follows the new `body`.
         pub fn copy_with(&self, var: Var, value: PrimExpr, body: PrimExpr) -> Self {
             Self::from_complete_fields(self.span.clone(), body.type_annotation(), var, value, body)
-        }
-    }
-
-    impl StringImm {
-        /// Construct a string literal directly in Rust.
-        pub fn new(value: &str) -> Self {
-            Self::with_span(value, None)
-        }
-
-        /// Construct a string literal with optional source metadata.
-        pub fn with_span(value: &str, span: Option<&Span>) -> Self {
-            let value_type = crate::ir::PrimType::void();
-            Self::from_complete_fields(span.cloned(), value_type, String::from(value))
         }
     }
 }

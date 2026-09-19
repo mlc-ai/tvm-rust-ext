@@ -31,7 +31,7 @@ use super::utils::{
 };
 use super::{create_module_pass, Pass};
 use crate::analysis::Analyzer;
-use crate::ir::prim::StringImm;
+use crate::ir::StringImm;
 use crate::ir::{
     BaseFunc, Call, DictAttrs, Expr, GlobalVarObj, IRModule, IntImm, PointerType, PrimExpr,
     PrimType, PrimTypeObj, Type, Var,
@@ -456,7 +456,7 @@ impl PackedAbiBinder {
             struct_get_operator: get_operator("tirx.tvm_struct_get")?,
             is_null_operator: get_operator("tirx.isnullptr")?,
             reinterpret_operator: get_operator("tirx.reinterpret")?,
-            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
+            if_then_else_operator: get_operator("prim.if_then_else")?,
             handle_add_byte_offset_operator: get_operator("tirx.handle_add_byte_offset")?,
             analyzer: Analyzer::new()?,
         };
@@ -1348,7 +1348,7 @@ fn is_null(operator: &Expr, value: Expr) -> Result<PrimExpr> {
 }
 
 fn not(value: PrimExpr) -> Result<PrimExpr> {
-    Ok(crate::ir::prim::Not::new(value)?.into())
+    Ok(crate::prim::Not::new(value)?.into())
 }
 
 fn equal<L, R>(lhs: L, rhs: R) -> Result<PrimExpr>

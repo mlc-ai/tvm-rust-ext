@@ -36,8 +36,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass_with_context, Pass, PassContext};
 use crate::analysis::{side_effect, Analyzer, CallEffectKind, IntSet};
-use crate::ir::prim::{Let, Not, Select, Sub, GT, LE};
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, TensorLoad, TensorLoadObj, Var};
+use crate::prim::{Let, Not, Select, Sub, GT, LE};
 use crate::te::Reduce;
 use crate::tirx::{
     AssertStmt, AssertStmtObj, AttrStmt, Bind, BufferStore, BufferVar, Evaluate, For, IfThenElse,
@@ -330,8 +330,8 @@ impl NoOpRemover {
                     "",
                 ));
             }
-            let zero = zero_like(&inner.value);
-            let negative: PrimExpr = crate::ir::prim::LT::new(inner.value.clone(), zero)?.into();
+            let zero = zero_like(&PrimExpr::try_from(inner.value.clone())?);
+            let negative: PrimExpr = crate::prim::LT::new(inner.value.clone(), zero)?.into();
             if Analyzer::new()?.can_prove(&negative)? {
                 return mutator.mutate(self, &inner.body)?.try_into();
             }
@@ -340,13 +340,16 @@ impl NoOpRemover {
         if matches!(value.attr_key.as_str(), THREAD_EXTENT | VIRTUAL_THREAD) {
             let iteration = IterVar::try_from(value.node.clone())?;
             let variable = iteration.var()?;
-            let domain = Range::from_min_extent(zero_like(&value.value), value.value.clone())?;
+            let domain = Range::from_min_extent(
+                zero_like(&PrimExpr::try_from(value.value.clone())?),
+                value.value.clone(),
+            )?;
             self.analyzer.bind(variable.as_var(), &domain)?;
         }
 
         // Match StmtExprMutator: AttrStmt.node is metadata and must not be
         // recursively rewritten.
-        let attr_value: PrimExpr = mutator.mutate(self, &value.value)?.try_into()?;
+        let attr_value: Expr = mutator.mutate(self, &value.value)?.try_into()?;
         let body: Stmt = mutator.mutate(self, &value.body)?.try_into()?;
         let mutated = if attr_value.same_as(&value.value) && body.same_as(&value.body) {
             value
@@ -354,7 +357,7 @@ impl NoOpRemover {
             value.copy_with(value.node.clone(), value.attr_key.clone(), attr_value, body)
         };
         if is_no_op(&mutated.body) {
-            self.make_evaluate(mutated.value.clone())
+            self.make_evaluate(PrimExpr::try_from(mutated.value.clone())?)
         } else {
             Ok(mutated.into())
         }
@@ -421,8 +424,7 @@ impl NoOpRemover {
 
         let one = one_like(&value.extent);
         let extent_minus_one: PrimExpr = Sub::new(value.extent.clone(), one)?.into();
-        let maximum: PrimExpr =
-            crate::ir::prim::Add::new(value.min.clone(), extent_minus_one)?.into();
+        let maximum: PrimExpr = crate::prim::Add::new(value.min.clone(), extent_minus_one)?.into();
         let integer_domain = IntSet::interval(value.min.clone(), maximum)?;
         let identity = ObjectIdentity::of(&value.loop_var);
         let previous = self.variable_domains.insert(
@@ -487,7 +489,7 @@ impl NoOpRemover {
         )?;
         let difference: PrimExpr = Sub::new(value.value.clone(), load)?.into();
         let equal_to_zero: PrimExpr =
-            crate::ir::prim::EQ::new(difference.clone(), zero_like(&difference))?.into();
+            crate::prim::EQ::new(difference.clone(), zero_like(&difference))?.into();
         if int_value(&self.analyzer.simplify(&equal_to_zero)?) == Some(1) {
             return self.store_side_effects(&value);
         }
@@ -549,9 +551,9 @@ impl NoOpRemover {
             profiler_operators,
             variable_domains: HashMap::new(),
             buffer_remaps: BufferRemaps::default(),
-            likely_operator: get_operator("ir.prim.likely")?,
-            if_then_else_operator: get_operator("ir.prim.if_then_else")?,
-            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
+            likely_operator: get_operator("prim.likely")?,
+            if_then_else_operator: get_operator("prim.if_then_else")?,
+            bitwise_and_operator: get_operator("prim.bitwise_and")?,
         })
     }
 
@@ -672,9 +674,9 @@ fn evaluate_zero() -> Result<Stmt> {
 }
 
 fn zero_like(value: &PrimExpr) -> PrimExpr {
-    IntImm::from_complete_fields(None, value.type_annotation(), 0).into()
+    IntImm::from_complete_fields(None, value.type_annotation(), 0.into()).into()
 }
 
 fn one_like(value: &PrimExpr) -> PrimExpr {
-    IntImm::from_complete_fields(None, value.type_annotation(), 1).into()
+    IntImm::from_complete_fields(None, value.type_annotation(), 1.into()).into()
 }

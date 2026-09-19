@@ -26,8 +26,8 @@ use tvm_ffi::{
 
 use super::utils::{visit_buffer_definition, visit_stmt_expr_default};
 use super::{create_module_pass, Pass};
-use crate::ir::prim::Let;
 use crate::ir::{Expr, PrimExpr, Var};
+use crate::prim::Let;
 use crate::tirx::{AllocBuffer, Bind, BufferVar, For, PrimFunc};
 
 /// Check TVM's SSA rules, including repeated Let bindings to deeply equal values.

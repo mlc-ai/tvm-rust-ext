@@ -42,6 +42,8 @@ pub mod exports;
 #[allow(clippy::too_many_arguments, clippy::new_without_default)]
 pub mod ir;
 pub mod libinfo;
+#[allow(clippy::too_many_arguments, clippy::new_without_default)]
+pub mod prim;
 pub mod target;
 pub mod te;
 #[allow(clippy::too_many_arguments, clippy::new_without_default)]

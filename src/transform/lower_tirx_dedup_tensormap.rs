@@ -29,7 +29,7 @@ use super::utils::{
     visit_stmt_expr_default, with_prim_func_body,
 };
 use super::{create_prim_func_pass, Pass};
-use crate::ir::prim::StringImm;
+use crate::ir::StringImm;
 use crate::ir::{CallObj, Expr, PrimExpr, Var};
 use crate::tirx::{Bind, Evaluate, For, IfThenElse, PrimFunc, SeqStmt, Stmt, While};
 

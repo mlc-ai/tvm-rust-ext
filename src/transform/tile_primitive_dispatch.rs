@@ -34,8 +34,8 @@ use super::utils::{
 };
 use super::{create_prim_func_pass, Pass};
 use crate::analysis::{detect_linear_equation, Analyzer};
-use crate::ir::prim::{And, AndObj, EQObj, FloorModObj, GEObj, GTObj, LEObj, LTObj, ModObj, NE};
 use crate::ir::{Call, CallObj, Expr, IntImm, PrimExpr, Range, Var, VarObj};
+use crate::prim::{And, AndObj, EQObj, FloorModObj, GEObj, GTObj, LEObj, LTObj, ModObj, NE};
 use crate::target::Target;
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferVar, DeclBuffer, DispatchContext, Evaluate, For, IfThenElse,
@@ -140,7 +140,7 @@ impl TileDispatcher {
             storage_roots: HashMap::new(),
             device_depth: 0,
             filter_operator: get_operator("tirx.filter")?,
-            bitwise_and_operator: get_operator("ir.prim.bitwise_and")?,
+            bitwise_and_operator: get_operator("prim.bitwise_and")?,
             elect_sync_operator: get_operator("tirx.cuda.elect_sync")?,
             selector_operator: get_operator("tirx.selector")?,
         })
@@ -175,7 +175,7 @@ impl TileDispatcher {
             for (variable, mut value) in definition.def_ids.iter().zip(values) {
                 let variable_type = variable.type_annotation();
                 if variable_type.dtype != value.dtype() {
-                    value = crate::ir::prim::Cast::new(variable_type, value)?.into();
+                    value = crate::prim::Cast::new(variable_type, value)?.into();
                 }
                 if variable.as_var().name.as_str().is_empty() {
                     implicit_scope_ids.push(variable.as_var().clone());
@@ -693,7 +693,7 @@ impl TileDispatcher {
         } else {
             return Ok(None);
         };
-        let difference: PrimExpr = crate::ir::prim::Sub::new(lhs, rhs)?.into();
+        let difference: PrimExpr = crate::prim::Sub::new(lhs, rhs)?.into();
         for (variable, target) in self.scope_targets() {
             let linear = detect_linear_equation(&difference, vec![variable.clone()])?;
             if linear.len() != 2 {
