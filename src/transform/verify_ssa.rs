@@ -20,8 +20,8 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use tvm_ffi::{
-    structural_visit, Error, ObjectIdentity, ObjectRefCast, Result, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue, RUNTIME_ERROR,
+    structural_visit, Error, ObjectIdentity, ObjectRefCast, Result, StructuralView, VisitCallbacks,
+    VisitContext, VisitInterrupt, RUNTIME_ERROR,
 };
 
 use super::utils::{visit_buffer_definition, visit_stmt_expr_default};
@@ -185,7 +185,7 @@ fn visit_variable(value: Var, visitor: &mut VisitContext<'_, SsaVerifier>) {
 }
 
 fn visit_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, SsaVerifier>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)

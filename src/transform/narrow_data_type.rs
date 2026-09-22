@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use tvm_ffi::{
     structural_mutate, structural_visit, DLDataType, DLDataTypeCode, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    ObjectRefCore, Result, StructuralView, VisitCallbacks, VisitContext, VisitInterrupt,
 };
 
 use super::force_narrow_index::IndexDataTypeNormalizer;
@@ -239,7 +239,7 @@ fn visit_cast(value: Cast, visitor: &mut VisitContext<'_, NarrowPlan>) -> Result
 }
 
 fn visit_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, NarrowPlan>,
 ) -> Result<Option<VisitInterrupt>> {
     if let Some(expression) = value.cast::<Expr>() {

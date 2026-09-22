@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use tvm_ffi::object::ObjectRef as AnyObjectRef;
 use tvm_ffi::{
     structural_map, structural_mutate, structural_walk, Any, Array, DLDataTypeCode, Function, Map,
-    MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
-    WalkOrder, WalkResult,
+    Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    StructuralView, WalkOrder, WalkResult,
 };
 
 use super::exec_context::{encode_split, ExecContext};
@@ -1107,7 +1107,7 @@ impl TileDispatcher {
         Stmt::sequence_with_span(statements, sequence.span.as_ref())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

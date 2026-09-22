@@ -25,9 +25,9 @@ mod constraint_cleanup_tests;
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, AnyCompatible, Array, FieldGetter, Function, Map, MapValue, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    String as FfiString, RUNTIME_ERROR,
+    structural_mutate, Any, AnyCompatible, Array, FieldGetter, Function, Map, Mutator, ObjectArc,
+    ObjectCore, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    StructuralView, RUNTIME_ERROR,
 };
 
 use super::utils::{
@@ -523,7 +523,7 @@ impl NoOpRemover {
         finish_constraint_contexts(result, exits)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }

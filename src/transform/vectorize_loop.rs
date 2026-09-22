@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, DLDataType, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result,
+    structural_mutate, Any, Array, DLDataType, Map, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, StructuralView,
 };
 
 use super::utils::{
@@ -85,7 +85,7 @@ impl LoopVectorizer {
         structural_mutate(value.body.clone(), &mut vectorizer)?.try_into()
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -113,7 +113,7 @@ impl VectorizeSkipper {
         ))
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -825,7 +825,7 @@ impl Vectorizer {
         }
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         let original_statement = value.cast::<Stmt>();
         let mapped = mutate_stmt_expr_default(self, mutator, value)?;
         if let Some(statement) = original_statement {

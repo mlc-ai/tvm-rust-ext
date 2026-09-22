@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCore,
-    Result, String as FfiString, RUNTIME_ERROR,
+    structural_mutate, Any, Array, Error, Map, Mutator, ObjectIdentity, ObjectRefCore, Result,
+    String as FfiString, StructuralView, RUNTIME_ERROR,
 };
 
 use super::utils::{option_same_as, with_prim_func_attr, with_prim_func_body, BufferRemaps};
@@ -144,7 +144,7 @@ impl ThreadAxisRewriter {
         self.buffer_remaps.use_variable(&value)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }

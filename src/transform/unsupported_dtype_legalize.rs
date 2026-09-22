@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
     structural_mutate, structural_visit, Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt,
-    Function, MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    Function, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, StructuralView,
+    VisitCallbacks, VisitContext, VisitInterrupt,
 };
 
 use super::utils::{
@@ -293,7 +293,7 @@ fn plan_variable(value: Var, visitor: &mut VisitContext<'_, ComputePlan>) -> Res
 }
 
 fn plan_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, ComputePlan>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -793,7 +793,7 @@ impl ComputeLegalizer {
         mutate_buffer_region_with_buffer(self, mutator, value, buffer)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -1360,7 +1360,7 @@ impl StorageLegalizer {
         mutate_expr_default(self, mutator, value.into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

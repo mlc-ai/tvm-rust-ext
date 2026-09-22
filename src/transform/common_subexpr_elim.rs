@@ -21,8 +21,8 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
     structural_mutate, structural_visit, Any, Error, Map, Mutator, ObjectCore, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
-    TYPE_ERROR,
+    ObjectRefCast, ObjectRefCore, Result, StructuralView, VisitCallbacks, VisitContext,
+    VisitInterrupt, TYPE_ERROR,
 };
 
 use super::utils::{
@@ -280,7 +280,7 @@ impl CsePlanner {
     }
 
     fn visit_statement(
-        value: &VisitValue,
+        value: &StructuralView,
         statement: Stmt,
         visitor: &mut VisitContext<'_, Self>,
     ) -> Result<Option<VisitInterrupt>> {
@@ -336,7 +336,7 @@ impl CsePlanner {
     }
 
     fn visit_expression(
-        value: &VisitValue,
+        value: &StructuralView,
         expression: PrimExpr,
         visitor: &mut VisitContext<'_, Self>,
     ) -> Result<Option<VisitInterrupt>> {
@@ -565,7 +565,7 @@ impl CsePlanner {
 // CSE runs code both before and after each expression's children and opens
 // scopes around branches, so its callback controls recursion through VisitContext.
 fn visit_cse_value(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, CsePlanner>,
 ) -> Result<Option<VisitInterrupt>> {
     if let Some(statement) = value.cast::<Stmt>() {

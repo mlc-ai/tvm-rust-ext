@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
     structural_visit, DLDeviceType, Error, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
-    String, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue, RUNTIME_ERROR,
+    String, StructuralView, VisitCallbacks, VisitContext, VisitInterrupt, RUNTIME_ERROR,
 };
 
 use super::utils::{get_operator, is_opaque_expr, value_error, visit_stmt_expr_default};
@@ -232,7 +232,7 @@ fn visit_call(value: Call, visitor: &mut VisitContext<'_, MemoryVerifier>) -> Re
 }
 
 fn visit_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, MemoryVerifier>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)

@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Error, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast, Result,
-    String as FfiString, TYPE_ERROR,
+    structural_mutate, Any, Error, Map, Mutator, ObjectIdentity, ObjectRefCast, Result,
+    String as FfiString, StructuralView, TYPE_ERROR,
 };
 
 use super::utils::{cast_prim_expr, int_value, with_prim_func_body, BufferRemaps};
@@ -141,7 +141,7 @@ impl TIRxOpaqueLower {
         }
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }

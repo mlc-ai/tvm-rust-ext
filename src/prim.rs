@@ -26,7 +26,7 @@
 
 pub(crate) use semantic::primitive_type;
 
-// Every object registered under `ir.prim` gets its block in this file; `skip` leaves one out.
+// Every object registered under `prim` gets its block in this file; `skip` leaves one out.
 // tvm-ffi-stubgen(prefix): prim
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
 // tvm-ffi-stubgen(import-object): crate::ir::PrimExpr

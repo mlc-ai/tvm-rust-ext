@@ -90,7 +90,7 @@ The first generated slice remains intentionally small:
 | `ExprObj` | `ir.Expr` | `span`, `ty` | base prefix |
 | `VarObj` | `ir.Var` | `name` | direct Rust allocation |
 | `IntImmObj` | `ir.IntImm` | `value` | direct after integer validation |
-| `AddObj` | `ir.prim.Add` | `a`, `b` | direct after dtype validation |
+| `AddObj` | `prim.Add` | `a`, `b` | direct after dtype validation |
 | `StmtObj` | `tirx.Stmt` | `span` | base prefix |
 | `EvaluateObj` | `tirx.Evaluate` | `value` | direct after value validation |
 | `BaseFuncObj` | `ir.BaseFunc` | `attrs` | base prefix |
@@ -312,11 +312,11 @@ The actual stubgen is complete only when one invocation emits the mechanical
 surface from layout input and the remaining handwritten semantic layer composes
 with it without changing the acceptance tests.
 
-Since 2026-09-06 the mechanical portion of `ir`, `ir.prim`, and `tirx` is
+Since 2026-09-06 the mechanical portion of `ir`, `prim`, and `tirx` is
 reproduced from generated code: `tvm-ffi-stubgen --target rust` classifies
 every registered type from the reflected size, alignment, finality, and field
 offsets of `libtvm_compiler`, emits the complete layouts and complete-field
-allocators in place (`src/ir.rs`, `src/ir/prim.rs`, `src/tirx.rs`), and keeps
+allocators in place (`src/ir.rs`, `src/prim.rs`, `src/tirx.rs`), and keeps
 the handwritten semantic constructors next to the blocks. `SourceName`,
 `UniqueNameSupply`, and `PrimFunc` retain hand-written layouts; the acceptance
 tests pass unchanged against the `tvm-ffi` revision pinned in `Cargo.toml`.
@@ -329,5 +329,5 @@ services, complete fields without a direct allocator (`SourceName`),
 storage native code can move out of (`PrimFunc.body`, so
 `tirx.PrimFunc` is `skip`ped and hand-written), semantic validation/default
 logic (hand-written, marked by `custom-new`), and rustfmt-clean output (the
-formatted files fail `tvm-ffi-stubgen --check`). `te`, `target`, `arith`, and
+formatted files fail `tvm-ffi-stubgen --check`). `te`, `target`, `sym`, and
 the pass infrastructure are not generated yet.

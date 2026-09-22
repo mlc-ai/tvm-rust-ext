@@ -20,9 +20,9 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String as FfiString, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Map, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String as FfiString, StructuralView, VisitCallbacks, VisitContext,
+    VisitInterrupt,
 };
 
 use super::utils::{
@@ -203,7 +203,7 @@ fn visit_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, ClassifiedCal
 }
 
 fn visit_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, ClassifiedCalls>,
 ) -> Result<Option<VisitInterrupt>> {
     super::utils::visit_stmt_expr_default(visitor, value)
@@ -272,7 +272,7 @@ impl CallSubstitutor<'_> {
         result
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

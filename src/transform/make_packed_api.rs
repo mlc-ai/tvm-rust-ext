@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, DLDataTypeExt, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result, String as FfiString, TypeIndex,
+    structural_mutate, Any, Array, DLDataTypeExt, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String as FfiString, StructuralView, TypeIndex,
 };
 
 use super::utils::{
@@ -270,8 +270,8 @@ struct SubroutineCallRewriter<'a> {
 
 #[tvm_ffi::dispatch(mutate)]
 impl SubroutineCallRewriter<'_> {
-    fn mutate_call(&mut self, _value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let value: Call = mutator.default_mutate(self)?.try_into()?;
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        let value: Call = mutator.default_mutate(self, &value)?.try_into()?;
         if value.op.as_node::<GlobalVarObj>().is_none() {
             return Ok(value.into());
         }
@@ -285,7 +285,7 @@ impl SubroutineCallRewriter<'_> {
         Ok(Call::new(value.ty.clone(), self.cpacked_operator.clone(), arguments).into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -313,7 +313,9 @@ impl ReturnRewriter {
     fn mutate_loop(&mut self, value: For, mutator: &mut Mutator) -> Result<Stmt> {
         let is_parallel = value.kind == ForKind::kParallel;
         self.parallel_depth += usize::from(is_parallel);
-        let rewritten = mutator.default_mutate(self).and_then(Stmt::try_from);
+        let rewritten = mutator
+            .default_mutate(self, &value)
+            .and_then(Stmt::try_from);
         self.parallel_depth -= usize::from(is_parallel);
         rewritten
     }
@@ -362,7 +364,7 @@ impl ReturnRewriter {
         ])
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

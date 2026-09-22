@@ -26,8 +26,6 @@
 //! `tvm-ffi-stubgen --target rust` (see README, "Generated bindings"); the
 //! reviewed semantic constructors and typed views follow in `mod semantic`.
 
-/// Primitive expression nodes shared by TIRx and other IR dialects.
-
 /// Native naming service with thread-confined state.
 mod unique_name_supply;
 

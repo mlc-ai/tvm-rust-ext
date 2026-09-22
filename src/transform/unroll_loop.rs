@@ -32,9 +32,9 @@ use crate::tirx::{
 };
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, Error, FieldGetter, Map, MapValue, Mutator,
-    ObjectArc, ObjectCore, ObjectIdentity, ObjectRefCore, Result, String, WalkOrder, WalkResult,
-    VALUE_ERROR,
+    structural_mutate, structural_walk, Any, Array, Error, FieldGetter, Map, Mutator, ObjectArc,
+    ObjectCore, ObjectIdentity, ObjectRefCore, Result, String, StructuralView, WalkOrder,
+    WalkResult, VALUE_ERROR,
 };
 
 const AUTO_UNROLL_MAX_STEP: &str = "pragma_auto_unroll_max_step";
@@ -318,7 +318,7 @@ impl LoopUnroller {
         }
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

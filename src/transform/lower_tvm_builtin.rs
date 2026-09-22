@@ -18,8 +18,8 @@
  */
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, DLDataTypeCode, DLDeviceType, MapValue, Mutator, ObjectRefCast,
-    ObjectRefCore, Result, String, TypeIndex,
+    structural_mutate, Any, Array, DLDataTypeCode, DLDeviceType, Mutator, ObjectRefCast,
+    ObjectRefCore, Result, String, StructuralView, TypeIndex,
 };
 
 use super::utils::{
@@ -1014,7 +1014,7 @@ impl BuiltinLower {
         self.lower_call(value, mutator)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
