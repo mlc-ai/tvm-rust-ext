@@ -18,8 +18,8 @@
  */
 
 use tvm_ffi::{
-    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Function, MapValue, Mutator,
-    ObjectRefCast, ObjectRefCore, Result, String,
+    Any, Array, DLDataType, DLDataTypeCode, DLDataTypeExt, Function, Mutator, ObjectRefCast,
+    ObjectRefCore, Result, String, StructuralView,
 };
 
 #[cfg(test)]
@@ -873,7 +873,7 @@ impl IntrinInjecter {
         })
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }

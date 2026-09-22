@@ -20,9 +20,9 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, Error, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
-    VALUE_ERROR,
+    structural_mutate, structural_visit, Any, Array, Error, Map, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, StructuralView, VisitCallbacks, VisitContext,
+    VisitInterrupt, VALUE_ERROR,
 };
 
 use super::utils::{
@@ -169,7 +169,7 @@ fn visit_call(call: Call, visitor: &mut VisitContext<'_, CallGraphState>) -> Res
 }
 
 fn visit_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, CallGraphState>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -273,7 +273,7 @@ impl PrimFuncInliner {
         Ok(value.copy_with(value.ty.clone(), op, args))
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         BufferRemaps::mutate_default(self, mutator, value, |state| &mut state.buffer_remaps)
     }
 }

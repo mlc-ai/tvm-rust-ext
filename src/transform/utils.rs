@@ -20,9 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    Any, AnyCompatible, Array, DLDataType, Function, Map, MapValue, MutateDispatch, Mutator,
-    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String, VisitContext, VisitInterrupt,
-    VisitValue,
+    Any, AnyCompatible, Array, DLDataType, Function, Map, MutateDispatch, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String, StructuralView, VisitContext, VisitInterrupt,
 };
 
 use crate::ir::{
@@ -55,6 +54,8 @@ pub(super) fn get_operator(name: &str) -> Result<Expr> {
 }
 
 pub(super) fn substitute_vars(node: Any, replacements: &Map<Var, Expr>) -> Result<Any> {
+    // Map callbacks run for each occurrence; default descent does not cache
+    // callback replacements as variable bindings.
     tvm_ffi::structural_map(
         node,
         |variable: Var| -> Result<Any> {
@@ -344,7 +345,7 @@ impl BufferRemaps {
     pub(super) fn mutate_default<D: MutateDispatch>(
         dispatch: &mut D,
         mutator: &mut Mutator,
-        value: &MapValue,
+        value: &StructuralView,
         remaps: impl Fn(&mut D) -> &mut Self,
     ) -> Result<Any> {
         if let Some(statement) = value.cast::<Stmt>() {
@@ -353,7 +354,7 @@ impl BufferRemaps {
         if let Some(expression) = value.cast::<Expr>() {
             return Self::mutate_expr(dispatch, mutator, expression, remaps).map(Into::into);
         }
-        mutator.default_mutate(dispatch)
+        mutator.default_mutate(dispatch, value)
     }
 
     pub(super) fn mutate_definition<D, F>(
@@ -469,7 +470,7 @@ where
 /// Apply TVM's `StmtExprVisitor` child policy to a structural value.
 pub(super) fn visit_stmt_expr_default<State>(
     visitor: &mut VisitContext<'_, State>,
-    value: &VisitValue,
+    value: &StructuralView,
 ) -> Result<Option<VisitInterrupt>> {
     if value.as_node::<VarObj>().is_some() {
         return Ok(None);
@@ -806,7 +807,7 @@ pub(super) fn visit_buffer_definition<State>(
 pub(super) fn mutate_stmt_expr_default<D: MutateDispatch>(
     dispatch: &mut D,
     mutator: &mut Mutator,
-    value: &MapValue,
+    value: &StructuralView,
 ) -> Result<Any> {
     if let Some(expression) = value.cast::<Expr>() {
         return mutate_expr_default(dispatch, mutator, expression).map(Into::into);
@@ -814,7 +815,7 @@ pub(super) fn mutate_stmt_expr_default<D: MutateDispatch>(
     if let Some(statement) = value.cast::<Stmt>() {
         return mutate_stmt_default(dispatch, mutator, statement).map(Into::into);
     }
-    mutator.default_mutate(dispatch)
+    mutator.default_mutate(dispatch, value)
 }
 
 pub(super) fn mutate_expr_default<D: MutateDispatch>(
@@ -934,7 +935,9 @@ pub(super) fn mutate_expr_default<D: MutateDispatch>(
         }
         return Ok(Shuffle::new(vectors, indices)?.into());
     }
-    mutator.default_mutate(dispatch).and_then(Expr::try_from)
+    mutator
+        .default_mutate(dispatch, &value)
+        .and_then(Expr::try_from)
 }
 
 pub(super) fn mutate_stmt_default<D: MutateDispatch>(
@@ -1130,7 +1133,9 @@ pub(super) fn mutate_stmt_default<D: MutateDispatch>(
         };
         return Ok(tile_call.copy_with(args, config)?.into());
     }
-    mutator.default_mutate(dispatch).and_then(Stmt::try_from)
+    mutator
+        .default_mutate(dispatch, &value)
+        .and_then(Stmt::try_from)
 }
 
 fn mutate_tile_values<D: MutateDispatch>(

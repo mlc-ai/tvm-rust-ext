@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, structural_walk, Any, Array, MapValue, Mutator,
-    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue, WalkOrder, WalkResult,
+    structural_mutate, structural_visit, structural_walk, Any, Array, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String, StructuralView, VisitCallbacks, VisitContext,
+    VisitInterrupt, WalkOrder, WalkResult,
 };
 
 use super::utils::{
@@ -119,7 +119,7 @@ fn bind_attribute(value: AttrStmt, visitor: &mut VisitContext<'_, BoundBinder>) 
 }
 
 fn bind_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, BoundBinder>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -184,7 +184,7 @@ fn find_warp_attribute(
 }
 
 fn find_warp_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, WarpIndexState>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -293,7 +293,7 @@ fn find_coefficient_store(
 }
 
 fn find_coefficient_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, WarpCoeffState>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -384,7 +384,7 @@ impl WarpMemoryRewriter {
         }
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -668,7 +668,7 @@ impl WarpAccessRewriter {
         .into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -783,7 +783,7 @@ impl PointerScopeUpdater {
         )
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

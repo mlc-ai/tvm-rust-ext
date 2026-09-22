@@ -20,8 +20,8 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, String as FfiString, WalkOrder, WalkResult,
+    structural_mutate, structural_walk, Any, Array, Map, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, String as FfiString, StructuralView, WalkOrder, WalkResult,
 };
 
 use super::utils::{
@@ -138,7 +138,7 @@ impl DeviceRegionAnnotator {
         }
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -160,7 +160,7 @@ impl HostDeviceSplitter<'_> {
         self.extract_device_function(value.body.clone(), target)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -340,7 +340,7 @@ impl LaunchBoundsExtractor {
         mutator.mutate(self, &value.body)?.try_into()
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -660,8 +660,8 @@ struct KernelLaunchRewriter<'a> {
 
 #[tvm_ffi::dispatch(mutate)]
 impl KernelLaunchRewriter<'_> {
-    fn mutate_call(&mut self, _value: Call, mutator: &mut Mutator) -> Result<Expr> {
-        let value: Call = mutator.default_mutate(self)?.try_into()?;
+    fn mutate_call(&mut self, value: Call, mutator: &mut Mutator) -> Result<Expr> {
+        let value: Call = mutator.default_mutate(self, &value)?.try_into()?;
         let Some(global) = value.op.as_node::<GlobalVarObj>() else {
             return Ok(value.into());
         };
@@ -743,7 +743,7 @@ impl KernelLaunchRewriter<'_> {
         .into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -779,7 +779,7 @@ impl KernelReturnRewriter {
         mutate_stmt_default(self, mutator, value.into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

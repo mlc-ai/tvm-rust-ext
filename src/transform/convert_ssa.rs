@@ -20,8 +20,8 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_walk, Any, Array, Map, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, WalkOrder, WalkResult,
+    structural_mutate, structural_walk, Any, Array, Map, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, StructuralView, WalkOrder, WalkResult,
 };
 
 use super::utils::{array_same_as, mutate_stmt_expr_default, option_same_as};
@@ -630,7 +630,7 @@ impl SsaConverter {
         Ok(value.copy_with(Expr::from(buffer), indices))
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, Result};
+use tvm_ffi::{structural_mutate, Any, Mutator, Result, StructuralView};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, Pass};
@@ -37,7 +37,7 @@ impl AssertSkipper {
         Evaluate::from_i64(0)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

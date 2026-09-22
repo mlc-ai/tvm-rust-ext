@@ -20,9 +20,9 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, DLDataTypeExt, Map, MapValue, Mutator,
-    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, String as FfiString, VisitCallbacks,
-    VisitContext, VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Array, DLDataTypeExt, Map, Mutator, ObjectIdentity,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, StructuralView, VisitCallbacks,
+    VisitContext, VisitInterrupt,
 };
 
 use super::pointer_value_type_rewrite::{pointer_value_type_rewrite_with_options, RewriteOptions};
@@ -316,7 +316,7 @@ fn analyze_variable(value: Var, visitor: &mut VisitContext<'_, StorageAnalysis>)
     visitor.state_mut().access_variable(&value)
 }
 
-fn is_node<T: ObjectRefCore>(value: &VisitValue) -> bool {
+fn is_node<T: ObjectRefCore>(value: &StructuralView) -> bool {
     value.as_node::<T::ContainerType>().is_some()
 }
 
@@ -343,7 +343,7 @@ impl InplaceVerifier {
 }
 
 fn verify_inplace(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, InplaceVerifier>,
 ) -> Result<Option<VisitInterrupt>> {
     let reject = || Ok(Some(VisitInterrupt::with(false)));
@@ -431,7 +431,7 @@ fn verify_inplace(
 }
 
 fn analyze_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, StorageAnalysis>,
 ) -> Result<Option<VisitInterrupt>> {
     let Some(statement) = value.cast::<Stmt>() else {
@@ -966,7 +966,7 @@ impl StoragePlanRewriter {
             .into()
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

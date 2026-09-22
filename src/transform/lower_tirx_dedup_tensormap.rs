@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, MapValue, Mutator, ObjectIdentity,
-    ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext, VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Array, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, StructuralView, VisitCallbacks, VisitContext, VisitInterrupt,
 };
 
 use super::utils::{
@@ -166,7 +166,7 @@ fn analyze_evaluate(value: Evaluate, visitor: &mut VisitContext<'_, DedupAnalysi
 }
 
 fn analyze_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, DedupAnalysis>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -317,7 +317,7 @@ impl DedupRewriter {
         Ok(mapped)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

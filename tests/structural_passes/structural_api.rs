@@ -1029,6 +1029,76 @@ fn walk_and_visit_handle_real_tir_loop_scopes() {
 }
 
 #[test]
+fn structural_map_substitutes_each_variable_occurrence_like_cpp() -> Result<()> {
+    use std::sync::{Arc, Mutex};
+    use tvm::tvm_ffi::{structural_map, DefRegionKind, ObjectCore};
+
+    load_tvm_compiler();
+    let original = Var::new("original", "int32")?;
+    let replacement = Var::new("replacement", "int32")?;
+    let function = PrimFunc::new(
+        vec![original.clone()],
+        Evaluate::new(Add::new(original.clone(), original.clone())?)?,
+    )?;
+
+    for (order, native_order) in [(WalkOrder::PreOrder, 0_i64), (WalkOrder::PostOrder, 1)] {
+        let mut regions = Vec::new();
+        let rust: PrimFunc = structural_map(
+            function.clone(),
+            |value: Var, kind: DefRegionKind| {
+                assert!(value.same_as(&original));
+                regions.push(kind);
+                replacement.clone()
+            },
+            order,
+        )?
+        .try_into()?;
+
+        let native_regions = Arc::new(Mutex::new(Vec::new()));
+        let records = native_regions.clone();
+        let native_replacement = replacement.clone();
+        let callback = Function::from_typed(move |_: Var, kind: i64| -> Result<Var> {
+            records.lock().unwrap().push(kind);
+            Ok(native_replacement.clone())
+        });
+        let entry = Array::new(vec![
+            Any::from(tvm::ir::VarObj::type_index()),
+            Any::from(callback),
+        ]);
+        let native: PrimFunc = Function::get_global("ffi.StructuralMap")?
+            .call_tuple((
+                &function,
+                Array::<Any>::new(Vec::new()),
+                Array::new(vec![entry]),
+                native_order,
+            ))?
+            .try_into()?;
+
+        // A callback replacement is not cached for later uses of the variable.
+        assert_eq!(
+            regions,
+            [
+                DefRegionKind::Pattern,
+                DefRegionKind::None,
+                DefRegionKind::None
+            ]
+        );
+        assert_eq!(
+            *native_regions.lock().unwrap(),
+            regions.iter().map(|kind| *kind as i64).collect::<Vec<_>>()
+        );
+        assert_structural_equal(&rust, &native);
+        assert!(rust.params.get(0)?.same_as(&replacement));
+        let body = rust.body().as_node::<EvaluateObj>().unwrap();
+        let addition = body.value.as_node::<tvm::prim::AddObj>().unwrap();
+        assert!(addition.a.same_as(&replacement));
+        assert!(addition.b.same_as(&replacement));
+        assert!(function.params.get(0)?.same_as(&original));
+    }
+    Ok(())
+}
+
+#[test]
 fn buffer_bindings_round_trip_cpp_objects() {
     load_tvm_compiler();
 

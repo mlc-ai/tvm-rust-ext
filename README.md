@@ -146,11 +146,10 @@ passes using structural equality.
 
 ### Scope and remaining gaps
 
-Coverage is compared with TVM `5398c27e76` (TIRx #20386),
-built with tvm-ffi `daf594da8e6950fdc02ae35fcf4e0ab2e59a4979`.
-The Rust crate remains pinned to apache/tvm-ffi
-`b02536e4f3804e2e41dacf2ad2d52da805f46d90`; the tested Python runtime is
-`apache-tvm-ffi 0.1.14.post0`. Bindings use the current `prim.*` and `sym.*`
+Coverage is compared with TVM `5398c27e76c7c858d7fae655496e68b297fc99fc` (TIRx #20386).
+The native TVM build, Rust crate, and Python package use apache/tvm-ffi
+`54382cf123ae1b41221d52c9d36b2a0609767d61` (main as of 2026-09-21).
+Bindings use the current `prim.*` and `sym.*`
 registries, generic `ir.TensorRegion`, and the reflected BigInt literal layout.
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
 All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
@@ -158,6 +157,10 @@ All concrete statement nodes in `tirx/stmt.h` except `SBlock` and
 types and accesses, layouts, and tile-dispatch metadata are also represented;
 this does not mean every native method or convenience constructor is exposed.
 
+- `IntImm.value` retains a native BigInt payload through `Any`; tvm-ffi's Rust
+  binding has no typed BigInt API yet. The decimal and checked conversion
+  helpers do not make the passes arbitrary-precision implementations:
+  `value_i64()` still panics on a literal outside the signed 64-bit range.
 - `Ramp`, `Broadcast`, and `Shuffle` expose Rust `new` constructors with native
   lane normalization and result-type rules. Expression mutation uses these
   constructors when children change, so vector types are recomputed too.
@@ -247,13 +250,23 @@ semantic constructors, `copy_with` rebuilds, the typed views (`PrimExpr`,
 to the blocks, and the passes under `src/transform` consume the generated
 types directly; they changed only where a reflected field is spelled
 differently (`Ramp.base_`, `TupleGetItem.tuple_value`).  `te`, `target`,
-`arith`, and the pass infrastructure (`transform.Pass`, the
+`sym`, and the pass infrastructure (`transform.Pass`, the
 `tirx.transform.*Config` objects) remain hand-written.  See
 [Generated bindings](#generated-bindings) for the regeneration command, the
 directive set, and the remaining generator gaps, and
 [STUBGEN_FEEDBACK.md](STUBGEN_FEEDBACK.md) for the boundary between existing
 generator support and the target contract.  Reusable `RValueRef<T>` support is
 implemented and tested.
+
+The structural callbacks use the shared `StructuralView` borrowed view from
+current tvm-ffi; the former `MapValue` and `VisitValue` aliases were removed.
+Default mutation passes the current value explicitly to
+`Mutator::default_mutate(dispatch, value)`. These borrowed fallbacks rebuild
+changed nodes without granting in-place mutation permission.
+Map callbacks run at every occurrence of a node. Default descent and registered
+hooks handle definition/use remaps; a callback replacement is not automatically
+cached for later occurrences. Variable substitution therefore looks up its
+explicit replacement map on each callback.
 
 ## Building and testing
 
@@ -270,9 +283,8 @@ as packages:
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
 Use the exact TVM revision listed above and the tvm-ffi package pinned in
-`Cargo.toml` and `requirements.txt`. Build TVM with the compatible FFI headers
-listed in `requirements.txt`; newer headers rename definition-region constants
-used by this TVM revision. The TVM revision
+`Cargo.toml` and `requirements.txt`. Build TVM with that same tvm-ffi revision
+so the native headers, Rust crate, and Python runtime agree. The TVM revision
 also determines the IR layouts, structural hooks, and definition-region field
 flags; matching only the tvm-ffi revision is not sufficient. Newer revisions
 must be checked with the binding-contract and pass-parity tests before updating
@@ -289,7 +301,7 @@ cargo test
 
 The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/prim.rs`,
 and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
-(apache/tvm-ffi `b02536e`, the rev pinned in `Cargo.toml`) from the installed
+(apache/tvm-ffi `54382cf`, the rev pinned in `Cargo.toml`) from the installed
 `libtvm_compiler.so`.  Each file opens with a `prefix` directive
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an

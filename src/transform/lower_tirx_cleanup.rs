@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, MapValue, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore,
-    Result,
+    structural_mutate, Any, Array, Mutator, ObjectIdentity, ObjectRefCast, ObjectRefCore, Result,
+    StructuralView,
 };
 
 use super::utils::{get_operator, mutate_expr_default, mutate_stmt_expr_default};
@@ -424,7 +424,7 @@ impl LayoutApplier {
         )
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -534,7 +534,7 @@ impl BufferOffsetRemover {
         )
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

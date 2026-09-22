@@ -20,8 +20,8 @@
 use std::collections::{HashMap, HashSet};
 
 use tvm_ffi::{
-    structural_mutate, Any, Array, Function, Map, MapValue, Mutator, ObjectIdentity, ObjectRefCast,
-    ObjectRefCore, Result,
+    structural_mutate, Any, Array, Function, Map, Mutator, ObjectIdentity, ObjectRefCast,
+    ObjectRefCore, Result, StructuralView,
 };
 
 use super::utils::{
@@ -547,7 +547,7 @@ impl BufferFlattener {
         mutate_expr_default(self, mutator, value.into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

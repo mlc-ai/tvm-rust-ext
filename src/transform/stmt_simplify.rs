@@ -19,8 +19,8 @@
 
 use tvm_ffi::derive::{Object, ObjectRef};
 use tvm_ffi::{
-    structural_mutate, Any, Array, FieldGetter, Function, Map, MapValue, Mutator, ObjectArc,
-    ObjectCore, ObjectRefCast, ObjectRefCore, Result, String as FfiString,
+    structural_mutate, Any, Array, FieldGetter, Function, Map, Mutator, ObjectArc, ObjectCore,
+    ObjectRefCast, ObjectRefCore, Result, String as FfiString, StructuralView,
 };
 
 use super::utils::{
@@ -468,7 +468,7 @@ impl StmtSimplifier {
         super::utils::mutate_expr_default(self, mutator, value)
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }

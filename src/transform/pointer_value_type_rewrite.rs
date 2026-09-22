@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 
 use tvm_ffi::{
-    structural_mutate, structural_visit, Any, Array, DLDataType, DLDataTypeCode, MapValue, Mutator,
-    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue,
+    structural_mutate, structural_visit, Any, Array, DLDataType, DLDataTypeCode, Mutator,
+    ObjectIdentity, ObjectRefCast, ObjectRefCore, Result, StructuralView, VisitCallbacks,
+    VisitContext, VisitInterrupt,
 };
 
 use super::utils::{
@@ -522,7 +522,7 @@ fn check_binding(value: Bind, visitor: &mut VisitContext<'_, AccessChecker>) -> 
 }
 
 fn check_default(
-    value: &VisitValue,
+    value: &StructuralView,
     visitor: &mut VisitContext<'_, AccessChecker>,
 ) -> Result<Option<VisitInterrupt>> {
     visit_stmt_expr_default(visitor, value)
@@ -975,7 +975,7 @@ impl PointerVarSubstituter {
             .into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         super::utils::mutate_stmt_expr_default(self, mutator, value)
     }
 }
@@ -1168,7 +1168,7 @@ impl VectorTypeRewriter {
         Ok(value.copy_with(buffer, data).into())
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         super::utils::mutate_stmt_expr_default(self, mutator, value)
     }
 }

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use tvm_ffi::{structural_mutate, Any, MapValue, Mutator, ObjectRefCore, Result};
+use tvm_ffi::{structural_mutate, Any, Mutator, ObjectRefCore, Result, StructuralView};
 
 use super::utils::{mutate_stmt_expr_default, with_prim_func_body};
 use super::{create_prim_func_pass, remove_no_op, remove_no_op_prim_func, sequential, Pass};
@@ -76,7 +76,7 @@ impl AssumeRemover {
         Ok(value.copy_with(evaluated))
     }
 
-    fn mutate_default(&mut self, value: &MapValue, mutator: &mut Mutator) -> Result<Any> {
+    fn mutate_default(&mut self, value: &StructuralView, mutator: &mut Mutator) -> Result<Any> {
         mutate_stmt_expr_default(self, mutator, value)
     }
 }
