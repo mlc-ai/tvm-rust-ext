@@ -19,18 +19,19 @@
 
 use super::utils::{finish_constraint_contexts, int_value};
 use crate::analysis::Analyzer;
-use crate::ir::{CallObj, Expr, IntImm, PrimExpr};
-use crate::prim::{Add, AndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Mul, GE, LT};
+use crate::ir::{IntImm, PrimExpr};
+use crate::prim::{
+    Add, AndObj, BitwiseAndObj, EQObj, FloorDivObj, GEObj, GTObj, LEObj, LTObj, Mul, GE, LT,
+};
 use tvm_ffi::{Function, ObjectRefCore, Result};
 
 /// Enter the condition and the extra facts used by C++ IRMutatorWithAnalyzer.
 pub(super) fn enter_constraint_facts(
     analyzer: &Analyzer,
     condition: &PrimExpr,
-    bitwise_and_operator: &Expr,
 ) -> Result<Vec<Function>> {
     let mut constraints = vec![condition.clone()];
-    collect_derived_constraint_facts(condition, bitwise_and_operator, &mut constraints)?;
+    collect_derived_constraint_facts(condition, &mut constraints)?;
     let mut exits = Vec::with_capacity(constraints.len());
     for constraint in constraints {
         match analyzer.enter_constraint(&constraint) {
@@ -52,23 +53,18 @@ enum CompareKind {
 
 fn collect_derived_constraint_facts(
     condition: &PrimExpr,
-    bitwise_and_operator: &Expr,
     output: &mut Vec<PrimExpr>,
 ) -> Result<()> {
     if let Some(and) = condition.as_node::<AndObj>() {
-        collect_derived_constraint_facts(&and.a, bitwise_and_operator, output)?;
-        collect_derived_constraint_facts(&and.b, bitwise_and_operator, output)?;
+        collect_derived_constraint_facts(&and.a, output)?;
+        collect_derived_constraint_facts(&and.b, output)?;
         return Ok(());
     }
-    if let Some(call) = condition.as_node::<CallObj>() {
-        if call.op.same_as(bitwise_and_operator) && call.args.len() == 2 {
-            let lhs = PrimExpr::try_from(call.args.get(0).expect("two arguments are present"))?;
-            let rhs = PrimExpr::try_from(call.args.get(1).expect("two arguments are present"))?;
-            if is_bool8(&lhs) && is_bool8(&rhs) {
-                collect_derived_constraint_facts(&lhs, bitwise_and_operator, output)?;
-                collect_derived_constraint_facts(&rhs, bitwise_and_operator, output)?;
-                return Ok(());
-            }
+    if let Some(and) = condition.as_node::<BitwiseAndObj>() {
+        if is_bool8(&and.a) && is_bool8(&and.b) {
+            collect_derived_constraint_facts(&and.a, output)?;
+            collect_derived_constraint_facts(&and.b, output)?;
+            return Ok(());
         }
     }
 

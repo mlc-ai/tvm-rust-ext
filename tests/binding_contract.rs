@@ -356,6 +356,36 @@ fn covered_object_schemas_match_runtime_metadata() {
         ],
     );
 
+    assert_contract::<tvm::prim::LShiftObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<tvm::prim::RShiftObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<tvm::prim::BitwiseAndObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<tvm::prim::BitwiseOrObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<tvm::prim::BitwiseXorObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR), ("b", 0, SCHEMA_EXPR)],
+    );
+    assert_contract::<tvm::prim::BitwiseNotObj, ExprObj>(
+        true,
+        Some(Tree),
+        &[("a", 0, SCHEMA_EXPR)],
+    );
     assert_contract::<AddObj, ExprObj>(
         true,
         Some(Tree),

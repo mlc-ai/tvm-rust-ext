@@ -67,6 +67,17 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(field): prim.Or.a -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Or.b -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Not.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LShift.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LShift.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.RShift.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.RShift.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseOr.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseOr.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseXor.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseXor.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseNot.a -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Cast.value -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Ramp.base -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Ramp.stride -> PrimExpr
@@ -98,6 +109,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(field): prim.And.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Or.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Not.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.LShift.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.RShift.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseOr.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseXor.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseNot.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Cast.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Ramp.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Broadcast.ty -> PrimType
@@ -122,6 +139,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(upcast): prim.And -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Or -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Not -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.LShift -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.RShift -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseAnd -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseOr -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseXor -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseNot -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Cast -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Ramp -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Broadcast -> PrimExpr
@@ -146,6 +169,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(custom-new): prim.And
 // tvm-ffi-stubgen(custom-new): prim.Or
 // tvm-ffi-stubgen(custom-new): prim.Not
+// tvm-ffi-stubgen(custom-new): prim.LShift
+// tvm-ffi-stubgen(custom-new): prim.RShift
+// tvm-ffi-stubgen(custom-new): prim.BitwiseAnd
+// tvm-ffi-stubgen(custom-new): prim.BitwiseOr
+// tvm-ffi-stubgen(custom-new): prim.BitwiseXor
+// tvm-ffi-stubgen(custom-new): prim.BitwiseNot
 // tvm-ffi-stubgen(custom-new): prim.Cast
 // tvm-ffi-stubgen(custom-new): prim.Ramp
 // tvm-ffi-stubgen(custom-new): prim.Broadcast
@@ -1691,6 +1720,372 @@ impl Sub {
 tvm_ffi::impl_object_upcast!(Sub => Expr, Sub => PrimExpr);
 // tvm-ffi-stubgen(end)
 
+// tvm-ffi-stubgen(begin): object/prim.BitwiseAnd
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.BitwiseAnd"]
+#[type_final]
+pub struct BitwiseAndObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<BitwiseAndObj>() == 56);
+    assert!(::core::mem::align_of::<BitwiseAndObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct BitwiseAnd {
+    base: ObjectArc<BitwiseAndObj>,
+}
+
+impl Deref for BitwiseAnd {
+    type Target = BitwiseAndObj;
+    fn deref(&self) -> &BitwiseAndObj {
+        &self.base
+    }
+}
+
+impl Deref for BitwiseAndObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl BitwiseAndObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr, b: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a, b }
+    }
+}
+
+impl BitwiseAnd {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        let obj = BitwiseAndObj::new(span, ty, a, b);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(BitwiseAnd => Expr, BitwiseAnd => PrimExpr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/prim.BitwiseNot
+/// Complete: reflected fields fill [40, 48) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.BitwiseNot"]
+#[type_final]
+pub struct BitwiseNotObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<BitwiseNotObj>() == 48);
+    assert!(::core::mem::align_of::<BitwiseNotObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct BitwiseNot {
+    base: ObjectArc<BitwiseNotObj>,
+}
+
+impl Deref for BitwiseNot {
+    type Target = BitwiseNotObj;
+    fn deref(&self) -> &BitwiseNotObj {
+        &self.base
+    }
+}
+
+impl Deref for BitwiseNotObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl BitwiseNotObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a }
+    }
+}
+
+impl BitwiseNot {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(span: Option<Span>, ty: PrimType, a: PrimExpr) -> Self {
+        let obj = BitwiseNotObj::new(span, ty, a);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(BitwiseNot => Expr, BitwiseNot => PrimExpr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/prim.BitwiseOr
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.BitwiseOr"]
+#[type_final]
+pub struct BitwiseOrObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<BitwiseOrObj>() == 56);
+    assert!(::core::mem::align_of::<BitwiseOrObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct BitwiseOr {
+    base: ObjectArc<BitwiseOrObj>,
+}
+
+impl Deref for BitwiseOr {
+    type Target = BitwiseOrObj;
+    fn deref(&self) -> &BitwiseOrObj {
+        &self.base
+    }
+}
+
+impl Deref for BitwiseOrObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl BitwiseOrObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr, b: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a, b }
+    }
+}
+
+impl BitwiseOr {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        let obj = BitwiseOrObj::new(span, ty, a, b);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(BitwiseOr => Expr, BitwiseOr => PrimExpr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/prim.BitwiseXor
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.BitwiseXor"]
+#[type_final]
+pub struct BitwiseXorObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<BitwiseXorObj>() == 56);
+    assert!(::core::mem::align_of::<BitwiseXorObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct BitwiseXor {
+    base: ObjectArc<BitwiseXorObj>,
+}
+
+impl Deref for BitwiseXor {
+    type Target = BitwiseXorObj;
+    fn deref(&self) -> &BitwiseXorObj {
+        &self.base
+    }
+}
+
+impl Deref for BitwiseXorObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl BitwiseXorObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr, b: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a, b }
+    }
+}
+
+impl BitwiseXor {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        let obj = BitwiseXorObj::new(span, ty, a, b);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(BitwiseXor => Expr, BitwiseXor => PrimExpr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/prim.LShift
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.LShift"]
+#[type_final]
+pub struct LShiftObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<LShiftObj>() == 56);
+    assert!(::core::mem::align_of::<LShiftObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct LShift {
+    base: ObjectArc<LShiftObj>,
+}
+
+impl Deref for LShift {
+    type Target = LShiftObj;
+    fn deref(&self) -> &LShiftObj {
+        &self.base
+    }
+}
+
+impl Deref for LShiftObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl LShiftObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr, b: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a, b }
+    }
+}
+
+impl LShift {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        let obj = LShiftObj::new(span, ty, a, b);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(LShift => Expr, LShift => PrimExpr);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/prim.RShift
+/// Complete: reflected fields fill [40, 56) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "prim.RShift"]
+#[type_final]
+pub struct RShiftObj {
+    base: ExprObj,
+    pub a: PrimExpr,
+    pub b: PrimExpr,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<RShiftObj>() == 56);
+    assert!(::core::mem::align_of::<RShiftObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct RShift {
+    base: ObjectArc<RShiftObj>,
+}
+
+impl Deref for RShift {
+    type Target = RShiftObj;
+    fn deref(&self) -> &RShiftObj {
+        &self.base
+    }
+}
+
+impl Deref for RShiftObj {
+    type Target = ExprObj;
+    fn deref(&self) -> &ExprObj {
+        &self.base
+    }
+}
+
+impl RShiftObj {
+    pub(crate) fn new(span: Option<Span>, ty: PrimType, a: PrimExpr, b: PrimExpr) -> Self {
+        let base = ExprObj::new(span, ty.into());
+        Self { base, a, b }
+    }
+}
+
+impl RShift {
+    /// Lossless complete-field allocation.
+    pub fn from_complete_fields(
+        span: Option<Span>,
+        ty: PrimType,
+        a: PrimExpr,
+        b: PrimExpr,
+    ) -> Self {
+        let obj = RShiftObj::new(span, ty, a, b);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(RShift => Expr, RShift => PrimExpr);
+// tvm-ffi-stubgen(end)
+
 // ---------------------------------------------------------------------------
 // Hand-written semantics for the generated bindings above.  Lines outside the
 // `tvm-ffi-stubgen(begin)`/`(end)` blocks are kept verbatim by the generator,
@@ -1781,8 +2176,24 @@ mod semantic {
         Ok(lhs_type)
     }
 
+    fn bitwise_type(value: &Expr, allow_bool: bool) -> Result<PrimType> {
+        let ty = primitive_type(value, "bitwise operand")?;
+        let code = ty.dtype.code;
+        if code != DLDataTypeCode::kDLInt as u8
+            && code != DLDataTypeCode::kDLUInt as u8
+            && !(allow_bool && code == DLDataTypeCode::kDLBool as u8)
+        {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "bitwise operand must have an integer type",
+                "",
+            ));
+        }
+        Ok(ty)
+    }
+
     macro_rules! define_binary_expression {
-        ($reference:ident) => {
+        ($reference:ident $(, bitwise($allow_bool:literal))?) => {
             impl $reference {
                 /// Construct the binary expression directly in Rust.
                 pub fn new<L, R>(lhs: L, rhs: R) -> Result<Self>
@@ -1802,6 +2213,7 @@ mod semantic {
                     let lhs = lhs.into();
                     let rhs = rhs.into();
                     let result_type = matching_binary_type(&lhs, &rhs)?;
+                    $(bitwise_type(&lhs, $allow_bool)?;)?
                     let lhs = PrimExpr::try_from(lhs)?;
                     let rhs = PrimExpr::try_from(rhs)?;
                     Ok(Self::from_complete_fields(
@@ -1833,6 +2245,31 @@ mod semantic {
     define_binary_expression!(FloorMod);
     define_binary_expression!(Min);
     define_binary_expression!(Max);
+    define_binary_expression!(LShift, bitwise(false));
+    define_binary_expression!(RShift, bitwise(false));
+    define_binary_expression!(BitwiseAnd, bitwise(true));
+    define_binary_expression!(BitwiseOr, bitwise(true));
+    define_binary_expression!(BitwiseXor, bitwise(true));
+
+    impl BitwiseNot {
+        pub fn new<A: Into<Expr>>(value: A) -> Result<Self> {
+            Self::with_span(value, None)
+        }
+
+        pub fn with_span<A: Into<Expr>>(value: A, span: Option<&Span>) -> Result<Self> {
+            let value = value.into();
+            let ty = bitwise_type(&value, true)?;
+            Ok(Self::from_complete_fields(
+                span.cloned(),
+                ty,
+                PrimExpr::try_from(value)?,
+            ))
+        }
+
+        pub fn copy_with(&self, a: PrimExpr) -> Self {
+            Self::from_complete_fields(self.span.clone(), a.type_annotation(), a)
+        }
+    }
 
     impl EQ {
         /// Construct an equality comparison directly in Rust.

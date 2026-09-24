@@ -735,10 +735,13 @@ impl KernelLaunchRewriter<'_> {
                 primitive
             }
         };
-        Ok(Call::new(
-            return_type,
-            get_operator("tirx.tvm_call_packed")?,
-            arguments,
+        Ok(Call::from_complete_fields(
+            value.span.clone(),
+            return_type.into(),
+            get_operator("tirx.call_ffi_kernel")?,
+            Array::new(arguments),
+            Some(crate::tirx::CallFFIKernelAttr::new(info.launch_parameters.clone()).into()),
+            Array::default(),
         )
         .into())
     }

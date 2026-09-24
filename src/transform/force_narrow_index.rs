@@ -33,8 +33,8 @@ use super::{create_prim_func_pass, Pass};
 use crate::ir::TensorRegion;
 use crate::ir::{Call, Expr, IntImm, PrimExpr, PrimType, PrimTypeObj, Range, TensorLoad, Var};
 use crate::prim::{
-    Add, Cast, Div, FloorDiv, FloorMod, Let, Max, Min, Mod, Mul, Ramp, Select, Sub, EQ, GE, GT, LE,
-    LT, NE,
+    Add, BitwiseAnd, BitwiseNot, BitwiseOr, BitwiseXor, Cast, Div, FloorDiv, FloorMod, LShift, Let,
+    Max, Min, Mod, Mul, RShift, Ramp, Select, Sub, EQ, GE, GT, LE, LT, NE,
 };
 use crate::tirx::{
     AllocBuffer, AttrStmt, Bind, BufferStore, BufferVar, For, IfThenElse, IterVar, PrimFunc, Stmt,
@@ -117,11 +117,6 @@ pub(super) struct IndexDataTypeNormalizer {
     var_remap: HashMap<ObjectIdentity, Var>,
     buffer_remaps: BufferRemaps,
     iter_var_remap: HashMap<ObjectIdentity, IterVar>,
-    shift_right_operator: Expr,
-    shift_left_operator: Expr,
-    bitwise_and_operator: Expr,
-    bitwise_or_operator: Expr,
-    bitwise_xor_operator: Expr,
     pow_operator: Expr,
     clz_operator: Expr,
     if_then_else_operator: Expr,
@@ -137,11 +132,6 @@ impl IndexDataTypeNormalizer {
             var_remap: HashMap::new(),
             buffer_remaps: BufferRemaps::default(),
             iter_var_remap: HashMap::new(),
-            shift_right_operator: get_operator("prim.shift_right")?,
-            shift_left_operator: get_operator("prim.shift_left")?,
-            bitwise_and_operator: get_operator("prim.bitwise_and")?,
-            bitwise_or_operator: get_operator("prim.bitwise_or")?,
-            bitwise_xor_operator: get_operator("prim.bitwise_xor")?,
             pow_operator: get_operator("tirx.pow")?,
             clz_operator: get_operator("prim.clz")?,
             if_then_else_operator: get_operator("prim.if_then_else")?,
@@ -250,6 +240,28 @@ impl IndexDataTypeNormalizer {
             })();
             self.enabled = old_enabled;
             (a, b) = result?;
+        }
+        binary_op(operator, a, b)
+    }
+
+    fn mutate_shift(
+        &mut self,
+        mutator: &mut Mutator,
+        original_a: &PrimExpr,
+        original_b: &PrimExpr,
+        operator: &str,
+    ) -> Result<PrimExpr> {
+        let a: PrimExpr = mutator.mutate(self, original_a)?.try_into()?;
+        let mut b: PrimExpr = mutator.mutate(self, original_b)?.try_into()?;
+        if is_signed_integer(original_a.dtype())
+            && is_signed_integer(a.dtype())
+            && original_a.dtype().bits > a.dtype().bits
+        {
+            b = binary_op(
+                "prim._OpMin",
+                b.clone(),
+                IntImm::from_dtype(b.dtype(), i64::from(a.dtype().bits) - 1)?.into(),
+            )?;
         }
         binary_op(operator, a, b)
     }
@@ -368,6 +380,31 @@ impl IndexDataTypeNormalizer {
         } else {
             mutate_expr_default(self, mutator, value.into()).and_then(PrimExpr::try_from)
         }
+    }
+
+    fn mutate_bitwise_and(&mut self, value: BitwiseAnd, mutator: &mut Mutator) -> Result<PrimExpr> {
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim.bitwise_and")
+    }
+
+    fn mutate_bitwise_or(&mut self, value: BitwiseOr, mutator: &mut Mutator) -> Result<PrimExpr> {
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim.bitwise_or")
+    }
+
+    fn mutate_bitwise_xor(&mut self, value: BitwiseXor, mutator: &mut Mutator) -> Result<PrimExpr> {
+        self.mutate_binary(mutator, &value.a, &value.b, &value, "prim.bitwise_xor")
+    }
+
+    fn mutate_left_shift(&mut self, value: LShift, mutator: &mut Mutator) -> Result<PrimExpr> {
+        self.mutate_shift(mutator, &value.a, &value.b, "prim.left_shift")
+    }
+
+    fn mutate_right_shift(&mut self, value: RShift, mutator: &mut Mutator) -> Result<PrimExpr> {
+        self.mutate_shift(mutator, &value.a, &value.b, "prim.right_shift")
+    }
+
+    fn mutate_bitwise_not(&mut self, value: BitwiseNot, mutator: &mut Mutator) -> Result<PrimExpr> {
+        let a: PrimExpr = mutator.mutate(self, &value.a)?.try_into()?;
+        Ok(value.copy_with(a).into())
     }
 
     fn mutate_add(&mut self, value: Add, mutator: &mut Mutator) -> Result<PrimExpr> {
@@ -723,46 +760,18 @@ impl IndexDataTypeNormalizer {
         if !is_primitive_type(&call.ty) {
             return Ok(expression);
         }
-        let is_shift = call.op.same_as(&self.shift_right_operator)
-            || call.op.same_as(&self.shift_left_operator);
-        let is_binary = is_shift
-            || call.op.same_as(&self.bitwise_and_operator)
-            || call.op.same_as(&self.bitwise_or_operator)
-            || call.op.same_as(&self.bitwise_xor_operator)
-            || call.op.same_as(&self.pow_operator);
+        let is_binary = call.op.same_as(&self.pow_operator);
         let is_clz = call.op.same_as(&self.clz_operator);
         if (!is_binary && !is_clz) || call.args.len() < if is_binary { 2 } else { 1 } {
             return Ok(expression);
         }
         let lhs = PrimExpr::try_from(call.args.get(0)?)?;
-        let mut rhs = if is_binary {
+        let rhs = if is_binary {
             Some(PrimExpr::try_from(call.args.get(1)?)?)
         } else {
             None
         };
-        if is_shift
-            && before_lhs_type.as_ref().is_some_and(|before| {
-                is_signed_integer(before.dtype)
-                    && is_signed_integer(lhs.dtype())
-                    && before.dtype.bits > lhs.dtype().bits
-            })
-        {
-            let rhs_value = rhs.take().expect("binary call must have a right operand");
-            let limit = IntImm::from_dtype(rhs_value.dtype(), i64::from(lhs.dtype().bits) - 1)?;
-            let rhs_value: PrimExpr = Min::new(rhs_value, limit)?.into();
-            return Ok(Call::new(
-                lhs.type_annotation(),
-                call.op.clone(),
-                vec![lhs.into(), rhs_value.into()],
-            )
-            .into());
-        }
-        if is_shift
-            || call.op.same_as(&self.bitwise_and_operator)
-            || call.op.same_as(&self.bitwise_or_operator)
-            || call.op.same_as(&self.bitwise_xor_operator)
-            || call.op.same_as(&self.pow_operator)
-        {
+        if is_binary {
             return Ok(Call::new(
                 lhs.type_annotation(),
                 call.op.clone(),

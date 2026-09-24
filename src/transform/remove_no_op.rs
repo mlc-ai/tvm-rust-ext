@@ -142,7 +142,6 @@ struct NoOpRemover {
     buffer_remaps: BufferRemaps,
     likely_operator: Expr,
     if_then_else_operator: Expr,
-    bitwise_and_operator: Expr,
 }
 
 #[tvm_ffi::dispatch(mutate)]
@@ -553,7 +552,6 @@ impl NoOpRemover {
             buffer_remaps: BufferRemaps::default(),
             likely_operator: get_operator("prim.likely")?,
             if_then_else_operator: get_operator("prim.if_then_else")?,
-            bitwise_and_operator: get_operator("prim.bitwise_and")?,
         })
     }
 
@@ -651,11 +649,7 @@ fn mutate_under_constraint_with_facts<T>(
 where
     T: AnyCompatible + TryFrom<Any, Error = tvm_ffi::Error>,
 {
-    let exits = super::analyzer_constraints::enter_constraint_facts(
-        &remover.analyzer,
-        constraint,
-        &remover.bitwise_and_operator,
-    )?;
+    let exits = super::analyzer_constraints::enter_constraint_facts(&remover.analyzer, constraint)?;
     let result = mutator.mutate(remover, value).and_then(T::try_from);
     finish_constraint_contexts(result, exits)
 }
