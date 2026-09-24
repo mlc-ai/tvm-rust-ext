@@ -28,35 +28,6 @@ pub(crate) use semantic::primitive_type;
 
 // Every object registered under `prim` gets its block in this file; `skip` leaves one out.
 // tvm-ffi-stubgen(prefix): prim
-// tvm-ffi-stubgen(field): prim.LShift.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.LShift.b -> PrimExpr
-// tvm-ffi-stubgen(field): prim.LShift.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.LShift -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.LShift
-// tvm-ffi-stubgen(field): prim.RShift.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.RShift.b -> PrimExpr
-// tvm-ffi-stubgen(field): prim.RShift.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.RShift -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.RShift
-// tvm-ffi-stubgen(field): prim.BitwiseAnd.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseAnd.b -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseAnd.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.BitwiseAnd -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.BitwiseAnd
-// tvm-ffi-stubgen(field): prim.BitwiseOr.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseOr.b -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseOr.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.BitwiseOr -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.BitwiseOr
-// tvm-ffi-stubgen(field): prim.BitwiseXor.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseXor.b -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseXor.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.BitwiseXor -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.BitwiseXor
-// tvm-ffi-stubgen(field): prim.BitwiseNot.a -> PrimExpr
-// tvm-ffi-stubgen(field): prim.BitwiseNot.ty -> PrimType
-// tvm-ffi-stubgen(upcast): prim.BitwiseNot -> PrimExpr
-// tvm-ffi-stubgen(custom-new): prim.BitwiseNot
 // Hand-maintained directives; tvm-ffi-stubgen applies them on every run.
 // tvm-ffi-stubgen(import-object): crate::ir::PrimExpr
 // tvm-ffi-stubgen(import-object): crate::ir::PrimType
@@ -96,6 +67,17 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(field): prim.Or.a -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Or.b -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Not.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LShift.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.LShift.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.RShift.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.RShift.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseOr.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseOr.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseXor.a -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseXor.b -> PrimExpr
+// tvm-ffi-stubgen(field): prim.BitwiseNot.a -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Cast.value -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Ramp.base -> PrimExpr
 // tvm-ffi-stubgen(field): prim.Ramp.stride -> PrimExpr
@@ -127,6 +109,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(field): prim.And.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Or.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Not.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.LShift.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.RShift.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseAnd.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseOr.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseXor.ty -> PrimType
+// tvm-ffi-stubgen(field): prim.BitwiseNot.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Cast.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Ramp.ty -> PrimType
 // tvm-ffi-stubgen(field): prim.Broadcast.ty -> PrimType
@@ -151,6 +139,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(upcast): prim.And -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Or -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Not -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.LShift -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.RShift -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseAnd -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseOr -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseXor -> PrimExpr
+// tvm-ffi-stubgen(upcast): prim.BitwiseNot -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Cast -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Ramp -> PrimExpr
 // tvm-ffi-stubgen(upcast): prim.Broadcast -> PrimExpr
@@ -175,6 +169,12 @@ pub(crate) use semantic::primitive_type;
 // tvm-ffi-stubgen(custom-new): prim.And
 // tvm-ffi-stubgen(custom-new): prim.Or
 // tvm-ffi-stubgen(custom-new): prim.Not
+// tvm-ffi-stubgen(custom-new): prim.LShift
+// tvm-ffi-stubgen(custom-new): prim.RShift
+// tvm-ffi-stubgen(custom-new): prim.BitwiseAnd
+// tvm-ffi-stubgen(custom-new): prim.BitwiseOr
+// tvm-ffi-stubgen(custom-new): prim.BitwiseXor
+// tvm-ffi-stubgen(custom-new): prim.BitwiseNot
 // tvm-ffi-stubgen(custom-new): prim.Cast
 // tvm-ffi-stubgen(custom-new): prim.Ramp
 // tvm-ffi-stubgen(custom-new): prim.Broadcast
@@ -2176,6 +2176,22 @@ mod semantic {
         Ok(lhs_type)
     }
 
+    fn bitwise_type(value: &Expr, allow_bool: bool) -> Result<PrimType> {
+        let ty = primitive_type(value, "bitwise operand")?;
+        let code = ty.dtype.code;
+        if code != DLDataTypeCode::kDLInt as u8
+            && code != DLDataTypeCode::kDLUInt as u8
+            && !(allow_bool && code == DLDataTypeCode::kDLBool as u8)
+        {
+            return Err(Error::new(
+                TYPE_ERROR,
+                "bitwise operand must have an integer type",
+                "",
+            ));
+        }
+        Ok(ty)
+    }
+
     macro_rules! define_binary_expression {
         ($reference:ident $(, bitwise($allow_bool:literal))?) => {
             impl $reference {
@@ -2229,23 +2245,6 @@ mod semantic {
     define_binary_expression!(FloorMod);
     define_binary_expression!(Min);
     define_binary_expression!(Max);
-
-    fn bitwise_type(value: &Expr, allow_bool: bool) -> Result<PrimType> {
-        let ty = primitive_type(value, "bitwise operand")?;
-        let code = ty.dtype.code;
-        if code != DLDataTypeCode::kDLInt as u8
-            && code != DLDataTypeCode::kDLUInt as u8
-            && !(allow_bool && code == DLDataTypeCode::kDLBool as u8)
-        {
-            return Err(Error::new(
-                TYPE_ERROR,
-                "bitwise operand must have an integer type",
-                "",
-            ));
-        }
-        Ok(ty)
-    }
-
     define_binary_expression!(LShift, bitwise(false));
     define_binary_expression!(RShift, bitwise(false));
     define_binary_expression!(BitwiseAnd, bitwise(true));
