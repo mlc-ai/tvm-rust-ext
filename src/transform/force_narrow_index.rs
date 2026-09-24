@@ -244,6 +244,28 @@ impl IndexDataTypeNormalizer {
         binary_op(operator, a, b)
     }
 
+    fn mutate_shift(
+        &mut self,
+        mutator: &mut Mutator,
+        original_a: &PrimExpr,
+        original_b: &PrimExpr,
+        operator: &str,
+    ) -> Result<PrimExpr> {
+        let a: PrimExpr = mutator.mutate(self, original_a)?.try_into()?;
+        let mut b: PrimExpr = mutator.mutate(self, original_b)?.try_into()?;
+        if is_signed_integer(original_a.dtype())
+            && is_signed_integer(a.dtype())
+            && original_a.dtype().bits > a.dtype().bits
+        {
+            b = binary_op(
+                "prim._OpMin",
+                b.clone(),
+                IntImm::from_dtype(b.dtype(), i64::from(a.dtype().bits) - 1)?.into(),
+            )?;
+        }
+        binary_op(operator, a, b)
+    }
+
     fn mutate_comparison<T>(
         &mut self,
         mutator: &mut Mutator,
@@ -373,35 +395,11 @@ impl IndexDataTypeNormalizer {
     }
 
     fn mutate_left_shift(&mut self, value: LShift, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let a: PrimExpr = mutator.mutate(self, &value.a)?.try_into()?;
-        let mut b: PrimExpr = mutator.mutate(self, &value.b)?.try_into()?;
-        if is_signed_integer(value.a.dtype())
-            && is_signed_integer(a.dtype())
-            && value.a.dtype().bits > a.dtype().bits
-        {
-            b = binary_op(
-                "prim._OpMin",
-                b.clone(),
-                IntImm::from_dtype(b.dtype(), i64::from(a.dtype().bits) - 1)?.into(),
-            )?;
-        }
-        binary_op("prim.left_shift", a, b)
+        self.mutate_shift(mutator, &value.a, &value.b, "prim.left_shift")
     }
 
     fn mutate_right_shift(&mut self, value: RShift, mutator: &mut Mutator) -> Result<PrimExpr> {
-        let a: PrimExpr = mutator.mutate(self, &value.a)?.try_into()?;
-        let mut b: PrimExpr = mutator.mutate(self, &value.b)?.try_into()?;
-        if is_signed_integer(value.a.dtype())
-            && is_signed_integer(a.dtype())
-            && value.a.dtype().bits > a.dtype().bits
-        {
-            b = binary_op(
-                "prim._OpMin",
-                b.clone(),
-                IntImm::from_dtype(b.dtype(), i64::from(a.dtype().bits) - 1)?.into(),
-            )?;
-        }
-        binary_op("prim.right_shift", a, b)
+        self.mutate_shift(mutator, &value.a, &value.b, "prim.right_shift")
     }
 
     fn mutate_bitwise_not(&mut self, value: BitwiseNot, mutator: &mut Mutator) -> Result<PrimExpr> {

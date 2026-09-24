@@ -146,9 +146,10 @@ passes using structural equality.
 
 ### Scope and remaining gaps
 
-Coverage is compared with TVM `5398c27e76c7c858d7fae655496e68b297fc99fc` (TIRx #20386).
-The native TVM build, Rust crate, and Python package use apache/tvm-ffi
-`54382cf123ae1b41221d52c9d36b2a0609767d61` (main as of 2026-09-21).
+Coverage is validated against the TVM and tvm-ffi wheels pinned in
+[`requirements.txt`](requirements.txt). The Rust FFI crate is pinned separately
+in [`Cargo.toml`](Cargo.toml); binding-contract and pass-parity tests validate
+their compatibility.
 Bindings use the current `prim.*` and `sym.*`
 registries, generic `ir.TensorRegion`, and the reflected BigInt literal layout.
 The scope is TIRx without Relax, SBlock, scheduling, or script-builder APIs.
@@ -282,8 +283,7 @@ as packages:
   executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
-The supported environment uses `apache-tvm==0.27.0rc1` and
-`apache-tvm-ffi==0.1.14.post0` from PyPI:
+Install the supported wheel environment from [`requirements.txt`](requirements.txt):
 
 ```bash
 python -m pip install -r requirements.txt
@@ -292,8 +292,7 @@ python -m pip install -r requirements.txt
 The Rust FFI crate remains pinned in `Cargo.toml`; its ABI is validated against
 these wheels. TVM also determines the IR layouts, structural hooks, and
 field flags, so newer wheels must pass the binding-contract and pass-parity
-tests before updating
-these pins. Any Python environment works (venv,
+tests before updating these pins. Any Python environment works (venv,
 uv, conda, system site-packages); the only requirements are that
 `tvm-ffi-config` and `python`/`python3` of that environment are on `PATH` (or
 `TVM_PYTHON` names the interpreter).  With such an environment active:
@@ -306,8 +305,8 @@ cargo test
 
 The `tvm-ffi-stubgen(begin)`/`(end)` blocks in `src/ir.rs`, `src/prim.rs`,
 and `src/tirx.rs` are emitted by the Rust backend of `tvm-ffi-stubgen`
-(apache/tvm-ffi `54382cf`, the rev pinned in `Cargo.toml`) from the installed
-`libtvm_compiler.so`.  Each file opens with a `prefix` directive
+from the pinned Python environment and its installed `libtvm_compiler.so`.
+Each file opens with a `prefix` directive
 (`// tvm-ffi-stubgen(prefix): tirx`), which makes it own that registry
 namespace: every object registered directly under the prefix gets an
 `object/<type_key>` block on the next run, a `skip` line leaves one out

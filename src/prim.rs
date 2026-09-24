@@ -2177,7 +2177,7 @@ mod semantic {
     }
 
     macro_rules! define_binary_expression {
-        ($reference:ident) => {
+        ($reference:ident $(, bitwise($allow_bool:literal))?) => {
             impl $reference {
                 /// Construct the binary expression directly in Rust.
                 pub fn new<L, R>(lhs: L, rhs: R) -> Result<Self>
@@ -2197,6 +2197,7 @@ mod semantic {
                     let lhs = lhs.into();
                     let rhs = rhs.into();
                     let result_type = matching_binary_type(&lhs, &rhs)?;
+                    $(bitwise_type(&lhs, $allow_bool)?;)?
                     let lhs = PrimExpr::try_from(lhs)?;
                     let rhs = PrimExpr::try_from(rhs)?;
                     Ok(Self::from_complete_fields(
@@ -2245,43 +2246,11 @@ mod semantic {
         Ok(ty)
     }
 
-    macro_rules! define_bitwise_expression {
-        ($reference:ident, $allow_bool:literal) => {
-            impl $reference {
-                pub fn new<L: Into<Expr>, R: Into<Expr>>(lhs: L, rhs: R) -> Result<Self> {
-                    Self::with_span(lhs, rhs, None)
-                }
-
-                pub fn with_span<L: Into<Expr>, R: Into<Expr>>(
-                    lhs: L,
-                    rhs: R,
-                    span: Option<&Span>,
-                ) -> Result<Self> {
-                    let lhs = lhs.into();
-                    let rhs = rhs.into();
-                    let ty = matching_binary_type(&lhs, &rhs)?;
-                    bitwise_type(&lhs, $allow_bool)?;
-                    Ok(Self::from_complete_fields(
-                        span.cloned(),
-                        ty,
-                        PrimExpr::try_from(lhs)?,
-                        PrimExpr::try_from(rhs)?,
-                    ))
-                }
-
-                /// Rebuild with new operands, retaining the source span.
-                pub fn copy_with(&self, a: PrimExpr, b: PrimExpr) -> Self {
-                    Self::from_complete_fields(self.span.clone(), a.type_annotation(), a, b)
-                }
-            }
-        };
-    }
-
-    define_bitwise_expression!(LShift, false);
-    define_bitwise_expression!(RShift, false);
-    define_bitwise_expression!(BitwiseAnd, true);
-    define_bitwise_expression!(BitwiseOr, true);
-    define_bitwise_expression!(BitwiseXor, true);
+    define_binary_expression!(LShift, bitwise(false));
+    define_binary_expression!(RShift, bitwise(false));
+    define_binary_expression!(BitwiseAnd, bitwise(true));
+    define_binary_expression!(BitwiseOr, bitwise(true));
+    define_binary_expression!(BitwiseXor, bitwise(true));
 
     impl BitwiseNot {
         pub fn new<A: Into<Expr>>(value: A) -> Result<Self> {
