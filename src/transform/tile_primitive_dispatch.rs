@@ -116,7 +116,6 @@ struct TileDispatcher {
     storage_roots: HashMap<ObjectIdentity, BufferVar>,
     device_depth: usize,
     filter_operator: Expr,
-    bitwise_and_operator: Expr,
     elect_sync_operator: Expr,
     selector_operator: Expr,
 }
@@ -140,7 +139,6 @@ impl TileDispatcher {
             storage_roots: HashMap::new(),
             device_depth: 0,
             filter_operator: get_operator("tirx.filter")?,
-            bitwise_and_operator: get_operator("prim.bitwise_and")?,
             elect_sync_operator: get_operator("tirx.cuda.elect_sync")?,
             selector_operator: get_operator("tirx.selector")?,
         })
@@ -649,7 +647,9 @@ impl TileDispatcher {
         if self.execution_contexts.is_empty() {
             return Ok(0);
         }
-        if predicate.as_node::<AndObj>().is_some() || self.bitwise_and_call(predicate).is_some() {
+        if predicate.as_node::<AndObj>().is_some()
+            || predicate.as_node::<crate::prim::BitwiseAndObj>().is_some()
+        {
             return self.push_conjunction(predicate);
         }
         if let Some(call) = self.filter_call(predicate) {
@@ -837,9 +837,9 @@ impl TileDispatcher {
         if let Some(and) = predicate.as_node::<AndObj>() {
             self.flatten_conjunction(&and.a, terms)?;
             self.flatten_conjunction(&and.b, terms)?;
-        } else if let Some(call) = self.bitwise_and_call(predicate) {
-            self.flatten_conjunction(&PrimExpr::try_from(call.args.get(0)?)?, terms)?;
-            self.flatten_conjunction(&PrimExpr::try_from(call.args.get(1)?)?, terms)?;
+        } else if let Some(and) = predicate.as_node::<crate::prim::BitwiseAndObj>() {
+            self.flatten_conjunction(&and.a, terms)?;
+            self.flatten_conjunction(&and.b, terms)?;
         } else {
             terms.push(predicate.clone());
         }
@@ -849,11 +849,6 @@ impl TileDispatcher {
     fn filter_call<'a>(&self, predicate: &'a PrimExpr) -> Option<&'a CallObj> {
         let call = predicate.as_node::<CallObj>()?;
         (call.op.same_as(&self.filter_operator) && call.args.len() == 2).then_some(call)
-    }
-
-    fn bitwise_and_call<'a>(&self, predicate: &'a PrimExpr) -> Option<&'a CallObj> {
-        let call = predicate.as_node::<CallObj>()?;
-        (call.op.same_as(&self.bitwise_and_operator) && call.args.len() == 2).then_some(call)
     }
 
     fn push_filter_context(&mut self, call: &CallObj) -> Result<usize> {

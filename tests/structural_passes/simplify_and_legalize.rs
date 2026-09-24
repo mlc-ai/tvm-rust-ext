@@ -168,16 +168,12 @@ fn rust_stmt_simplify_matches_cpp_for_loop_constraints_and_redundant_store() {
 
 #[test]
 fn rust_stmt_simplify_matches_cpp_for_nested_expression_dispatch() -> Result<()> {
-    use tvm::ir::{Op, Tuple, TupleGetItem};
+    use tvm::ir::{Tuple, TupleGetItem};
 
     load_tvm_compiler();
     let sum: Expr = Add::new(int_expression(1), int_expression(2))?.into();
     let tuple = Tuple::new(vec![sum.clone(), Tuple::new(vec![sum]).into()]);
-    let call = Call::new(
-        PrimType::new("int32")?,
-        Op::get("prim.shift_left")?,
-        vec![int_expression(3), int_expression(1)],
-    );
+    let call = tvm::prim::LShift::new(int_expression(3), int_expression(1))?;
     let body = SeqStmt::new(vec![
         Evaluate::new(tuple.clone())?.into(),
         Evaluate::new(TupleGetItem::new(tuple, 0)?)?.into(),
@@ -557,7 +553,9 @@ fn rust_narrow_data_type_matches_cpp_for_ranges_and_shared_uses() -> Result<()> 
 
 #[test]
 fn rust_index_narrowing_matches_cpp_for_arithmetic_rebuilding() -> Result<()> {
-    use tvm::prim::{Div, Max, Min, Mod, Sub};
+    use tvm::prim::{
+        BitwiseAnd, BitwiseNot, BitwiseOr, BitwiseXor, Div, LShift, Max, Min, Mod, RShift, Sub,
+    };
 
     load_tvm_compiler();
     let index = Var::new("i", "int64")?;
@@ -573,6 +571,12 @@ fn rust_index_narrowing_matches_cpp_for_arithmetic_rebuilding() -> Result<()> {
         FloorMod::new(&index, &one)?.into(),
         Min::new(&index, &index)?.into(),
         Max::new(&index, &index)?.into(),
+        BitwiseAnd::new(&index, &one)?.into(),
+        BitwiseOr::new(&index, &one)?.into(),
+        BitwiseXor::new(&index, &one)?.into(),
+        BitwiseNot::new(&index)?.into(),
+        LShift::new(&index, &one)?.into(),
+        RShift::new(&index, &one)?.into(),
         EQ::new(&index, &one)?.into(),
         NE::new(&index, &one)?.into(),
         LT::new(&index, &one)?.into(),

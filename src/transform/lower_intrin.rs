@@ -102,7 +102,6 @@ struct IntrinInjecter {
     address_of_operator: Expr,
     fma_operator: Expr,
     floor_operator: Expr,
-    bitwise_and_operator: Expr,
     likely_operator: Expr,
     if_then_else_operator: Expr,
 }
@@ -159,7 +158,6 @@ impl IntrinInjecter {
             address_of_operator: get_operator("tirx.address_of")?,
             fma_operator,
             floor_operator: get_operator("tirx.floor")?,
-            bitwise_and_operator: get_operator("prim.bitwise_and")?,
             likely_operator: get_operator("prim.likely")?,
             if_then_else_operator: get_operator("prim.if_then_else")?,
         })
@@ -189,11 +187,8 @@ impl IntrinInjecter {
         operation: impl FnOnce(&mut Self) -> Result<T>,
     ) -> Result<T> {
         self.with_scope(|this| {
-            let exits = super::analyzer_constraints::enter_constraint_facts(
-                &this.analyzer,
-                condition,
-                &this.bitwise_and_operator,
-            )?;
+            let exits =
+                super::analyzer_constraints::enter_constraint_facts(&this.analyzer, condition)?;
             this.constraint_exits.extend(exits);
             operation(this)
         })

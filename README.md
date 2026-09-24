@@ -282,12 +282,17 @@ as packages:
   executables need no `LD_LIBRARY_PATH`.  `tvm::libinfo` resolves and loads the
   library at run time; the tests call `tvm::libinfo::load_compiler()`.
 
-Use the exact TVM revision listed above and the tvm-ffi package pinned in
-`Cargo.toml` and `requirements.txt`. Build TVM with that same tvm-ffi revision
-so the native headers, Rust crate, and Python runtime agree. The TVM revision
-also determines the IR layouts, structural hooks, and definition-region field
-flags; matching only the tvm-ffi revision is not sufficient. Newer revisions
-must be checked with the binding-contract and pass-parity tests before updating
+The supported environment uses `apache-tvm==0.27.0rc1` and
+`apache-tvm-ffi==0.1.14.post0` from PyPI:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The Rust FFI crate remains pinned in `Cargo.toml`; its ABI is validated against
+these wheels. TVM also determines the IR layouts, structural hooks, and
+field flags, so newer wheels must pass the binding-contract and pass-parity
+tests before updating
 these pins. Any Python environment works (venv,
 uv, conda, system site-packages); the only requirements are that
 `tvm-ffi-config` and `python`/`python3` of that environment are on `PATH` (or

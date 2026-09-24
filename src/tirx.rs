@@ -118,6 +118,8 @@ pub use tile_primitive::NativeMutableMap;
 // tvm-ffi-stubgen(custom-new): tirx.TilePrimitiveCall
 
 // tvm-ffi-stubgen(begin): import-section
+use super::ir::Attrs;
+use super::ir::AttrsObj;
 use super::ir::Expr;
 use super::ir::Op;
 use super::ir::PrimExprConvertible;
@@ -134,6 +136,7 @@ use crate::target::Target;
 use std::ops::Deref;
 use tvm_ffi::Any;
 use tvm_ffi::Array;
+use tvm_ffi::DLDataType;
 use tvm_ffi::Error;
 use tvm_ffi::FieldGetter;
 use tvm_ffi::Map;
@@ -2203,6 +2206,160 @@ impl TensorMapType {
 }
 
 tvm_ffi::impl_object_upcast!(TensorMapType => Type);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/tirx.CallFFIKernelAttr
+/// Complete: reflected fields fill [24, 32) exactly.
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "tirx.CallFFIKernelAttr"]
+#[type_final]
+pub struct CallFFIKernelAttrObj {
+    base: AttrsObj,
+    pub launch_params: Array<String>,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<CallFFIKernelAttrObj>() == 32);
+    assert!(::core::mem::align_of::<CallFFIKernelAttrObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct CallFFIKernelAttr {
+    base: ObjectArc<CallFFIKernelAttrObj>,
+}
+
+impl Deref for CallFFIKernelAttr {
+    type Target = CallFFIKernelAttrObj;
+    fn deref(&self) -> &CallFFIKernelAttrObj {
+        &self.base
+    }
+}
+
+impl Deref for CallFFIKernelAttrObj {
+    type Target = AttrsObj;
+    fn deref(&self) -> &AttrsObj {
+        &self.base
+    }
+}
+
+impl CallFFIKernelAttrObj {
+    pub(crate) fn new(launch_params: Array<String>) -> Self {
+        let base = AttrsObj::new();
+        Self {
+            base,
+            launch_params,
+        }
+    }
+}
+
+impl CallFFIKernelAttr {
+    /// Lossless complete-field allocation.
+    pub fn new(launch_params: Array<String>) -> Self {
+        let obj = CallFFIKernelAttrObj::new(launch_params);
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(CallFFIKernelAttr => Attrs);
+// tvm-ffi-stubgen(end)
+
+// tvm-ffi-stubgen(begin): object/tirx.TensorMapEncodeTiledAttr
+/// Complete: reflected fields fill [24, 80) exactly (alignment padding [28, 32)).
+#[repr(C)]
+#[derive(tvm_ffi::derive::Object)]
+#[type_key = "tirx.TensorMapEncodeTiledAttr"]
+#[type_final]
+pub struct TensorMapEncodeTiledAttrObj {
+    base: AttrsObj,
+    pub descriptor_dtype: DLDataType,
+    pub rank: i64,
+    pub interleave: i64,
+    pub swizzle: i64,
+    pub l2_promotion: i64,
+    pub oob_fill: i64,
+    pub force_cu_dtype: i64,
+}
+
+const _: () = {
+    assert!(::core::mem::size_of::<TensorMapEncodeTiledAttrObj>() == 80);
+    assert!(::core::mem::align_of::<TensorMapEncodeTiledAttrObj>() == 8);
+};
+
+#[repr(C)]
+#[derive(tvm_ffi::derive::ObjectRef, Clone)]
+pub struct TensorMapEncodeTiledAttr {
+    base: ObjectArc<TensorMapEncodeTiledAttrObj>,
+}
+
+impl Deref for TensorMapEncodeTiledAttr {
+    type Target = TensorMapEncodeTiledAttrObj;
+    fn deref(&self) -> &TensorMapEncodeTiledAttrObj {
+        &self.base
+    }
+}
+
+impl Deref for TensorMapEncodeTiledAttrObj {
+    type Target = AttrsObj;
+    fn deref(&self) -> &AttrsObj {
+        &self.base
+    }
+}
+
+impl TensorMapEncodeTiledAttrObj {
+    pub(crate) fn new(
+        descriptor_dtype: DLDataType,
+        rank: i64,
+        interleave: i64,
+        swizzle: i64,
+        l2_promotion: i64,
+        oob_fill: i64,
+        force_cu_dtype: i64,
+    ) -> Self {
+        let base = AttrsObj::new();
+        Self {
+            base,
+            descriptor_dtype,
+            rank,
+            interleave,
+            swizzle,
+            l2_promotion,
+            oob_fill,
+            force_cu_dtype,
+        }
+    }
+}
+
+impl TensorMapEncodeTiledAttr {
+    /// Lossless complete-field allocation.
+    pub fn new(
+        descriptor_dtype: DLDataType,
+        rank: i64,
+        interleave: i64,
+        swizzle: i64,
+        l2_promotion: i64,
+        oob_fill: i64,
+        force_cu_dtype: i64,
+    ) -> Self {
+        let obj = TensorMapEncodeTiledAttrObj::new(
+            descriptor_dtype,
+            rank,
+            interleave,
+            swizzle,
+            l2_promotion,
+            oob_fill,
+            force_cu_dtype,
+        );
+        Self {
+            base: ObjectArc::new(obj),
+        }
+    }
+}
+
+tvm_ffi::impl_object_upcast!(TensorMapEncodeTiledAttr => Attrs);
 // tvm-ffi-stubgen(end)
 
 // ---------------------------------------------------------------------------
